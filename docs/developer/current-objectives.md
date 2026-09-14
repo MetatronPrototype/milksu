@@ -30,7 +30,7 @@
 | 平台边界 | macOS DMG 走 GitHub-hosted Developer ID 签名并公证；Windows 安装器完成原生 Runtime 与首次启动但未代码签名，并打入审阅过的 CUA Driver `0.27.0`；Linux 发出 Ubuntu/Debian 共用 x64 DEB 与 Omarchy/Arch/Nix 共用 x64 tarball，GNOME Portal Computer Use 已进包，仍无 Secret Service、本地 OCR；Hyprland/Xorg Computer Use 不可用。Windows/Linux 窗口铬尚未真机验收。可下载安装包见 README。 |
 | 发行流水 | 下一发行从干净、已推送的 `main` 对 canonical Go/Vue/Sidecar/lint/生产与文档构建只验证一次；macOS / Windows / Linux 都走 GitHub-hosted 云端。macOS 本机打包暂时关闭。macOS 签名 job 用仅限 `main` 的 `macos-release` environment 作密钥库，`release:dispatch` 后立即开始，无需 GitHub Environment Approve。必须创建 GitHub Release 页并上传带版本号的 DMG/EXE/DEB、x64 tar.gz 与 SHA256SUMS，不能只留空 tag。正式打包默认上传 OTA 到私有 R2 并发布该平台 current pointer；GitHub Release 仍不上 updater ZIP。 |
 
-## 已发行改动：`26.817.1` → `26.912.4`
+## 已发行改动：`26.817.1` → `26.915.1`
 
 从 8 月内测线到 9 月正式包的能力记录。可下载安装包见 README。
 
@@ -218,27 +218,40 @@
 
 发行页：<https://github.com/MilkSU-Official/milksu/releases/tag/v26.912.4>
 
+### `26.915.1` / `d37b957`（2026-09-15）
+
+- Pi `bash` 缺省 600 秒前台上界，过大显式值收到 3600 秒；切换工作区不再杀掉其他会话，非活跃 Sidecar 停靠保活（#80 / #81）。
+- 凭据轮换惰性替换：正在流的回合不被打断，撤回或关掉正在用的 Key 立即停。退役 Sidecar 仍接自己的停止、steering 和审批（#83 / #88）。
+- writer worktree 只在模型委托写入时准备，发消息不再复制仓库；准备用已选 / 已绑定的 Git 项目，不得收成「无项目任务」。脏主区未提交文件不进 writer（#85 / #95）。
+- 长工作区动作被 park / retire 后仍能收到回答；回合结束后迟到的 `tool.completed` 不再把会话标回运行中（#86）。
+- 产物发现覆盖被忽略目录与非 Git 工作区；worktree 放开 detached HEAD 与子目录项目（#91）。
+- 思考收进「过程」，长思考默认折叠、点开 300ms 拉开；运行中标签只呼吸透明度（#84 / #90）。
+- 型号窗口、输出上限和思考档位按 [models.dev](https://models.dev/)。侧栏 footer 增加设置按钮。
+- 产品路径不再写死 macOS：`ctf_capabilities` 用真实 PATH，访达/资源管理器走 `shell.openPath`（#87）。
+- macOS 签名打包不再等 Environment Approve；`macos-release` 仍作密钥库（#94）。
+- GitHub Release 提供 DMG / EXE / DEB / x64 tar.gz 与 `SHA256SUMS-26.915.1.txt`。macOS 走 GitHub-hosted 签名公证。Windows 安装器仍未代码签名。
+
+三端都从 `d37b9575fd410a216461bce7fef7f98bfa1c4b95` 构建。OTA 已写入私有 R2 并自动发布该平台 current pointer。
+
+| 平台 | Workflow | 用户安装包 | 大小 | SHA-256 | 结果 |
+| --- | --- | ---: | ---: | --- | --- |
+| macOS ARM64 | `34873453613` | `MilkSU-macOS-arm64-26.915.1.dmg` | 300,728,583 B | `f5f39a9349e6bc892237aab9ddfce938a9bf9a7f30c159213449e9303c52ffda` | Developer ID 签名、Apple 公证、staple、Gatekeeper |
+| Windows x64 | `34873457848` | `MilkSU-Windows-x64-26.915.1-Setup.exe` | 238,824,009 B | `15aaf941a66a774f0cf38f81dccc4985ef4e9fdaff43fcf56b8659d507e9127f` | 原生 Windows 构建、打包 Runtime 与首次启动通过；安装器未代码签名；窗口铬尚未真机验收 |
+| Linux x64 | `34873461697` | `MilkSU-Linux-x64-26.915.1.deb` | 213,799,724 B | `cfaddcb225b1fd1a24f4755339475418088f67d84d812b8716f77494ae61f890` | Ubuntu/Debian 共用 DEB；包结构、Sidecar、Go Runtime 与 Xvfb 首次启动通过；GNOME Portal Computer Use 已进包；无 Secret Service / 本地 OCR；窗口铬尚未真机验收 |
+| Linux x64 tarball | `34873461697` | `MilkSU-Linux-x64-26.915.1.tar.gz` | 264,788,231 B | `17bd5593e460373e00e556d4ae3caacab405d3df083250ecfbe73414075b48df` | Omarchy/Arch/Nix 共用 tarball；PKGBUILD / flake 是安装方法 |
+
+发行页：<https://github.com/MilkSU-Official/milksu/releases/tag/v26.915.1>
+
 ## 未打进 GitHub 安装包的当前代码
 
-下列已在当前 `main`，还没进 README 指向的 GitHub 安装包。Windows 代码签名、Linux Secret Service / 本地 OCR、Hyprland/Xorg Computer Use、CTF 比赛模式和实验室红队学习面仍缺。
+下列仍未进安装包或尚未真机验收。Windows 代码签名、Linux Secret Service / 本地 OCR、Hyprland/Xorg Computer Use、CTF 比赛模式和实验室红队学习面仍缺。
 
 - #53 的 typed sweep / inventory 工具尚未做。只在真实 wide job 仍用 bash 复刻库存后再做。
 - 新对话继承项目 `milksu` 仍未做。
 - Windows 接入 Computer Use 后整段对话崩溃尚未真机验收。
 - Computer Use 仍要先选窗口。
-- Pi `bash` 的 `timeout` 是可选参数，缺省时一次调用可以无限期占住整个回合。现在 Sidecar 扩展给缺省调用注入 600 秒前台上界，把过大的显式值收敛到 3600 秒，并在超时结果里说明边界；命令目录落在 iCloud 同步根下时补一句仅存云端的文件数。执行前不按命令模式预检或拦截：判断“哪条命令危险”需要解析 shell，猜错会拦掉用户的合法命令，而超时已经把无界等待变成有界失败。
 - DeepSeek Harness 走 ACP，工具在 harness 进程内执行，MilkSU 只是 ACP 客户端，只能允许或拒绝一次调用，改不了它的工具参数。因此 DSH 会话的 `bash` 仍没有 MilkSU 侧超时上界。要补齐需要 harness 自身的配置项或 ACP 扩展点，不要在客户端复刻第二套工具循环。
-- 切换工作区不再停掉其他工作区的 Sidecar：非活跃 Sidecar 停靠保活，每个 kernel 各留 3 个（硬上限 6），空闲 15 分钟回收。仍在跑回合的会话永不被回收或淘汰，因为一条前台命令可以跑很久而不产生任何事件，单看停靠时长分不出“已放弃”和“正在干活”。主动回收只写 `sidecar.stopped` 生命周期回执；`engine.stopped` 只保留给该 kernel 当前进程意外退出，并按 kernel 圈定受影响的会话，不再清掉另一个引擎上的运行态。
-- 保存设置或轮换凭据不再 `Close()` 全部 Sidecar：进程标 stale，下一回合换新进程，旧进程留着跑完手上的回合。设置里删除或关闭正在用的 Provider Key、以及撤销账户凭据，立即停掉还握着它的 Sidecar 并上报中断。退役进程仍接自己回合的停止、steering 和审批；超期回收也置 retired 并通知会话，避免 `busySessions` 永久残留。
-- writer worktree 从发消息触发改成委托触发。`SendMessage` 只解析已存在的工作树；模型委托 effectful 角色时 Sidecar 才请求准备，准备期间在模型动作位置显示进度。准备必须用本回合已选 / 已绑定的 Git 项目：Sidecar 带上当前 cwd，空路径回看会话绑定和已存 `WorkspacePath`，不得收成「无项目任务」再报不是仓库。主工作区脏不挡准备，writer 从 `baseHead` 检出，未提交改动不进入。detached HEAD 可以准备（`BaseBranch` 只是展示元数据）；子目录项目把相对路径接到工作树路径后面；项目目录从未提交过则点名拒绝。复制：macOS 走 copy-on-write，其余平台走 `os.CopyFS`。没装 Git 时应用仍能启动，准备时点名缺 Git。本仓库已删除 `.worktreeinclude`，不再把 `node_modules` 拷进工作树。子 Agent 的 Darwin `sandbox-exec` 启动链仍只有 macOS。
-- 工作区动作（含准备 worktree）不堵 Sidecar 的 stdout 读取循环。发起动作的进程被 park 或 retire 之后仍能收到回答；回合已经结束时，迟到的产品 `tool.completed` 不再把会话标回运行中。
-- 产物预览接受任意有效 UTF-8 文本（Markdown / HTML / 四种图片仍走专用 kind）。丢弃工作区改动不再要求先取消暂存：`git restore --worktree` 按索引重写工作区，已暂存内容保留。产物发现在 `git status` 改动列表之上加一次有预算的扫描：被忽略目录按新旧下探，只收 24 小时内写过的文件；非 Git 工作区走同一次扫描。前端不再按扩展名重算清单。
-- `ctf_capabilities` 按会话 shell 真正会拿到的 PATH 探测，不再扫七个写死的 macOS 目录。在文件管理器中显示走 Electron `shell.openPath` / `showItemInFolder`，Chrome 扩展页走 `browsercap.FindChrome`，产品路径不再写死 `/usr/bin/open`。
-- 长思考（约 3 行或 300 字）默认折叠；点开有 300ms 拉开。运行中标签用前景色呼吸透明度，不再留旧扫光渐变。停止按钮若 10 秒内收不到终态可再点；回合结束前未消费的 steering 留在队列里可见。
-- 型号族窗口、输出上限和思考档位按 [models.dev](https://models.dev/) 官方条目对齐；不再用 `128000` / `32768` / `16384` 占位。DeepSeek / Grok / Gemini / Qwen 3.8 / GPT-6 也有出厂思考档位。核对表写在 `AGENTS.md`。
-- 对话主线程不再铺开每一段「想了 Xs」。进行中只留当前思考或仍在跑的工具组；已结束的思考和工具收进 `过程`，标题用工具组摘要（编辑了文件 / 运行了多个命令 / 读取并检索了项目），不再写步数。有正文的助手消息留在主线程当阶段性成果，不从 thinking 合成假进度。展开过程后多段思考合成一条「想了共」。
-- #81 误把评测用的 `bridge-eval-docker` 推进产品 Sidecar；main 上没有该文件，Pi 一启动就 `ERR_MODULE_NOT_FOUND`，界面收成「本地 Agent 运行异常」。已删掉该 import，评测扩展只留在 eval 分支。
-- 侧栏左下角日夜调节右侧增加设置按钮；日夜调节左移，收起时两个图标都保留。
+- 准备 writer 过程中按停止时，界面有时同时出现「本轮已停止。」和「Agent 运行失败：本地 Agent 运行异常」。合同只该留前者。
 
 ## 当前产品事实
 
