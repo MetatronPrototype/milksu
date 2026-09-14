@@ -339,7 +339,7 @@
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: agent-shimmer-text 1.4s linear infinite;
+  animation: agent-label-breathe 1.4s ease-in-out infinite;
 }
 
 [data-agent-conversation] .agent-pixel-loader__elapsed {
@@ -363,12 +363,13 @@
   }
 }
 
-@keyframes agent-shimmer-text {
-  from {
-    background-position: 150% center;
+@keyframes agent-label-breathe {
+  0%,
+  100% {
+    opacity: 1;
   }
-  to {
-    background-position: -50% center;
+  50% {
+    opacity: 0.55;
   }
 }
 

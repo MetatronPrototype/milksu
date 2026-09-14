@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import ChatActivityGroup from '@/components-vue/ChatActivityGroup.vue'
 import ChatMessageItem from '@/components-vue/ChatMessageItem.vue'
 import {
+  chatTranscriptBlockMemoRefs,
   isThinkingOnlyAssistant,
   mergeProcessThinking,
   processFoldSummary,
@@ -22,6 +23,7 @@ const props = defineProps<{
   activityOpen: (activityId: string) => boolean
   activityOpenEntries: (activityId: string) => ReadonlySet<string>
   subagentTasks?: readonly SubagentTask[]
+  memoKey: string
 }>()
 
 const emit = defineEmits<{
@@ -42,6 +44,12 @@ const visibleBlocks = computed(() => (
     || (block.kind === 'message' && !isThinkingOnlyAssistant(block.message))
   ))
 ))
+
+// Only the block the running turn touches changes its `blocks` array; the rest
+// keep the same message references, so v-memo can skip their patch work.
+function innerMemo(item: ChatTurnBlock): unknown[] {
+  return chatTranscriptBlockMemoRefs(item, props.memoKey)
+}
 </script>
 
 <template>
@@ -62,6 +70,7 @@ const visibleBlocks = computed(() => (
       <template v-for="item in visibleBlocks" :key="item.id">
         <ChatActivityGroup
           v-if="item.kind === 'activity'"
+          v-memo="innerMemo(item)"
           :activity="item"
           :open="activityOpen(item.id)"
           :open-entry-ids="activityOpenEntries(item.id)"
@@ -72,6 +81,7 @@ const visibleBlocks = computed(() => (
         />
         <ChatMessageItem
           v-else
+          v-memo="innerMemo(item)"
           :message="item.message"
           :recoverable="item.message.id === recoverableFailureId"
           :recovery-context="recoveryContext"

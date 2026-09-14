@@ -340,19 +340,40 @@ const thinkingElapsed = computed(() => {
 
 const thinkingRunning = computed(() => props.message.thinkingStatus === 'running')
 const conclusionStarted = computed(() => Boolean(props.message.content?.trim()))
+const THINKING_COLLAPSE_CHARS = 300
+const THINKING_COLLAPSE_ROWS = 3
+
+function countThinkingRows(text: string) {
+  let rows = 0
+  for (const line of text.split('\n')) {
+    if (line.trim()) rows += 1
+  }
+  return rows
+}
+
 const thinkingRows = computed(() => (
   String(props.message.thinking ?? '')
     .split(/\n+/)
     .map(line => line.trim())
     .filter(Boolean)
 ))
+// Long thinking collapses by default so the streaming body never enters the
+// DOM; short thinking keeps the old inline behaviour. The length check short
+// circuits first, so the row scan never runs on a long streaming body.
+const thinkingCollapsible = computed(() => {
+  const text = String(props.message.thinking ?? '')
+  if (text.length >= THINKING_COLLAPSE_CHARS) return true
+  return countThinkingRows(text) >= THINKING_COLLAPSE_ROWS
+})
 const thinkManual = ref<boolean | null>(null)
 watch(thinkingRunning, running => {
   if (running) thinkManual.value = null
 })
-const thinkOpen = computed(() => (
-  thinkManual.value ?? (thinkingRunning.value && !conclusionStarted.value)
-))
+const thinkOpen = computed(() => {
+  if (thinkManual.value !== null) return thinkManual.value
+  if (thinkingCollapsible.value) return false
+  return thinkingRunning.value && !conclusionStarted.value
+})
 
 function toggleThink() {
   thinkManual.value = !thinkOpen.value
@@ -579,7 +600,7 @@ const approvalKicker = computed(() => (
           <path d="M6 9l6 6 6-6" />
         </svg>
       </button>
-      <div class="agent-think__more" :data-open="thinkOpen ? 'true' : 'false'">
+      <div v-if="thinkOpen" class="agent-think__more" data-open="true">
         <div class="agent-think__more-inner">
           <p
             v-for="(row, index) in thinkingRows"

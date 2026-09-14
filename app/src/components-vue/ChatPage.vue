@@ -90,7 +90,7 @@ import {
   LOCAL_CODING_SHELL_ID,
   shouldRememberCodingProject,
 } from '@/lib/codingProjectMemory'
-import { buildChatActivityEntries, buildChatTranscript } from '@/lib/chatActivity'
+import { buildChatActivityEntries, buildChatTranscript, chatTranscriptBlockMemoRefs, type ChatTranscriptBlock } from '@/lib/chatActivity'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
 import { latestCodingPlan } from '@/lib/codingPlan'
 import {
@@ -726,6 +726,31 @@ const chatTranscript = computed(() => (
   buildChatTranscript(props.conversation?.messages ?? [], props.running)
 ))
 
+// Incremental rendering: a streaming turn only replaces the message objects it
+// actually touches, so every untouched transcript block keeps the same message
+// references. Keying v-memo on those references lets the other blocks skip the
+// patch entirely instead of rebuilding the whole on-screen list per delta.
+// The shared key carries the low-frequency inputs (expansion state, recovery
+// affordances, running flag, subagent roster) that any block may need to react to.
+const transcriptMemoKey = computed(() => {
+  const tasks = props.conversation?.subagentTasks ?? []
+  return [
+    recoverableFailureId.value ?? '',
+    rewindableUserMessageId.value ?? '',
+    rewindUnavailable.value ? 1 : 0,
+    props.ctfSession ? 'ctf' : 'coding',
+    agentKernel.value,
+    activityExpansionRev.value,
+    props.running ? 1 : 0,
+    tasks.length,
+    tasks.map(task => `${task.id}:${task.status}`).join(','),
+  ].join('|')
+})
+
+function transcriptBlockMemo(block: ChatTranscriptBlock): unknown[] {
+  return chatTranscriptBlockMemoRefs(block, transcriptMemoKey.value)
+}
+
 const conversationFileDiffs = computed(() => (
   agentFileDiffChips(buildChatActivityEntries(props.conversation?.messages ?? []))
 ))
@@ -735,6 +760,7 @@ const hasComposerDock = computed(() => (
 ))
 
 const chatActivityExpansion = ref(new Map<string, ChatActivityExpansionState>())
+const activityExpansionRev = ref(0)
 const emptyActivityExpansion = createChatActivityExpansionState()
 
 function currentActivityExpansion(): ChatActivityExpansionState {
@@ -754,6 +780,7 @@ function applyActivityExpansion(next: ChatActivityExpansionState) {
   const states = new Map(chatActivityExpansion.value)
   states.set(conversationId, next)
   chatActivityExpansion.value = states
+  activityExpansionRev.value += 1
 }
 
 function handleActivityGroupToggle(activityId: string, open: boolean) {
@@ -804,7 +831,7 @@ watch(
     waitingNow.value = Date.now()
     waitingClock = window.setInterval(() => {
       waitingNow.value = Date.now()
-    }, 100)
+    }, 1000)
   },
   { immediate: true },
 )
@@ -2185,6 +2212,7 @@ defineExpose({
         <template v-for="item in chatTranscript" :key="item.id">
           <ChatProcessFold
             v-if="item.kind === 'process'"
+            v-memo="transcriptBlockMemo(item)"
             :process="item"
             :recoverable-failure-id="recoverableFailureId"
             :recovery-context="ctfSession ? 'ctf' : 'coding'"
@@ -2194,6 +2222,7 @@ defineExpose({
             :activity-open="chatActivityGroupIsOpen"
             :activity-open-entries="chatActivityOpenEntries"
             :subagent-tasks="conversation?.subagentTasks"
+            :memo-key="transcriptMemoKey"
             @toggle-group="handleActivityGroupToggle"
             @toggle-entry="handleActivityEntryToggle"
             @respond-approval="(requestId, approved, scope, choice) => $emit('respondApproval', requestId, approved, scope, choice)"
@@ -2204,6 +2233,7 @@ defineExpose({
           />
           <ChatActivityGroup
             v-else-if="item.kind === 'activity'"
+            v-memo="transcriptBlockMemo(item)"
             :activity="item"
             :open="chatActivityGroupIsOpen(item.id)"
             :open-entry-ids="chatActivityOpenEntries(item.id)"
@@ -2213,6 +2243,7 @@ defineExpose({
           />
           <ChatMessageItem
             v-else
+            v-memo="transcriptBlockMemo(item)"
             :message="item.message"
             :recoverable="item.message.id === recoverableFailureId"
             :recovery-context="ctfSession ? 'ctf' : 'coding'"
