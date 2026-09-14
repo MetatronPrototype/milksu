@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -134,8 +133,10 @@ func newAppWithDesktopHost(host desktopHost) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create Coding project memory: %w", err)
 	}
-	codingCollab, err := newCodingCollaborationManager(dataDirectory, runtime.GOOS)
-	if err != nil {
+	// Missing Git refuses writer worktrees; it must not block the rest of the
+	// desktop from starting. Preparation names that gap when the model asks.
+	codingCollab, err := newCodingCollaborationManager(dataDirectory)
+	if err != nil && !errors.Is(err, codingcollab.ErrGitUnavailable) {
 		return nil, fmt.Errorf("create Coding collaboration manager: %w", err)
 	}
 
@@ -1560,17 +1561,18 @@ func (a *App) OpenChromeExtensionManager() error {
 	if a.ctx == nil {
 		return fmt.Errorf("desktop runtime is not ready")
 	}
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("open Chrome extensions is currently supported on macOS")
+	executable, err := browsercap.FindChrome()
+	if err != nil {
+		return err
 	}
-	if err := exec.Command(
-		"/usr/bin/open",
-		"-b",
-		"com.google.Chrome",
-		"chrome://extensions/",
-	).Run(); err != nil {
-		return fmt.Errorf("open Chrome extensions: %w", err)
+	// Hand the page to the browser that is actually installed. A Chromium-family
+	// browser forwards the URL to its running instance and exits, so the command
+	// is started rather than waited on; the reaper keeps it from lingering.
+	command := exec.Command(executable, browsercap.ExtensionsPage(executable))
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("open the browser extensions page: %w", err)
 	}
+	go func() { _ = command.Wait() }()
 	return nil
 }
 
@@ -1589,9 +1591,6 @@ func (a *App) RevealBrowserExtension() error {
 	if a.ctx == nil {
 		return fmt.Errorf("desktop runtime is not ready")
 	}
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("reveal browser extension is currently supported on macOS")
-	}
 	info, err := a.browserBridge.StartBridge()
 	if err != nil {
 		return err
@@ -1607,10 +1606,7 @@ func (a *App) RevealBrowserExtension() error {
 	if !stat.IsDir() {
 		return fmt.Errorf("browser extension path is not a directory")
 	}
-	if err := exec.Command("/usr/bin/open", extensionPath).Run(); err != nil {
-		return fmt.Errorf("open browser extension directory: %w", err)
-	}
-	return nil
+	return a.openPath(extensionPath)
 }
 
 func (a *App) StartCTFChallenge(request ctf.ChallengeRequest) (ctf.Projection, error) {
@@ -2061,14 +2057,11 @@ func (a *App) RevealVulnerabilityFeedSnapshot(snapshotPath string) error {
 	if a.ctx == nil {
 		return fmt.Errorf("desktop runtime is not ready")
 	}
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("reveal vulnerability feed snapshot is currently supported on macOS")
-	}
 	resolved, err := vuln.ResolveFeedSnapshotPath(a.dataDirectory, snapshotPath)
 	if err != nil {
 		return err
 	}
-	return vuln.RevealFeedSnapshotInFinder(resolved, vuln.MacOSFinderReveal)
+	return vuln.RevealFeedSnapshot(resolved, a.revealPath)
 }
 
 func (a *App) fetchAndPersistVulnerabilityFeed(
