@@ -693,6 +693,43 @@ export function projectCodingAbortRequest(
   }
 }
 
+const turnActivityEventTypes = new Set([
+  'assistant.delta',
+  'assistant.thinking_started',
+  'assistant.thinking_delta',
+  'assistant.thinking_completed',
+  'assistant.segment_completed',
+  'tool.started',
+  'tool.completed',
+  'tool.progress',
+  'approval.requested',
+  'approval.resolved',
+])
+
+// Any in-turn event proves the engine still owns this session. The running marker
+// must be recoverable from those events, not only from assistant.started, otherwise
+// one cleared marker hides the rest of a long turn.
+export function isTurnActivityEvent(type: string) {
+  return turnActivityEventTypes.has(type)
+}
+
+// A session-less engine stop only proves that one engine instance went away. Scope
+// the damage to the conversations that instance served, and include sessions whose
+// messages still show a running turn even when the running marker was already lost
+// (otherwise that turn dies silently).
+export function projectEngineStopAffected(
+  conversations: readonly Conversation[],
+  running: ReadonlySet<string>,
+  kernel: string,
+) {
+  return conversations
+    .filter(conversation => (
+      (conversation.kernel ?? 'pi') === kernel
+      && (running.has(conversation.id) || hasIdleRunResidue(conversation.messages))
+    ))
+    .map(conversation => conversation.id)
+}
+
 export function projectCodingRunFinished(
   running: ReadonlySet<string>,
   aborting: ReadonlySet<string>,
@@ -2054,9 +2091,11 @@ export function useConversations() {
         // A session-less engine stop only proves that one engine instance went
         // away. Scope the cleanup to the conversations that instance served so a
         // concurrent turn on another engine keeps its running state.
-        const affected = [...runningIds.value].filter(id => (
-          (conversations.value.find(item => item.id === id)?.kernel ?? 'pi') === (engineType ?? 'pi')
-        ))
+        const affected = projectEngineStopAffected(
+          conversations.value,
+          runningIds.value,
+          engineType ?? 'pi',
+        )
         const affectedSet = new Set(affected)
         for (const id of affectedSet) activeTurnPolicies.delete(id)
         for (const compactingId of [...continuity.value.compacting]) {
@@ -2134,6 +2173,16 @@ export function useConversations() {
         return
       }
       if (!sessionId) return
+      if (isTurnActivityEvent(type)) {
+        // The engine owns the truth: an in-turn event proves this session is still
+        // running even if another engine's stop cleared the marker earlier.
+        if (!runningIds.value.has(sessionId)) {
+          runningIds.value = new Set(runningIds.value).add(sessionId)
+        }
+        patchTurnStatus(sessionId, state => (
+          state.runStartedAt === undefined ? applySessionRunStarted(state) : state
+        ))
+      }
       if (type === 'usage.recorded' && usage) {
         patchTurnStatus(sessionId, state => applySessionUsageRecorded(state, {
           inputTokens: usage.inputTokens,

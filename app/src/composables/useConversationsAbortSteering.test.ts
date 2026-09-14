@@ -175,3 +175,64 @@ describe('useConversations engine stop scoping', () => {
     expect(conversations.runningConversationIds.value).toEqual([])
   })
 })
+
+describe('useConversations run-state recovery', () => {
+  beforeEach(() => {
+    handlers.clear()
+    invokeCommand.mockClear()
+  })
+
+  // The running marker used to be set only at assistant.started, so one cleared
+  // marker hid the rest of a long turn. In-turn events must restore it.
+  it('restores a running marker cleared by an engine stop', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    stored = [storedConversation('conversation-1')]
+    await conversations.load()
+    await conversations.listen()
+    conversations.activeId.value = 'conversation-1'
+
+    emit('conversation-1', { type: 'assistant.started' })
+    expect(conversations.runningConversationIds.value).toEqual(['conversation-1'])
+
+    emit('', { type: 'engine.stopped', engine: 'pi', error: 'signal: killed' })
+    expect(conversations.runningConversationIds.value).toEqual([])
+
+    emit('conversation-1', { type: 'assistant.delta', text: '还在跑' })
+    expect(conversations.runningConversationIds.value).toEqual(['conversation-1'])
+  })
+
+  it('restores the running marker from a tool event too', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    stored = [storedConversation('conversation-1')]
+    await conversations.load()
+    await conversations.listen()
+    conversations.activeId.value = 'conversation-1'
+
+    emit('conversation-1', { type: 'tool.started', text: 'bash', toolName: 'bash', toolCallId: 'c1' })
+    expect(conversations.runningConversationIds.value).toEqual(['conversation-1'])
+  })
+
+  // A session whose running marker was already gone still has to be told that its
+  // engine died, otherwise that turn dies silently.
+  it('covers sessions that only still show a running turn', async () => {
+    const { projectEngineStopAffected } = await import('@/composables/useConversations')
+    const runningTool = {
+      id: 'm1',
+      role: 'tool',
+      content: 'sleep 600',
+      timestamp: 1,
+      toolName: 'bash',
+      status: 'running',
+    }
+    const conversations = [
+      { id: 'residue', title: 'r', createdAt: 1, kernel: 'pi', messages: [runningTool] },
+      { id: 'marked', title: 'm', createdAt: 2, kernel: 'pi', messages: [] },
+      { id: 'other-engine', title: 'o', createdAt: 3, kernel: 'dsh', messages: [runningTool] },
+    ] as unknown as Parameters<typeof projectEngineStopAffected>[0]
+
+    expect(projectEngineStopAffected(conversations, new Set(['marked']), 'pi'))
+      .toEqual(['residue', 'marked'])
+  })
+})
