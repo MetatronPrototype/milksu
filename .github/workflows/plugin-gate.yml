@@ -78,7 +78,7 @@ jobs:
           go test ./cmd/milksu-backend -run 'Plugin|MCP' -count=1
           npm run test:plugin-author
           node --test sidecar/plugin-runtime/*.test.mjs sidecar/pi/bridge-plugin-mcp.test.js desktop/backend-runtime.test.cjs desktop/desktop-rpc-source.test.cjs desktop/renderer-protocol.test.cjs desktop/startup-environment.test.cjs
-      - name: Validate renderer plugin and surface contracts
+      - name: Validate renderer plugin contracts
         run: |
-          npm --prefix app test -- --run src/lib/pluginFrame.test.ts src/lib/pluginThemeBridgeContract.test.ts src/components-vue/WorkspaceVisualContract.test.ts
+          npm --prefix app test -- --run src/lib/pluginFrame.test.ts src/lib/pluginThemeBridgeContract.test.ts
           npm --prefix app run build

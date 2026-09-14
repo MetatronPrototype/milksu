@@ -93,13 +93,13 @@ Shared CSS lives in `app/src/index.css`, `app/src/styles/beautiful-chrome.css` a
 behavior. Do not add `@yunyoujun/ak-ui` to `app/package.json`. Do not vendor Beautiful UI's
 React runtime, `globals.css` or paid `@central-icons-react`. ak-ui is **not** the product
 language; keep only the easter eggs named above. Retired graphite / paper / tactical /
-acid-green drafts are not current. Enforcement:
-`WorkspaceVisualContract.test.ts`, `globalStyleContract.test.ts`,
-`WorkspaceCatalogActions.test.ts`, `ConnectionLiveStatus.test.ts`.
+acid-green drafts are not current.
 
 Review a new page, settings category, dossier, dialog, preview, Vue/CSS/copy change, or
 incoming PR against those layers. A screenshot is not a review. Do not invent a
 one-off max-width, radius, padding, card, or color to finish one page.
+Do not add or extend Vue/UI unit tests to “enforce” this language — they do not catch
+layout or product bugs. Review the running app against this section.
 
 ### When the user changes the UI
 
@@ -108,9 +108,12 @@ If the user — not the agent — changed layout, color, spacing, typography or 
 not silently revert to this language and do not silently rewrite this language to match the
 one-off. Ask in Chinese whether to:
 
-1. update the design language (this section, shared CSS/tokens, and the
-   visual-contract tests) so later pages follow the new rule; or
+1. update the design language (this section and the shared CSS/tokens) so later
+   pages follow the new rule; or
 2. keep this language and treat the edit as a one-off to align or isolate.
+
+Do not write or refresh visual-contract / style-contract / mount-and-assert-class
+tests to lock the new look.
 
 ## Productization and three-platform support
 
@@ -149,8 +152,8 @@ three platforms, and for a user who is not this developer.
 - `MilkSU Beta.app` exists only for MilkSU's own self-bootstrap loop, where a Stable MilkSU reviewer controls
   an independently identified Beta build and verifies its branch, commit, tracking ID and user-visible task.
 - Codex must not build or refresh the Beta app during ordinary implementation, debugging, UI validation or
-  release preparation. Use unit/component tests, Sidecar tests, browser previews, or the Stable development
-  runtime instead.
+  release preparation. Use logic/RPC/Sidecar tests, browser previews, or the Stable development
+  runtime instead. Do not add Vue/UI unit tests.
 - Build Beta only when the user explicitly asks to run a MilkSU self-bootstrap exercise. A request to test a
   feature, inspect the desktop UI, or package a normal app is not self-bootstrap authorization.
 
@@ -292,6 +295,15 @@ deferred to one destructive pre-release consolidation after the product slices a
 - Use the canonical repository scripts instead of inventing parallel runners.
 - Keep smoke, fixtures, benchmarks and acceptance coordinators outside production startup, Desktop RPC
   and Vue entrypoints as required by `docs/developer/product-code-admission.md`.
+- Do not write Vue/UI unit tests. Mounting a component to assert class names, tokens, copy, slots,
+  or “it renders X” is meaningless: jsdom does not paint the product, and source-string
+  `?raw` / `readFileSync` contracts only freeze chrome. Do not add or extend
+  `*VisualContract*`, `*StyleContract*`, list-chrome / topbar / LIVE-chip mount tests, or
+  template-grep tests that lock CSS and class names. If a UI change breaks an existing
+  test of that kind, delete the assertion or the file — do not rewrite snapshots to keep
+  CI green. Keep tests for logic, Desktop RPC, credentials, routing/state machines,
+  locale pairing (`uiLocaleCoverage`), and Sidecar/Go contracts. Review UI in the running
+  app against the design language in this file.
 - Incoming PRs and selected slices that touch product UI must pass the design-language review in this
   file. Incoming PRs and selected slices that add a capability must pass the productization /
   three-platform review.
