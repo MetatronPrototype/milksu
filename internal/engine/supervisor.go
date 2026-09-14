@@ -41,6 +41,21 @@ const (
 	// sidecarIdleTimeout stops a parked sidecar the user has not come back to and
 	// that has no turn in flight.
 	sidecarIdleTimeout = 15 * time.Minute
+	// staleSidecarGraceTimeout bounds how long a sidecar whose credentials were
+	// replaced keeps running to finish an in-flight turn before it is stopped
+	// anyway. Credentials are injected through the process environment at spawn
+	// time, so a saved credential change has to reach the next turn; the running
+	// turn itself must not be killed for it.
+	//
+	// It has a hard lower bound: the hang guard lets a single bash call run for up to
+	// 3600s, and a turn can chain several of them, so a window shorter than that cap
+	// would kill turns that are still legitimately working - exactly what the lazy
+	// replacement exists to prevent. Keep this above the tool cap, with margin for the
+	// model calls in between.
+	//
+	// Revoking a credential does not go through this window at all: Supervisor
+	// .StopStaleSidecars stops those sidecars immediately, mid-turn or not.
+	staleSidecarGraceTimeout = 75 * time.Minute
 )
 
 // engineSidecarStoppedEvent records that one Sidecar process ended. It is a process
@@ -331,6 +346,18 @@ type childProcess struct {
 	// engine.sidecar_stopped for it so the persisted sidecar.stopped event is written
 	// instead of disappearing silently, without claiming the whole engine stopped.
 	retired atomic.Bool
+	// stale marks a process that must be replaced before it serves another turn
+	// because the credentials baked into its environment were replaced. A stale
+	// process is never reused, but it is left running until it finishes the turn
+	// it had already started (see staleSidecarGraceTimeout).
+	stale      atomic.Bool
+	staleSince atomic.Int64
+	// kernel is the engine this process serves, so a stale process can ask whether its
+	// own kernel still has a turn in flight for its workspace.
+	kernel string
+	// staleReason is the human-readable cause recorded when the process was marked
+	// stale, so tests and diagnostics can tell credential rotation from shutdown.
+	staleReason string
 }
 
 type sidecarStderrBuffer struct {
@@ -424,8 +451,11 @@ type Supervisor struct {
 	dshProcess *childProcess
 	// parked keeps the sidecars of other workspaces alive so switching conversations
 	// no longer kills the turn that is still running there. Keyed by kernel+workspace.
-	parked            map[string]*childProcess
-	parkedAt          map[string]time.Time
+	parked   map[string]*childProcess
+	parkedAt map[string]time.Time
+	// retiring holds stale processes that are still finishing an in-flight turn.
+	// They are unreachable for new work and swept once their grace runs out.
+	retiring          []*childProcess
 	sessionKernels    map[string]string
 	sessionWorkspaces map[string]string
 	// busySessions holds the sessions whose turn has been sent but not settled. A
@@ -512,7 +542,7 @@ func (s *Supervisor) processForSessionLocked(sessionID string) *childProcess {
 		return s.processForKernelLocked(kernel)
 	}
 	if s.parked != nil {
-		if parked := s.parked[sidecarWorkspaceKey(kernel, workspace)]; parked != nil {
+		if parked := s.parked[sidecarWorkspaceKey(kernel, workspace)]; parked != nil && !parked.stale.Load() {
 			return parked
 		}
 	}
@@ -791,6 +821,147 @@ func (s *Supervisor) reportInterruptedSessions(kernel string, sessions []string)
 			})
 		}
 	}()
+}
+
+// InvalidateCredentials marks every live sidecar as stale so the next turn starts on
+// a process whose environment carries the credentials that are current now.
+//
+// Credentials are injected through the child environment at spawn time, so a saved
+// credential change has to reach the next turn. Stopping the processes outright also
+// stopped turns that were still streaming, and it stopped a model probe that was in
+// flight while the account credential was being synced - the reason "Test connection"
+// reported a failure even though the model had answered. Stale sidecars are replaced
+// lazily by ensureKernelProcessLocked and reaped by reapStaleProcessesLocked once the
+// turn they were kept for is over, or once staleSidecarGraceTimeout runs out.
+//
+// It returns how many processes were marked so the caller can log the rotation.
+func (s *Supervisor) InvalidateCredentials(reason string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reason = strings.TrimSpace(reason)
+	marked := 0
+	mark := func(process *childProcess) {
+		if process == nil || process.stale.Load() {
+			return
+		}
+		process.stale.Store(true)
+		process.staleSince.Store(time.Now().UnixNano())
+		process.staleReason = reason
+		marked++
+	}
+	mark(s.process)
+	mark(s.dshProcess)
+	for _, process := range s.parked {
+		mark(process)
+	}
+	for _, process := range s.retiring {
+		mark(process)
+	}
+	return marked
+}
+
+// retireStaleProcessLocked takes a stale process out of rotation without stopping it,
+// so a turn that is already streaming keeps running on the process it started on.
+func (s *Supervisor) retireStaleProcessLocked(kernel string, process *childProcess) {
+	if process == nil {
+		return
+	}
+	if process.staleSince.Load() == 0 {
+		process.stale.Store(true)
+		process.staleSince.Store(time.Now().UnixNano())
+	}
+	if s.processForKernelLocked(kernel) == process {
+		s.setKernelProcessLocked(kernel, nil)
+	}
+	if s.parked != nil {
+		if key := sidecarWorkspaceKey(kernel, process.workspace); s.parked[key] == process {
+			delete(s.parked, key)
+			delete(s.parkedAt, key)
+		}
+	}
+	for _, existing := range s.retiring {
+		if existing == process {
+			return
+		}
+	}
+	s.retiring = append(s.retiring, process)
+}
+
+// reapStaleProcessesLocked stops a stale process once the turn it was kept for has
+// finished, or once its grace window runs out.
+//
+// The turn decides, exactly as in reapParkedLocked: stdout silence cannot tell an
+// abandoned sidecar from a working one, because a foreground bash can run for minutes
+// without writing a line. Stopping on silence is what killed in-flight turns before,
+// and lastActivity only ever recorded stdout lines.
+func (s *Supervisor) reapStaleProcessesLocked() {
+	if len(s.retiring) == 0 {
+		return
+	}
+	now := time.Now()
+	kept := s.retiring[:0]
+	for _, process := range s.retiring {
+		if process == nil {
+			continue
+		}
+		if !s.workspaceHasRunningTurnLocked(process.kernel, process.workspace) ||
+			now.Sub(time.Unix(0, process.staleSince.Load())) >= staleSidecarGraceTimeout {
+			stopChildProcess(process)
+			continue
+		}
+		kept = append(kept, process)
+	}
+	s.retiring = kept
+}
+
+// StopStaleSidecars stops every stale sidecar at once, whether or not it still has a turn
+// in flight.
+//
+// Rotating a credential is lazy on purpose: the new value takes over on the next turn, so a
+// sidecar that is mid-turn is left to finish on the environment it started with, and only
+// the grace window bounds it.
+//
+// Revoking a credential is not that change. The user is taking the credential away, so there
+// is nothing left for the old environment to run with: a turn that is mid-flight would fail
+// on its next model call anyway, and keeping the revoked credential usable is exactly what
+// was just undone. There is therefore no grace to wait out here.
+func (s *Supervisor) StopStaleSidecars() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stopped := 0
+	stop := func(kernel string, process *childProcess) bool {
+		if process == nil || !process.stale.Load() {
+			return false
+		}
+		s.dropWorkspaceSessionsLocked(kernel, process.workspace)
+		process.retired.Store(true)
+		stopChildProcess(process)
+		stopped++
+		return true
+	}
+	for _, kernel := range []string{KernelPi, KernelDSH} {
+		if stop(kernel, s.processForKernelLocked(kernel)) {
+			s.setKernelProcessLocked(kernel, nil)
+		}
+	}
+	for key, process := range s.parked {
+		if process == nil {
+			continue
+		}
+		if stop(process.kernel, process) {
+			delete(s.parked, key)
+			delete(s.parkedAt, key)
+		}
+	}
+	kept := s.retiring[:0]
+	for _, process := range s.retiring {
+		if process != nil && stop(process.kernel, process) {
+			continue
+		}
+		kept = append(kept, process)
+	}
+	s.retiring = kept
+	return stopped
 }
 
 func NewSupervisor(emit func(Event)) *Supervisor {
@@ -2070,10 +2241,20 @@ func (s *Supervisor) ProbeModel(settings config.AppSettings) (ModelProbeResult, 
 	}()
 
 	startedAt := time.Now()
+	// Run the probe on its own workspace. A sidecar serves a single command queue and
+	// send_message waits on it, so probing the workspace the user is working in made
+	// "Test connection" queue behind a running turn and report a 45 second timeout
+	// even though the model itself was reachable.
+	probeWorkspace, workspaceErr := os.MkdirTemp(hostpath.EphemeralRoot(), "milksu-model-probe-")
+	if workspaceErr != nil {
+		probeWorkspace = hostpath.EphemeralRoot()
+	} else {
+		defer os.RemoveAll(probeWorkspace)
+	}
 	if err := s.SendMessage(
 		sessionID,
 		"Reply with exactly OK.",
-		s.currentWorkspace(),
+		probeWorkspace,
 		"",
 		"",
 		"",
@@ -2286,10 +2467,12 @@ func (s *Supervisor) Close() {
 	pi := s.process
 	dsh := s.dshProcess
 	parked := s.parked
+	retiring := s.retiring
 	s.process = nil
 	s.dshProcess = nil
 	s.parked = make(map[string]*childProcess)
 	s.parkedAt = make(map[string]time.Time)
+	s.retiring = nil
 	s.sessions = make(map[string]struct{})
 	s.sessionKernels = make(map[string]string)
 	s.sessionWorkspaces = make(map[string]string)
@@ -2308,9 +2491,17 @@ func (s *Supervisor) Close() {
 			process.retired.Store(true)
 		}
 	}
+	for _, process := range retiring {
+		if process != nil {
+			process.retired.Store(true)
+		}
+	}
 	stopChildProcess(pi)
 	stopChildProcess(dsh)
 	for _, process := range parked {
+		stopChildProcess(process)
+	}
+	for _, process := range retiring {
 		stopChildProcess(process)
 	}
 }
@@ -2335,22 +2526,34 @@ func (s *Supervisor) ensureKernelProcessLocked(
 ) error {
 	kernel = NormalizeKernel(kernel)
 	s.reapParkedLocked(kernel)
+	s.reapStaleProcessesLocked()
 	current := s.processForKernelLocked(kernel)
-	if current != nil && current.workspace == workspace {
+	if current != nil && current.workspace == workspace && !current.stale.Load() {
 		return nil
 	}
 	if current != nil {
-		// Park instead of killing: an in-flight turn in the previous workspace keeps
-		// running and its events keep streaming to the UI while the user works here.
-		s.parkCurrentLocked(kernel, current)
+		if current.stale.Load() {
+			// The credentials this process was started with are gone. Keep its
+			// in-flight turn alive but take it out of rotation so this workspace runs
+			// on a freshly spawned sidecar.
+			s.retireStaleProcessLocked(kernel, current)
+		} else {
+			// Park instead of killing: an in-flight turn in the previous workspace keeps
+			// running and its events keep streaming to the UI while the user works here.
+			s.parkCurrentLocked(kernel, current)
+		}
 	}
 	if s.parked != nil {
 		key := sidecarWorkspaceKey(kernel, workspace)
 		if parked := s.parked[key]; parked != nil {
 			delete(s.parked, key)
 			delete(s.parkedAt, key)
-			s.setKernelProcessLocked(kernel, parked)
-			return nil
+			if parked.stale.Load() {
+				s.retireStaleProcessLocked(kernel, parked)
+			} else {
+				s.setKernelProcessLocked(kernel, parked)
+				return nil
+			}
 		}
 	}
 	packaged := "chat-bridge.cjs"
@@ -2407,6 +2610,7 @@ func (s *Supervisor) ensureKernelProcessLocked(
 		command:   command,
 		stdin:     stdin,
 		workspace: workspace,
+		kernel:    NormalizeKernel(kernel),
 		stderr:    stderr,
 	}
 	s.setKernelProcessLocked(kernel, process)
@@ -2438,6 +2642,15 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 
 	waitError := process.command.Wait()
 	s.mu.Lock()
+	if len(s.retiring) > 0 {
+		kept := s.retiring[:0]
+		for _, retiring := range s.retiring {
+			if retiring != process {
+				kept = append(kept, retiring)
+			}
+		}
+		s.retiring = kept
+	}
 	removedFromParked := false
 	var interrupted []string
 	if s.parked != nil {

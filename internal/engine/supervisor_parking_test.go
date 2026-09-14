@@ -22,6 +22,7 @@ func testSidecarProcess(workspace string) *childProcess {
 		command:   &exec.Cmd{},
 		stdin:     nopWriteCloser{},
 		workspace: workspace,
+		kernel:    KernelPi,
 	}
 }
 
@@ -35,6 +36,7 @@ func parkTestProcessForKernel(
 	parkedAt time.Time,
 ) *childProcess {
 	process := testSidecarProcess(workspace)
+	process.kernel = NormalizeKernel(kernel)
 	key := sidecarWorkspaceKey(kernel, workspace)
 	supervisor.parked[key] = process
 	supervisor.parkedAt[key] = parkedAt
