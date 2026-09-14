@@ -15,8 +15,9 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
-import { join, resolve as resolvePath, sep } from "node:path";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
+import { isAbsolute, join, resolve as resolvePath, sep } from "node:path";
 
 export const DEFAULT_BASH_TIMEOUT_SECONDS = 120;
 export const MAX_BASH_TIMEOUT_SECONDS = 3600;
@@ -110,20 +111,97 @@ export function applyBashTimeout(input, config) {
 }
 
 /**
+ * The home directory a command's `~` actually resolves to.
+ *
+ * MilkSU sandboxes the sidecar's own HOME (e.g. `…/com.milksu.app/agent-home`) but runs
+ * tool commands with the real user home, and it publishes that as `MILKSU_USER_HOME`.
+ * Using `os.homedir()` here silently checked a path that does not exist, which is exactly
+ * how the iCloud preflight missed the incident.
+ */
+export function resolveUserHome(environment = process.env) {
+  const configured = String(environment?.MILKSU_USER_HOME ?? "").trim();
+  if (configured) return configured;
+  try {
+    return userInfo().homedir;
+  } catch {
+    return homedir();
+  }
+}
+
+function iCloudRoots(home) {
+  const homes = Array.isArray(home) ? home : [home];
+  const roots = [];
+  for (const entry of homes) {
+    const base = String(entry ?? "").trim();
+    if (!base) continue;
+    roots.push(
+      join(base, "Documents"),
+      join(base, "Desktop"),
+      join(base, "Library", "Mobile Documents"),
+    );
+  }
+  return roots;
+}
+
+/**
  * Paths whose contents iCloud may keep in the cloud only. Used to decide whether the
  * dataless preflight is worth running at all: outside these roots the scan is skipped.
  */
 export function isICloudSyncedPath(directory, options = {}) {
-  const { platform = process.platform, home = homedir() } = options;
+  const { platform = process.platform, home = resolveUserHome() } = options;
   if (platform !== "darwin") return false;
   const target = String(directory ?? "").trim();
   if (!target) return false;
   const resolved = resolvePath(target);
-  return [
-    join(home, "Documents"),
-    join(home, "Desktop"),
-    join(home, "Library", "Mobile Documents"),
-  ].some(root => resolved === root || resolved.startsWith(root + sep));
+  return iCloudRoots(home).some(root => resolved === root || resolved.startsWith(root + sep));
+}
+
+/**
+ * Best-effort decision log next to the Pi agent directory. A guard that silently decides
+ * not to act is impossible to diagnose from the outside, so every decision (including the
+ * skip paths) is recorded in one line.
+ */
+export function appendGuardLog(line, { home = resolveUserHome(), environment = process.env } = {}) {
+  try {
+    const base = environment?.MILKSU_PI_AGENT_DIR || join(home, ".pi", "agent");
+    mkdirSync(base, { recursive: true });
+    appendFileSync(join(base, "hang-guard.log"), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    /* logging must never break a tool call */
+  }
+}
+
+/**
+ * Candidate directories a bash command may touch: the session cwd plus every
+ * `cd`/`pushd` target in the command itself. The incident that motivated this guard
+ * ran `cd ~/Documents/sync-repo && git fsck` from a session whose cwd was NOT under an
+ * iCloud root, so inspecting only the session cwd would have missed it entirely.
+ */
+export function commandDirectories(command, cwd, options = {}) {
+  const { home = resolveUserHome() } = options;
+  const candidates = [];
+  const push = value => {
+    const raw = String(value ?? "").trim();
+    if (!raw || raw === "-" || raw.startsWith("$")) return;
+    let expanded = raw;
+    if (expanded === "~") expanded = home;
+    else if (expanded.startsWith("~/")) expanded = join(home, expanded.slice(2));
+    if (!isAbsolute(expanded)) {
+      if (!cwd) return;
+      expanded = resolvePath(cwd, expanded);
+    }
+    candidates.push(expanded);
+  };
+
+  push(cwd);
+
+  const text = String(command ?? "");
+  const cdPattern = /(?:^|[;&|()\s])(?:cd|pushd)\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|()<>]+))/g;
+  for (const match of text.matchAll(cdPattern)) {
+    push(match[1] ?? match[2] ?? match[3]);
+  }
+
+  return [...new Set(candidates)];
 }
 
 /**
@@ -217,7 +295,7 @@ function textOf(content) {
 export function createHangGuardExtension({
   environment = process.env,
   platform = process.platform,
-  home = homedir(),
+  home = resolveUserHome(environment),
   spawn,
   scanCacheTtlMs = 60_000,
 } = {}) {
@@ -241,45 +319,72 @@ export function createHangGuardExtension({
   };
 
   return pi => {
+    const log = line => appendGuardLog(line, { home, environment });
+    log(
+      `guard loaded default=${config.defaultTimeoutSeconds}s max=${config.maxTimeoutSeconds}s `
+      + `datalessGuard=${config.datalessGuardEnabled} threshold=${config.datalessBlockThreshold}`,
+    );
+
     pi.on("tool_call", async (event, ctx) => {
       try {
         if (event?.toolName !== "bash") return undefined;
         const input = event.input;
         if (!input || typeof input !== "object") return undefined;
 
-        applyBashTimeout(input, config);
-
-        if (!config.datalessGuardEnabled) return undefined;
+        const applied = applyBashTimeout(input, config);
         const command = String(input.command ?? "");
-        const directory = ctx?.cwd;
-        if (!directory || !command || !isBulkCommand(command)) return undefined;
-        // Outside iCloud roots a dataless file cannot appear, so skip the scan entirely.
-        if (!isICloudSyncedPath(directory, { platform, home })) return undefined;
+        const bulk = isBulkCommand(command);
 
-        const count = countCached(directory);
-        if (count < 0) {
-          return {
-            block: true,
-            reason: datalessUnknownReason({
-              directory,
-              command,
-              scanTimeoutMs: config.datalessScanTimeoutMs,
-            }),
-          };
+        if (!config.datalessGuardEnabled) {
+          log(`tool_call bulk=${bulk} timeout=${applied ?? "kept"} datalessGuard=off`);
+          return undefined;
         }
-        if (count < config.datalessBlockThreshold) return undefined;
-        return {
-          block: true,
-          reason: datalessBlockReason({
-            directory,
-            count,
-            command,
-            threshold: config.datalessBlockThreshold,
-            limit: config.datalessBlockThreshold + 1,
-          }),
-        };
-      } catch {
-        // 守卫自身绝不阻断正常流程
+        if (!command || !bulk) {
+          log(`tool_call bulk=${bulk} timeout=${applied ?? "kept"} -> skip`);
+          return undefined;
+        }
+
+        // Check every directory the command may touch, not only the session cwd: a
+        // command can `cd` into an iCloud-synced tree from anywhere.
+        const candidates = commandDirectories(command, ctx?.cwd, { home });
+        const synced = candidates.filter(directory => isICloudSyncedPath(directory, { platform, home }));
+        if (synced.length === 0) {
+          log(`tool_call bulk=true timeout=${applied ?? "kept"} synced=0 -> skip`);
+          return undefined;
+        }
+
+        for (const directory of synced) {
+          const count = countCached(directory);
+          if (count < 0) {
+            log(`tool_call bulk=true dir=${directory} count=unknown -> block (fail closed)`);
+            return {
+              block: true,
+              reason: datalessUnknownReason({
+                directory,
+                command,
+                scanTimeoutMs: config.datalessScanTimeoutMs,
+              }),
+            };
+          }
+          if (count >= config.datalessBlockThreshold) {
+            log(`tool_call bulk=true dir=${directory} count=${count} -> block`);
+            return {
+              block: true,
+              reason: datalessBlockReason({
+                directory,
+                count,
+                command,
+                threshold: config.datalessBlockThreshold,
+                limit: config.datalessBlockThreshold + 1,
+              }),
+            };
+          }
+          log(`tool_call bulk=true dir=${directory} count=${count} -> below threshold`);
+        }
+        return undefined;
+      } catch (error) {
+        // 守卫自身绝不阻断正常流程，但必须留下痕迹
+        log(`tool_call hook error: ${error && error.message ? error.message : error}`);
         return undefined;
       }
     });
@@ -291,9 +396,9 @@ export function createHangGuardExtension({
         if (!/timeout[:：]/i.test(text) && !/timed out/i.test(text)) return undefined;
         const directory = ctx?.cwd;
         // Only iCloud roots can hold cloud-only files, so skip the scan elsewhere.
-        const count = directory && isICloudSyncedPath(directory, { platform, home })
-          ? countCached(directory)
-          : 0;
+        const synced = commandDirectories(event.input?.command, directory, { home })
+          .filter(candidate => isICloudSyncedPath(candidate, { platform, home }));
+        const count = synced.length > 0 ? countCached(synced[0]) : 0;
         const lines = [
           "",
           `[MilkSU hang guard] command was terminated by its timeout `
@@ -301,7 +406,7 @@ export function createHangGuardExtension({
         ];
         if (count >= config.datalessBlockThreshold) {
           lines.push(
-            `Detected ${count} files that exist only in iCloud in ${directory}; `
+            `Detected ${count} files that exist only in iCloud in ${synced[0]}; `
             + `that is the likely cause. Consider "brctl download" or moving the project out of ~/Documents.`,
           );
         }

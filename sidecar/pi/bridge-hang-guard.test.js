@@ -6,6 +6,7 @@ import {
   DEFAULT_BASH_TIMEOUT_SECONDS,
   MAX_BASH_TIMEOUT_SECONDS,
   applyBashTimeout,
+  commandDirectories,
   countDatalessFiles,
   createHangGuardExtension,
   datalessBlockReason,
@@ -13,6 +14,7 @@ import {
   hangGuardConfig,
   isBulkCommand,
   isICloudSyncedPath,
+  resolveUserHome,
 } from "./bridge-hang-guard.js";
 
 const baseConfig = {
@@ -43,12 +45,12 @@ function fakeSpawn(stdout, { status = 0, error = undefined, capture } = {}) {
   };
 }
 
-function hangGuard({ environment = {}, spawn, capture } = {}) {
+function hangGuard({ environment = {}, spawn, capture, home } = {}) {
   const { pi, handler, handlers } = fakePi();
   createHangGuardExtension({
     environment,
     platform: "darwin",
-    home: FAKE_HOME,
+    home: home ?? FAKE_HOME,
     spawn: spawn ?? fakeSpawn("", { capture }),
   })(pi);
   return { handler, handlers };
@@ -170,6 +172,61 @@ test("directories with quotes are shell-quoted safely", () => {
   assert.match(calls[0].args[1], /'\/tmp\/it'\\''s here'/);
 });
 
+// ───────────────────────── 用户目录解析 ─────────────────────────
+
+test("the sandboxed sidecar HOME is not used for ~ expansion", () => {
+  // MilkSU runs the sidecar with HOME=…/com.milksu.app/agent-home while commands use the
+  // real user home, published as MILKSU_USER_HOME. Using os.homedir() here made the
+  // preflight check a non-existent path and miss the incident entirely.
+  const sandboxed = { HOME: "/sandbox/agent-home", MILKSU_USER_HOME: FAKE_HOME };
+  assert.equal(resolveUserHome(sandboxed), FAKE_HOME);
+  assert.equal(resolveUserHome({ MILKSU_USER_HOME: "  " }) !== "", true);
+  assert.equal(resolveUserHome({}), resolveUserHome({}));
+  assert.equal(
+    commandDirectories("cd ~/Documents/sync-repo && git fsck", "/tmp", { home: resolveUserHome(sandboxed) })[1],
+    `${FAKE_HOME}/Documents/sync-repo`,
+  );
+});
+
+test("a bulk command cds into an evicted iCloud tree while HOME is sandboxed", async () => {
+  const { handler } = hangGuard({
+    environment: { HOME: "/sandbox/agent-home", MILKSU_USER_HOME: FAKE_HOME },
+    spawn: fakeSpawn(manyDataless),
+    home: FAKE_HOME,
+  });
+  const input = { command: "cd ~/Documents/sync-repo && git fsck --no-progress" };
+  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: "/sandbox/work" });
+  assert.equal(result?.block, true);
+  assert.match(result.reason, /only in iCloud/);
+});
+
+// ───────────────────────── 命令涉及的目录 ─────────────────────────
+
+test("command directories include the session cwd and cd targets", () => {
+  const options = { home: FAKE_HOME };
+  assert.deepEqual(
+    commandDirectories("git fsck", "/tmp/work", options),
+    ["/tmp/work"],
+  );
+  assert.deepEqual(
+    commandDirectories("cd ~/Documents/sync-repo && git fsck", "/tmp/work", options),
+    ["/tmp/work", `${FAKE_HOME}/Documents/sync-repo`],
+  );
+  assert.deepEqual(
+    commandDirectories('cd "~/Documents/My Repo" && git gc', "/tmp", options),
+    ["/tmp", `${FAKE_HOME}/Documents/My Repo`],
+  );
+  assert.deepEqual(
+    commandDirectories("pushd ../other && grep -rn x .", "/tmp/work", options),
+    ["/tmp/work", "/tmp/other"],
+  );
+  assert.deepEqual(
+    commandDirectories("cd - && git fsck", "/tmp/work", options),
+    ["/tmp/work"],
+  );
+  assert.deepEqual(commandDirectories("cd 64x64 && ls", "/tmp/x", options), ["/tmp/x", "/tmp/x/64x64"]);
+});
+
 // ───────────────────────── 拦截理由 ─────────────────────────
 
 test("block reason states the count, the cost and the options", () => {
@@ -205,6 +262,18 @@ test("tool_call blocks bulk commands in an evicted iCloud directory", async () =
   assert.match(result.reason, /only in iCloud/);
 });
 
+test("tool_call blocks a bulk command that cds into an evicted iCloud tree", async () => {
+  // Regression test for the incident: the session cwd was NOT in iCloud, but the
+  // command itself switched into the evicted repository.
+  const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless) });
+
+  const input = { command: "cd ~/Documents/sync-repo && git fsck --no-progress" };
+  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: PLAIN_DIR });
+  assert.equal(result?.block, true);
+  assert.match(result.reason, /only in iCloud/);
+  assert.match(result.reason, /Documents\/sync-repo/);
+});
+
 test("tool_call skips the scan entirely outside iCloud roots", async () => {
   const calls = [];
   const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless, { capture: calls }) });
@@ -214,6 +283,7 @@ test("tool_call skips the scan entirely outside iCloud roots", async () => {
   assert.equal(result, undefined);
   assert.equal(calls.length, 0, "no scan must run outside iCloud roots");
   assert.equal(input.timeout, DEFAULT_BASH_TIMEOUT_SECONDS);
+  assert.equal(isICloudSyncedPath(PLAIN_DIR, { home: FAKE_HOME }), false);
 });
 
 test("tool_call fails closed when the iCloud preflight cannot finish", async () => {
