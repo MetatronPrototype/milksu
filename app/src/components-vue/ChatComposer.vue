@@ -140,6 +140,10 @@ const props = defineProps<{
   queuedGuidance?: string[]
   /** True while an uninterruptible tool (running bash) must finish before steer applies. */
   queuedGuidanceAwaitingTool?: boolean
+  /** True when the turn ended before Pi consumed the queued steering messages. */
+  queuedGuidanceStalled?: boolean
+  /** True when a stop request was not confirmed in time and may be retried. */
+  abortStalled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -244,10 +248,14 @@ const selectedMcpDescription = computed(() => {
   return t(`${servers.length} 个已接入${names ? `：${names}` : ''}`, `${servers.length} connected${names ? `: ${names}` : ''}`)
 })
 const queuedGuidanceAwaitingTool = computed(() => Boolean(props.queuedGuidanceAwaitingTool))
+const queuedGuidanceIsStalled = computed(() => Boolean(props.queuedGuidanceStalled))
+const abortStalled = computed(() => Boolean(props.abortStalled))
 const queuedGuidanceStatus = computed(() => (
-  queuedGuidanceAwaitingTool.value
-    ? t('当前工具调用结束后应用', 'Applied after the current tool call finishes')
-    : t('已并入本回合', 'Merged into this turn')
+  queuedGuidanceIsStalled.value
+    ? t('本回合已结束，未送达；可撤回后重发', 'The turn ended before this was delivered. Withdraw it to send again.')
+    : queuedGuidanceAwaitingTool.value
+      ? t('当前工具调用结束后应用', 'Applied after the current tool call finishes')
+      : t('已并入本回合', 'Merged into this turn')
 ))
 const sendSteeringTitle = computed(() => (
   queuedGuidanceAwaitingTool.value
@@ -1293,6 +1301,13 @@ defineExpose({
         </button>
       </div>
 
+      <p
+        v-if="abortStalled"
+        class="mb-1 text-caption text-muted-foreground"
+        role="status"
+      >
+        {{ t('停止请求尚未确认，可再次点击停止。', 'The stop request is not confirmed yet. You can press stop again.') }}
+      </p>
       <section
         v-if="queuedGuidance?.length"
         class="chat-composer__queued-guidance"
@@ -1776,8 +1791,8 @@ defineExpose({
               variant="destructive"
               size="icon"
               :disabled="aborting"
-              :aria-label="aborting ? t('正在停止 Agent', 'Stopping agent') : compacting ? t('停止整理上下文', 'Stop compacting context') : t('停止 Agent', 'Stop agent')"
-              :title="aborting ? t('正在等待 Agent 安全停止', 'Waiting for the agent to stop safely') : compacting ? t('取消当前上下文整理', 'Cancel the current context compaction') : t('停止当前 Agent 回合', 'Stop the current agent turn')"
+              :aria-label="aborting ? t('正在停止 Agent', 'Stopping agent') : abortStalled ? t('重试停止 Agent', 'Retry stopping the agent') : compacting ? t('停止整理上下文', 'Stop compacting context') : t('停止 Agent', 'Stop agent')"
+              :title="aborting ? t('正在等待 Agent 安全停止', 'Waiting for the agent to stop safely') : abortStalled ? t('停止请求未确认，点击重试', 'The stop request is not confirmed. Click to retry.') : compacting ? t('取消当前上下文整理', 'Cancel the current context compaction') : t('停止当前 Agent 回合', 'Stop the current agent turn')"
               @pointerdown.prevent.stop="$emit('abort')"
               @click.prevent.stop="$emit('abort')"
             >

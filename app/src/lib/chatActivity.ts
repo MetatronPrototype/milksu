@@ -451,6 +451,31 @@ function entryCount(entries: ChatActivityEntry[], tools: Set<string>) {
   return entries.filter(entry => tools.has(entry.toolName)).length
 }
 
+// Stable v-memo references for one transcript block. A streaming turn only
+// replaces the message objects it touches, so keying on those references (not
+// on the rebuilt arrays that hold them) lets every untouched block skip its
+// patch while a single message keeps updating.
+export function chatTranscriptBlockMemoRefs(
+  block: ChatTranscriptBlock,
+  sharedKey: string,
+): unknown[] {
+  const refs: unknown[] = [sharedKey]
+  if (block.kind === 'message') {
+    refs.push(block.message)
+    return refs
+  }
+  if (block.kind === 'activity') {
+    refs.push(block.running, ...block.messages)
+    return refs
+  }
+  refs.push(block.blocks.length)
+  for (const inner of block.blocks) {
+    if (inner.kind === 'message') refs.push(inner.message)
+    else refs.push(inner.running, ...inner.messages)
+  }
+  return refs
+}
+
 export function chatActivitySummary(messages: Message[]) {
   const entries = buildChatActivityEntries(messages)
   if (!entries.length) return t('正在思考', 'Thinking')

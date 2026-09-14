@@ -6,6 +6,7 @@ import {
   buildChatActivityEntries,
   visibleChatActivityEntries,
   buildChatTranscript,
+  chatTranscriptBlockMemoRefs,
   chatActivityEntrySummary,
   chatActivitySummary,
   detailsToggleOpen,
@@ -659,5 +660,96 @@ describe('applyCodingToolEvent', () => {
     expect(hidden[0]?.running).toBe(true)
     const kept = visibleChatActivityEntries(entries, new Set([entries[0]!.id]))
     expect(kept).toHaveLength(2)
+  })
+})
+
+function sameMemoRefs(first: unknown[], second: unknown[]) {
+  return first.length === second.length
+    && first.every((value, index) => value === second[index])
+}
+
+describe('chatTranscriptBlockMemoRefs', () => {
+  it('keeps a message block memoized while its message reference is unchanged', () => {
+    const user = message('u1', 'user', 'hi')
+    const before = chatTranscriptBlockMemoRefs(
+      { kind: 'message', id: 'message:u1', message: user },
+      'shared',
+    )
+    const again = chatTranscriptBlockMemoRefs(
+      { kind: 'message', id: 'message:u1', message: user },
+      'shared',
+    )
+    expect(sameMemoRefs(before, again)).toBe(true)
+
+    const streamed = { ...user, content: 'hi there' }
+    const changed = chatTranscriptBlockMemoRefs(
+      { kind: 'message', id: 'message:u1', message: streamed },
+      'shared',
+    )
+    expect(sameMemoRefs(before, changed)).toBe(false)
+
+    const sharedChanged = chatTranscriptBlockMemoRefs(
+      { kind: 'message', id: 'message:u1', message: user },
+      'shared-2',
+    )
+    expect(sameMemoRefs(before, sharedChanged)).toBe(false)
+  })
+
+  it('ignores rebuilt activity arrays but notices a replaced tool message', () => {
+    const read = message('t1', 'tool', 'README.md', { toolName: 'read', toolCallId: 'c1' })
+    const before = chatTranscriptBlockMemoRefs(
+      { kind: 'activity', id: 'activity:t1', messages: [read], running: false },
+      'shared',
+    )
+    // buildChatTranscript rebuilds this array on every delta while the tool
+    // message object itself stays put.
+    const rebuilt = chatTranscriptBlockMemoRefs(
+      { kind: 'activity', id: 'activity:t1', messages: [...[read]], running: false },
+      'shared',
+    )
+    expect(sameMemoRefs(before, rebuilt)).toBe(true)
+
+    const completed = { ...read, status: 'done' as const }
+    const changed = chatTranscriptBlockMemoRefs(
+      { kind: 'activity', id: 'activity:t1', messages: [completed], running: false },
+      'shared',
+    )
+    expect(sameMemoRefs(before, changed)).toBe(false)
+  })
+
+  it('keeps a process block memoized until one of its inner messages changes', () => {
+    const first = message('a1', 'assistant', '先读仓库。')
+    const tool = message('t1', 'tool', '/repo', { toolName: 'read', toolCallId: 'c1' })
+    const fold = (blocks: Parameters<typeof chatTranscriptBlockMemoRefs>[0]) => (
+      chatTranscriptBlockMemoRefs(blocks, 'shared')
+    )
+    const before = fold({
+      kind: 'process',
+      id: 'process:a1',
+      blocks: [
+        { kind: 'message', id: 'message:a1', message: first },
+        { kind: 'activity', id: 'activity:t1', messages: [tool], running: false },
+      ],
+    })
+    const rebuilt = fold({
+      kind: 'process',
+      id: 'process:a1',
+      blocks: [
+        { kind: 'message', id: 'message:a1', message: first },
+        { kind: 'activity', id: 'activity:t1', messages: [...[tool]], running: false },
+      ],
+    })
+    expect(sameMemoRefs(before, rebuilt)).toBe(true)
+
+    const appended = fold({
+      kind: 'process',
+      id: 'process:a1',
+      blocks: [
+        { kind: 'message', id: 'message:a1', message: first },
+        { kind: 'activity', id: 'activity:t1', messages: [tool], running: false },
+        { kind: 'message', id: 'message:a2', message: message('a2', 'assistant', '继续。') },
+      ],
+    })
+    expect(sameMemoRefs(before, appended)).toBe(false)
   })
 })

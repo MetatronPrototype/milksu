@@ -40,6 +40,6 @@ func (a *App) emitCodingToolSetup(snapshot codingtools.SetupSnapshot) {
 	}
 	a.emitDesktopEvent("coding-tool-setup", snapshot)
 	if snapshot.State == "completed" && a.engines != nil {
-		a.engines.Close()
+		a.rotateEngineCredentials("coding tool setup completed")
 	}
 }

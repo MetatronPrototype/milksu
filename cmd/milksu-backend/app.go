@@ -487,7 +487,7 @@ func (a *App) SetAccountModelCredential(baseURL, credential string) error {
 	if !changed && !selectionChanged {
 		return nil
 	}
-	a.engines.Close()
+	a.rotateEngineCredentials("account model credential synced")
 	return nil
 }
 
@@ -657,8 +657,47 @@ func (a *App) ClearAccountModelCredential() error {
 	if !changed {
 		return nil
 	}
-	a.engines.Close()
+	// Revoking a key is not the same change as replacing one. Rotation is lazy so a turn
+	// that is already streaming keeps running on the environment it started with. A revoked
+	// key has nothing left to run with, so every sidecar still holding it is stopped here -
+	// including one that is mid-turn, which would fail on its next model call anyway.
+	a.rotateEngineCredentials("account model credential cleared")
+	if a.engines != nil {
+		if stopped := a.engines.StopStaleSidecars(); stopped > 0 {
+			log.Printf("[credentials] %d sidecar(s) stopped after the credential was cleared", stopped)
+			if a.diagnostics != nil {
+				a.diagnostics.Record(
+					"coding-engine",
+					"info",
+					fmt.Sprintf("%d sidecar(s) stopped after the credential was cleared", stopped),
+				)
+			}
+		}
+	}
 	return nil
+}
+
+// rotateEngineCredentials replaces the live sidecars lazily after a credential or
+// settings change. Credentials reach a sidecar through its environment at spawn time,
+// so the change has to reach the next turn; the processes are marked stale rather than
+// stopped because stopping them also stopped turns and model probes that were already
+// in flight. See engine.Supervisor.InvalidateCredentials.
+func (a *App) rotateEngineCredentials(reason string) {
+	if a.engines == nil {
+		return
+	}
+	marked := a.engines.InvalidateCredentials(reason)
+	if marked == 0 {
+		return
+	}
+	log.Printf("[credentials] %d sidecar(s) restart with the new credentials (%s)", marked, reason)
+	if a.diagnostics != nil {
+		a.diagnostics.Record(
+			"coding-engine",
+			"info",
+			fmt.Sprintf("%d sidecar(s) restart with the new credentials (%s)", marked, reason),
+		)
+	}
 }
 
 func (a *App) GetStartupRecoveryStatus() appdata.LifespanStart {
@@ -800,10 +839,12 @@ func (a *App) SaveSettingsCmd(settings config.AppSettings) error {
 	if err != nil && !hasSessionOnlyCredential(a.settings.Get()) {
 		return err
 	}
-	// Provider credentials are supplied only when a sidecar starts. Restarting
-	// prevents a running child from retaining credentials removed by the user,
-	// and makes a safe session-only fallback available to the next request.
-	a.engines.Close()
+	// Provider credentials are supplied only when a sidecar starts, so a running child
+	// would otherwise keep using credentials the user just replaced. Mark the live
+	// sidecars stale instead of stopping them: the next turn starts on a fresh process,
+	// while a turn (or a model probe) that is already streaming finishes on the process
+	// it started on.
+	a.rotateEngineCredentials("settings saved")
 	// When TokenFlux credentials change, re-read /v1/models so the picker and
 	// dual-source routing use the models that key can actually call.
 	if tokenFluxCatalogInputsChanged(previous, a.settings.Get()) {

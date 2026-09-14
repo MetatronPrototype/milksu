@@ -399,6 +399,7 @@ const codingAgentBind = computed<CodingAgentSurfaceBind>(() => ({
   workspacePath: conversations.workspacePath.value,
   running: conversations.activeRunning.value,
   aborting: conversations.activeAborting.value,
+  abortStalled: conversations.activeAbortStalled.value,
   messageQueue: conversations.activeMessageQueue.value,
   sessionReady: conversations.activeSessionReady.value,
   resumed: conversations.activeResumed.value,
@@ -1476,6 +1477,7 @@ onBeforeUnmount(() => {
         :workspace-path="conversations.workspacePath.value"
         :running="conversations.activeRunning.value"
         :aborting="conversations.activeAborting.value"
+        :abort-stalled="conversations.activeAbortStalled.value"
         :message-queue="conversations.activeMessageQueue.value"
         :session-ready="conversations.activeSessionReady.value"
         :resumed="conversations.activeResumed.value"
