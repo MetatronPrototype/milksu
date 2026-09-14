@@ -1308,4 +1308,32 @@ describe('ChatComposer', () => {
 
     expect(composerEditor(running.host).textContent).toBe('改完这一条再重新排队。')
   })
+
+  // The draft used to live in one shared slot, so typing in chat B showed up in
+  // chat A and clearing B wiped A.
+  it('keeps one draft per conversation, including inline token markup', async () => {
+    const { host, setProp } = mountComposer({ conversationKey: 'conversation-a' })
+    await nextTick()
+    const editor = composerEditor(host)
+    editor.innerHTML =
+      'hello <span data-composer-skill-token="archify">Skill · 架构图</span> world'
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    setProp('conversationKey', 'conversation-b')
+    await nextTick()
+    expect(composerEditor(host).textContent?.trim() ?? '').toBe('')
+
+    setComposerText(composerEditor(host), 'b draft')
+    await nextTick()
+
+    setProp('conversationKey', 'conversation-a')
+    await nextTick()
+    expect(composerEditor(host).innerHTML).toContain('data-composer-skill-token="archify"')
+    expect(composerEditor(host).textContent).toContain('hello')
+
+    setProp('conversationKey', 'conversation-b')
+    await nextTick()
+    expect(composerEditor(host).textContent).toContain('b draft')
+  })
 })

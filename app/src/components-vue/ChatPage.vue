@@ -2318,6 +2318,7 @@ defineExpose({
     </div>
     <ChatComposer
       ref="composer"
+      :conversation-key="conversation?.id ?? ''"
       :running="running"
       :aborting="aborting"
       :compacting="compacting"
