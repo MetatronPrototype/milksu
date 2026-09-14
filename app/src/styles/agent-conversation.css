@@ -1471,3 +1471,33 @@
   background: var(--agent-code-inset);
   color: var(--foreground);
 }
+
+/* Liveness indicator: compositor-only (opacity + transform), no JS re-render. */
+[data-agent-conversation] .agent-think__pulse {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.35;
+  animation: agent-think-pulse 1.6s ease-in-out infinite;
+}
+
+[data-agent-conversation] .agent-think__quiet {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes agent-think-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

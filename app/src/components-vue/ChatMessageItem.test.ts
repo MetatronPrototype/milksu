@@ -528,4 +528,27 @@ describe('ChatMessageItem', () => {
     })
     expect(host.querySelector('.agent-approve')).toBeNull()
   })
+
+  it("shows a compositor-only liveness pulse and a quiet heartbeat", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-13T00:00:00.000Z"))
+    const longThinking = Array.from({ length: 4 }, (_, index) => `第 ${index + 1} 行。`).join("\n")
+    const { host } = await mountMessage({
+      id: "message-liveness",
+      role: "assistant",
+      content: "",
+      timestamp: Date.now(),
+      thinking: longThinking,
+      thinkingStatus: "running",
+      status: "running",
+    })
+
+    expect(host.querySelector(".agent-think__pulse")).not.toBeNull()
+    expect(host.textContent).not.toContain("前有输出")
+
+    await vi.advanceTimersByTimeAsync(4_000)
+    await nextTick()
+    expect(host.textContent).toContain("前有输出")
+    vi.useRealTimers()
+  })
 })
