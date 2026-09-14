@@ -15,6 +15,7 @@ export interface CodingAgentSurfaceBind {
   workspacePath: string
   running: boolean
   aborting: boolean
+  abortStalled?: boolean
   messageQueue?: CodingMessageQueue
   sessionReady: boolean
   resumed: boolean

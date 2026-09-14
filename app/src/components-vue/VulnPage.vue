@@ -56,6 +56,7 @@ const props = withDefaults(defineProps<{
   conversation?: Conversation | null
   running?: boolean
   aborting?: boolean
+  abortStalled?: boolean
   settings?: CodingAgentSurfaceBind['settings']
   workspacePath?: string
   messageQueue?: CodingAgentSurfaceBind['messageQueue']
@@ -88,6 +89,7 @@ const props = withDefaults(defineProps<{
   conversation: null,
   running: false,
   aborting: false,
+  abortStalled: false,
   settings: null,
   workspacePath: '',
   sessionReady: false,
@@ -871,6 +873,7 @@ function addSearchResult(candidate: VulnerabilitySearchCandidate) {
     :conversation="conversation ?? null"
     :running="running"
     :aborting="aborting"
+    :abort-stalled="abortStalled"
     :settings="settings"
     :workspace-path="workspacePath"
     :message-queue="messageQueue"

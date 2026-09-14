@@ -183,6 +183,7 @@ const props = defineProps<{
   workspacePath: string
   running: boolean
   aborting: boolean
+  abortStalled?: boolean
   messageQueue?: CodingMessageQueue
   sessionReady: boolean
   resumed: boolean
@@ -2316,6 +2317,8 @@ defineExpose({
       :compacting="compacting"
       :queued-guidance="messageQueue?.steering ?? []"
       :queued-guidance-awaiting-tool="queuedGuidanceAwaitingTool"
+      :queued-guidance-stalled="messageQueue?.stalled === true"
+      :abort-stalled="abortStalled"
       :ctf-session="ctfSession"
       :goal-mode="goalMode"
       :goal="activeGoal"

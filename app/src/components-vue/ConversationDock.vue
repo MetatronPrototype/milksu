@@ -20,6 +20,7 @@ const props = withDefaults(defineProps<{
   conversations?: Conversation[]
   running?: boolean
   aborting?: boolean
+  abortStalled?: boolean
   settings?: AppSettings | null
   workspacePath?: string
   messageQueue?: CodingMessageQueue
@@ -48,6 +49,7 @@ const props = withDefaults(defineProps<{
   conversations: () => [],
   running: false,
   aborting: false,
+  abortStalled: false,
   settings: null,
   workspacePath: '',
   sessionReady: false,
@@ -331,6 +333,7 @@ function forwardSend(...args: CodingAgentSendArgs) {
           :workspace-path="workspacePath"
           :running="running"
           :aborting="aborting"
+          :abort-stalled="abortStalled"
           :message-queue="messageQueue"
           :session-ready="sessionReady"
           :resumed="resumed"

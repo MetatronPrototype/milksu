@@ -268,6 +268,8 @@ interface RuntimeTurnDispatch {
 export interface CodingMessageQueue {
   steering: string[]
   followUp: string[]
+  /** True when the last turn ended before Pi consumed these steering messages. */
+  stalled?: boolean
 }
 
 export function projectCodingMessageQueue(
@@ -719,6 +721,52 @@ export function useConversations() {
   const runningIds = ref(new Set<string>())
   const abortingIds = ref(new Set<string>())
   const messageQueues = ref(new Map<string, CodingMessageQueue>())
+  const abortStalledIds = ref(new Set<string>())
+  const stalledQueueIds = ref(new Set<string>())
+  const abortWatchdogs = new Map<string, number>()
+  const ABORT_CONFIRM_TIMEOUT_MS = 10_000
+
+  function clearAbortWatchdog(id: string) {
+    const timer = abortWatchdogs.get(id)
+    if (timer === undefined) return
+    window.clearTimeout(timer)
+    abortWatchdogs.delete(id)
+  }
+
+  function clearAbortStalled(id: string) {
+    clearAbortWatchdog(id)
+    if (!abortStalledIds.value.has(id)) return
+    const next = new Set(abortStalledIds.value)
+    next.delete(id)
+    abortStalledIds.value = next
+  }
+
+  // AbortMessage only submits the interrupt to the Sidecar. If the engine never
+  // answers with a terminal event, release the stop button after a bounded wait
+  // so the user can try again instead of staring at a disabled control.
+  function armAbortWatchdog(id: string) {
+    clearAbortWatchdog(id)
+    const timer = window.setTimeout(() => {
+      abortWatchdogs.delete(id)
+      if (!runningIds.value.has(id)) return
+      const stalled = new Set(abortStalledIds.value)
+      stalled.add(id)
+      abortStalledIds.value = stalled
+      if (!abortingIds.value.has(id)) return
+      const aborting = new Set(abortingIds.value)
+      aborting.delete(id)
+      abortingIds.value = aborting
+    }, ABORT_CONFIRM_TIMEOUT_MS)
+    abortWatchdogs.set(id, timer)
+  }
+
+  function markQueueStalled(id: string, stalled: boolean) {
+    if (stalledQueueIds.value.has(id) === stalled) return
+    const next = new Set(stalledQueueIds.value)
+    if (stalled) next.add(id)
+    else next.delete(id)
+    stalledQueueIds.value = next
+  }
   const continuity = ref<CodingContinuityState>(createCodingContinuityState())
   const compactionErrorTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -739,10 +787,17 @@ export function useConversations() {
   const activeAborting = computed(() => (
     activeId.value ? abortingIds.value.has(activeId.value) : false
   ))
-  const activeMessageQueue = computed<CodingMessageQueue>(() => (
-    activeId.value
-      ? messageQueues.value.get(activeId.value) ?? { steering: [], followUp: [] }
-      : { steering: [], followUp: [] }
+  const activeAbortStalled = computed(() => (
+    activeId.value ? abortStalledIds.value.has(activeId.value) : false
+  ))
+  const activeMessageQueue = computed<CodingMessageQueue>(() => {
+    const empty: CodingMessageQueue = { steering: [], followUp: [] }
+    if (!activeId.value) return empty
+    const queue = messageQueues.value.get(activeId.value) ?? empty
+    return stalledQueueIds.value.has(activeId.value) ? { ...queue, stalled: true } : queue
+  })
+  const activeQueuedGuidanceStalled = computed(() => (
+    activeId.value ? stalledQueueIds.value.has(activeId.value) : false
   ))
   const activeResumed = computed(() => (
     activeId.value ? continuity.value.resumed.has(activeId.value) : false
@@ -928,6 +983,7 @@ export function useConversations() {
 
   function finishRun(id: string) {
     clearTurnRunClock(id)
+    clearAbortStalled(id)
     const next = projectCodingRunFinished(
       runningIds.value,
       abortingIds.value,
@@ -1675,12 +1731,16 @@ export function useConversations() {
     if (requested.accepted) {
       runningIds.value = requested.running
       abortingIds.value = requested.aborting
+      clearAbortStalled(id)
     }
     try {
       // AbortMessage only submits the interrupt to the Sidecar. Keep the task
       // visibly running until its terminal engine event proves Pi is idle.
       await invokeCommand('abort_message', { conversationId: id })
+      if (requested.accepted) armAbortWatchdog(id)
     } catch (reason) {
+      clearAbortWatchdog(id)
+      clearAbortStalled(id)
       const nextAborting = new Set(abortingIds.value)
       nextAborting.delete(id)
       abortingIds.value = nextAborting
@@ -2035,7 +2095,17 @@ export function useConversations() {
         for (const id of affected) clearTurnRunClock(id)
         runningIds.value = new Set()
         abortingIds.value = new Set()
-        messageQueues.value = new Map()
+        for (const id of [...abortWatchdogs.keys()]) clearAbortWatchdog(id)
+        abortStalledIds.value = new Set()
+        const keptQueues = new Map<string, CodingMessageQueue>()
+        const stalledQueues = new Set<string>()
+        for (const [id, queue] of messageQueues.value) {
+          if (!queue.steering.length) continue
+          keptQueues.set(id, { steering: queue.steering, followUp: [] })
+          stalledQueues.add(id)
+        }
+        messageQueues.value = keptQueues
+        stalledQueueIds.value = stalledQueues
         for (const id of affected) scheduleSave(id)
         return
       }
@@ -2090,6 +2160,7 @@ export function useConversations() {
           sessionId,
           nextQueue,
         )
+        if (!nextQueue.steering.length) markQueueStalled(sessionId, false)
         if (appliedSteeringCount > 0) {
           let remaining = appliedSteeringCount
           conversations.value = conversations.value.map(conversation => (
@@ -2300,7 +2371,17 @@ export function useConversations() {
           if (cleaned !== messages) {
             messages.splice(0, messages.length, ...cleaned)
           }
-          setMessageQueue(sessionId, { steering: [], followUp: [] })
+          const settledQueue = messageQueues.value.get(sessionId)
+          if (settledQueue?.steering.length) {
+            // The turn ended before Pi consumed these steering messages. Keep
+            // them visible so the reader can withdraw and resend instead of
+            // losing them silently.
+            setMessageQueue(sessionId, { steering: settledQueue.steering, followUp: [] })
+            markQueueStalled(sessionId, true)
+          } else {
+            setMessageQueue(sessionId, { steering: [], followUp: [] })
+            markQueueStalled(sessionId, false)
+          }
           finishRun(sessionId)
         } else if (type === 'tool.started' || type === 'tool.completed') {
           const toolText = type === 'tool.completed'
@@ -2319,7 +2400,14 @@ export function useConversations() {
           )
           messages.splice(0, messages.length, ...nextMessages)
         } else if (type === 'engine.error') {
-          setMessageQueue(sessionId, { steering: [], followUp: [] })
+          const erroredQueue = messageQueues.value.get(sessionId)
+          if (erroredQueue?.steering.length) {
+            setMessageQueue(sessionId, { steering: erroredQueue.steering, followUp: [] })
+            markQueueStalled(sessionId, true)
+          } else {
+            setMessageQueue(sessionId, { steering: [], followUp: [] })
+            markQueueStalled(sessionId, false)
+          }
           finishRun(sessionId)
           const settledTools = settleRunningToolMessages(messages)
           const cleaned = withoutBlankAssistantMessages(settledTools)
@@ -2414,7 +2502,9 @@ export function useConversations() {
     activeRunning,
     runningConversationIds,
     activeAborting,
+    activeAbortStalled,
     activeMessageQueue,
+    activeQueuedGuidanceStalled,
     selectedKernel,
     selectedModelMode,
     selectedModelProvider,
