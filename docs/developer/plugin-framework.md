@@ -2,11 +2,11 @@
 
 > 文档状态：Stable v1 implementation contract
 >
-> 事实审计：2026-08-23
+> 事实审计：2026-09-14
 >
-> 范围：本地签名包、作者工具、Lua/预编译 TypeScript、设置 iframe、皮肤表面、只读 Agent 工具和外部 MCP。三端发行 smoke 必须由同一提交的发行门禁完成；未取得回执前不得写成已发行。
+> 范围：本地签名包、作者工具、Lua/预编译 TypeScript、设置 iframe、皮肤表面、只读 Agent 工具和外部 MCP。
 
-`milksu.plugin/v1` 描述稳定的技术契约，但当前完整框架仍是未进入正式发行版的实验性能力。试用者请先阅读[插件框架实验性使用说明](./plugin-user-guide.md)；发行与治理状态仍以当前目标、文档状态、代码和真实回执为准。
+`milksu.plugin/v1` 已在产品里：设置 → 插件可安装、信任、启用、升级、回滚和卸载。仍按实验性能力收集三端真实界面反馈。使用说明见[插件框架试用指南](./plugin-user-guide.md)。
 
 ## 稳定边界
 

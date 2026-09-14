@@ -2,11 +2,9 @@
 
 > 文档状态：Current
 >
-> 审阅日期：2026-09-02
+> 审阅日期：2026-09-14
 >
-> 范围：当前 `main`。正式发行基线是 `v26.904.1 / 6e9371d`。文档收口提交不移动该 tag。
-> 实现进度、已发行与未发版分界以
-> [当前开发目标](/developer/current-objectives)、当前代码、测试和真实验收为准。
+> 范围：当前 `main`。发行回执见 [当前开发目标](/developer/current-objectives)。
 
 这组文档用于回答当前实现与长期设计。尚未实现不是禁止实现：
 
@@ -57,7 +55,7 @@ Checkpoint 由 Git 历史与自动化重新生成，不再长期占用文档入�
 - 普通 Coding 会话已经在代码层接入固定版本 Archify、PI LSP、Goal、后台任务、MCP
   Adapter 和 Playwright MCP；Coding 核心的 Plan → Go、多轮修改、真实打包命令执行与
   独立复验已经 **Verified**。隔离 Coding Browser 已在 `26.817.x` 打包任务验收；开发版本线
-  上浏览器自动就绪且多标签独立，并增加 `milksu_workspace` 与 85% Pi 压缩。Artifact 预览、
+  上浏览器自动就绪且多标签独立，并增加 `milksu_workspace` 与约 80% 空闲时的 Pi 压缩。Artifact 预览、
   ImageGen、Computer Use、PR 和 worktree 也已有不同程度的工程主链或真实打包验收。
   Session Index 底层仍在，单会话相关历史/图谱前端已删除。真实外部 Provider/更广系统权限
   矩阵和最终长期自举 Gate 仍未完成。

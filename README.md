@@ -16,7 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MilkSU-Official/milksu/releases/tag/v26.912.4">下载</a>
+  <a href="https://github.com/MilkSU-Official/milksu/releases/tag/v26.912.4">下载 26.912.4</a>
+  ·
+  <a href="https://github.com/MilkSU-Official/milksu/releases">全部发行</a>
   ·
   <a href="docs/architecture/current-system.md">了解系统</a>
   ·
@@ -25,49 +27,27 @@
 
 ![MilkSU Coding 工作台](docs/media/readme-coding.png)
 
-MilkSU 把 Coding、CTF、CVE 和实验室放进同一个桌面工作台。你可以让 Agent 阅读项目、修改文件、运行测试，也可以从一道 CTF、一个 CVE 或一次实验室作业出发，把题面、材料、研究过程和最终产物留在同一个可回看的任务里。
+MilkSU 把 Coding、CTF、CVE 和实验室放进同一个桌面。Agent 读项目、改文件、跑测试；也可以对着一道题、一个 CVE 或一次实验室作业，把题面、材料、过程和产物留在同一条可回看的任务里。
 
-它不是又一个只有输入框的聊天客户端。MilkSU 让 Agent 的工作对象真正出现在你面前：项目文件、内置浏览器、真实浏览器标签页和外部桌面应用都可以成为当前任务的一部分；你可以随时观察、补充要求、接管或停止。
+它不是只有输入框的聊天客户端。项目文件、内置浏览器、你选定的真实浏览器标签页、外部桌面应用，都可以成为当前任务的一部分。你可以随时看、补一句、接管或停掉。
 
-可下载的最新正式 GitHub Release 是 **26.912.4**。下载页以 [v26.912.4](https://github.com/MilkSU-Official/milksu/releases/tag/v26.912.4) 为准，不要把同版本号的后续提交或空 tag 当成已经发出的包。上一版 [v26.912.3](https://github.com/MilkSU-Official/milksu/releases/tag/v26.912.3)、[v26.912.2](https://github.com/MilkSU-Official/milksu/releases/tag/v26.912.2)、[v26.911.2](https://github.com/MilkSU-Official/milksu/releases/tag/v26.911.2)、[v26.911.1](https://github.com/MilkSU-Official/milksu/releases/tag/v26.911.1)、[v26.905.2](https://github.com/MilkSU-Official/milksu/releases/tag/v26.905.2)、[v26.905.1](https://github.com/MilkSU-Official/milksu/releases/tag/v26.905.1)、[v26.904.1](https://github.com/MilkSU-Official/milksu/releases/tag/v26.904.1) 与 [v26.827.1](https://github.com/MilkSU-Official/milksu/releases/tag/v26.827.1) 仍可下载。
-
-## 你可以用 MilkSU 做什么
+## 能做什么
 
 ### Coding
 
-- 让 Agent 理解现有仓库，完成修改、构建、测试和代码审阅；
-- 使用 Plan / Go，以及只读、请求批准、替我审批、完全访问控制执行范围；
-- 会话可以改名、归档、恢复；回到 Coding 会接着上次的任务，不必每次从空白草稿开始；
-- 查看文件变更、Git 状态、终端任务和可预览产物；
-- 按任务使用隔离浏览器、真实浏览器标签页、Computer Use、MCP、LSP 和已审核 Skill；
-- 在干净 Git 项目中自动隔离修改，不打乱当前工作区。
-
-输入框旁有上下文用量环，悬停能看到系统提示、工具、Skills、MCP、子 Agent 和对话的分类用量，以及本轮缓存命中。接近窗口约 80% 且空闲时会自动整理上下文。模型可以用工作台动作操作标签、产物、环境和产品记录，不必让你去点界面。
+打开仓库，让 Agent 改代码、构建、测试、审阅。会话能改名、归档、恢复；回到 Coding 接着上次，不必每次从空白草稿开始。输入框旁有上下文用量；接近窗口约 80% 且空闲时会自动整理。执行范围用 Plan / Go，以及只读、请求批准、替我审批、完全访问。
 
 ### CTF
 
-- 浏览 NSSCTF、CTFshow 题库，收藏题目并获得每日训练建议；
-- 点题目进入详情，用「打开」开始，而不是在列表上堆操作；
-- 导入自定义题目，为每道题建立独立工作区；
-- 保存材料、Evidence、候选、Judge 回执、检查点和复盘；
-- 解题对话走右下角可拖放小窗（默认 4:3），和工作区、斜杠命令、Skills、项目 MCP、终端、Git 与产物在一起。
-
-成功只由平台 Judge 或你本人确认，不由模型自述决定。
+浏览 NSSCTF、CTFshow，收藏题目，拿每日训练。点进详情再打开，为每道题单独工作区。材料、Evidence、候选、Judge 回执和复盘都留在题目里。解题对话在右下角可拖放小窗，和终端、Git、产物在一起。成功只由平台 Judge 或你本人确认。
 
 ### CVE
 
-- 按编号、产品或关键词搜索公开 CVE，加入个人研究列表；
-- 按严重性、KEV、厂商、年份筛选已添加的条目；「同步公开源」导入的条目也会出现在列表里；
-- 点进档案再复现：Agent 编辑 `report.md`，相关 CVE 记在 `related.md`，对话留在小窗；
-- 厂商/产品按公开资料呈现，不以「复现成功 / 没复现上」当完成面。
+按编号、产品或关键词搜索公开 CVE，加入个人研究列表。点进档案再复现：Agent 编辑 `report.md`，对话留在小窗。不以「复现成功 / 没复现上」当完成面。
 
 ### 实验室
 
-- 独立一级入口，和 CTF / CVE / Coding 同级；
-- 给出本地或远程作业要求，开一次探测；
-- 题目包打开后是靶机卡片，可在本机 Docker 起 Juice Shop / WebGoat / S2-045 / whoami，安卓走专用 MilkSU-Lab；
-- 列表里可以双击标题或用菜单改名；
-- Agent 把过程写进 `report.md`，对话同样走可拖放小窗。
+和 CTF / CVE / Coding 同级。可以给本地或远程地址开一次探测，也可以从题目包起本机 Docker 靶（Juice Shop / WebGoat / S2-045 / whoami）或安卓 MilkSU-Lab。Agent 把过程写进 `report.md`。
 
 <table>
   <tr>
@@ -77,7 +57,7 @@ MilkSU 把 Coding、CTF、CVE 和实验室放进同一个桌面工作台。你�
     </td>
     <td width="50%">
       <img src="docs/media/readme-cve.png" alt="MilkSU CVE 研究列表">
-      <p align="center"><sub>CVE 列表、筛选与点进档案复现</sub></p>
+      <p align="center"><sub>CVE 列表与点进档案复现</sub></p>
     </td>
   </tr>
   <tr>
@@ -92,97 +72,58 @@ MilkSU 把 Coding、CTF、CVE 和实验室放进同一个桌面工作台。你�
   </tr>
 </table>
 
-## Agent 不只看得到，也做得到
+## Agent 怎么动手
 
-MilkSU 会把当前任务可用的能力告诉模型，再由模型按上下文选择合适的工具。用户不需要在每次任务前手工拼装一套工具链，产品也不会靠扫描句子里的关键词来打开浏览器或切换页面。
+当前任务里有哪些能力，产品会告诉模型；模型按上下文选用。不会靠扫描你句子里的关键词去开浏览器或切页。
 
-- **项目能力**：文件、Shell、Git、LSP、测试与产物预览；
-- **网页能力**：会话隔离的内置浏览器，以及你明确选择的真实 Chrome / Edge 标签页；
-- **桌面能力**：Computer Use（macOS / Windows 为窗口 Scope；Linux 见下表）；
-- **安全工具**：设置里准备 IDA Pro / idalib、capa 等本机能力，就绪后可进 Coding 或实验室作业；
-- **工作台动作**：列出或切换内置浏览器标签，打开产物 / 环境 / 变更 / 终端，以及改会话名、归档、更新 CVE、创建实验室或 CTF 记录。设置、凭据、审批档和你自己的 Chrome 不在这个工具里。
+- 文件、Shell、Git、LSP、测试、产物预览
+- 会话隔离的内置浏览器，以及你明确点选的 Chrome / Edge 标签页
+- Computer Use：macOS / Windows 按窗口；Linux GNOME 按整桌面授权
+- 设置里准备 IDA Pro / idalib、capa，就绪后可进 Coding 或实验室作业
 
-## 开始使用
+项目目录、浏览器标签页和桌面窗口都要明确进入当前任务。设置、凭据、审批档和你自己的日常 Chrome 不交给这个工具。
 
-从 [Releases](https://github.com/MilkSU-Official/milksu/releases) 下载当前安装包。Windows 安装器尚未代码签名，可能出现 SmartScreen。macOS 为 Developer ID 签名并公证的 DMG。已登录 Stable 可从侧栏下载本机更新；正式打包上传 OTA 后会发布该平台 current pointer。
+## 安装
 
-1. 按系统安装（见下一节）；
-2. 打开 MilkSU，使用 GitHub 登录；
-3. 由管理员为账户开通模型，或在“设置 → 模型”中添加自己的 Provider / OpenAI-compatible 中转站；
-4. 选择 Coding、CTF、CVE 或实验室，开始第一个任务。
-
-账户未分配模型额度时仍可登录和浏览本地功能，只是暂时不能发起模型任务。
-
-## 系统、桌面与安装
-
-正式包是 macOS ARM64、Windows x64、Linux x64。Linux 只发两份：`.deb`（Ubuntu / Debian）和 `.tar.gz`（Omarchy / Arch / NixOS）。不按发行版×架构再拆包。
+当前安装包是 **[26.912.4](https://github.com/MilkSU-Official/milksu/releases/tag/v26.912.4)**：macOS ARM64 DMG（Developer ID 签名并公证）、Windows x64 EXE、Linux x64 `.deb` 与 `.tar.gz`。Windows 安装器尚未代码签名，可能被 SmartScreen 拦住。已登录后可从侧栏下载本机更新。
 
 | 系统 | 安装包 | Computer Use | Browser Use |
-| --- | --- | :---: | :---: |
-| macOS Apple Silicon | DMG | ✅ | ✅ |
-| Windows x64 | EXE | ✅ | ✅ |
-| Linux x64 | `.deb` / `.tar.gz` | 见下表 | ✅ |
+| --- | --- | --- | --- |
+| macOS Apple Silicon | DMG | 窗口 | 可用 |
+| Windows x64 | EXE | 窗口 | 可用 |
+| Linux x64 GNOME Wayland | `.deb` / `.tar.gz` | 整桌面 Portal | 可用 |
+| Linux Hyprland / Xorg | 同上 | 不可用 | 可用 |
 
-Linux Computer Use 按桌面，不是按发行版。GNOME 是整桌面授权（不是窗口 Scope）。不接 Cua，不用 `xinput` 摘键鼠。
+Linux 只发两份包：Ubuntu / Debian 用 `.deb`，Omarchy / Arch / NixOS 用同一份 `.tar.gz`。Linux 暂无 Secret Service 和本地 OCR。
 
-| Linux 桌面 | Computer Use |
-| --- | :---: |
-| GNOME Wayland | ✅ |
-| Hyprland | ❌ |
-| Xorg | ❌ |
+```bash
+# Ubuntu / Debian
+sudo apt install ./MilkSU-Linux-x64-26.912.4.deb
 
-| Linux 发行版 | 怎么装 |
-| --- | --- |
-| Ubuntu 24.04 / Debian 13 | `.deb`：`sudo apt install ./MilkSU-Linux-x64-<version>.deb` |
-| Omarchy / Arch | `.tar.gz` + 仓库 `packaging/linux/PKGBUILD.in`，填版本与 sha256 后 `makepkg -si` |
-| NixOS | 解压同一 `.tar.gz`，`MILKSU_LINUX_UNPACKED=/path/to/unpacked nix --impure build ./packaging/linux` |
+# Omarchy / Arch：用仓库 packaging/linux/PKGBUILD.in，填版本与 sha256 后
+makepkg -si
 
-Linux 暂无 Secret Service、本地 OCR。合同：[Linux 安装与桌面合同](docs/developer/linux-platform-support.md)。
+# NixOS：解压同一 tar.gz
+MILKSU_LINUX_UNPACKED=/path/to/unpacked nix --impure build ./packaging/linux
+```
 
-## 本地优先
+打开后用 GitHub 登录。管理员为账户开通模型，或在「设置 → 模型」添加自己的 Provider。没有模型额度时仍可登录和看本地内容，只是还不能发起模型任务。
 
-- 用户可见的 Coding、CTF、CVE 和实验室产物保存在各系统用户文档目录下的 `MilkSU/`；
-- 项目目录、浏览器标签页和桌面窗口都需要明确进入当前任务范围；
-- Provider 凭据保存在本机凭据存储中，不进入聊天内容、普通日志或项目文件；
-- CTF 的成功结果以平台 Judge 或你确认的结果为准，不由模型自述决定。
-
-## 当前状态
-
-最近一次带哈希回执的三端正式 GitHub Release 是 **26.912.4**（2026-09-12）：出厂默认官方 DeepSeek Flash；保存或验证成功后自动启用该服务；环境来源和错误不再误标 TokenFlux；自动压缩空闲阈值 80%；DeepSeek Harness 打进必选 peer 并接上产品 MCP / Skills / 停止 / 所选型号 / 懒挂 Playwright / host compact；Windows 同一回合挂隔离浏览器，Computer Use 失败不再拆掉对话。Windows 安装器仍未代码签名；Linux 无 Secret Service 与本地 OCR；Hyprland/Xorg Computer Use 不可用。
-
-MilkSU 面向个人学习、授权研究和本地开发，不是互联网资产扫描器或无人值守的自动红队平台。
+用户可见产物在各系统文档目录下的 `MilkSU/`。凭据留在本机，不进聊天、普通日志或项目文件。MilkSU 面向个人学习、授权研究和本地开发，不是互联网扫描器或无人值守红队。
 
 ## 本地开发
 
-需要 Node.js、npm、Go。桌面构建在 macOS Apple Silicon 上最完整；Windows / Linux 可跑对应平台的开发与打包脚本。
+需要 Node.js、npm、Go。
 
 ```bash
-# 安装依赖
 npm install
 npm --prefix app install
-
-# 启动 Vue 预览
-npm --prefix app run dev
-
-# 启动桌面开发版本
 npm run desktop:start
 ```
 
-提交前至少运行与改动对应的测试：
+提交前跑与改动对应的测试：`go test ./...`、`npm run test:sidecar`、`npm --prefix app run test`。
 
-```bash
-go test ./...
-npm run test:sidecar
-npm --prefix app run test
-npm --prefix app run build
-```
-
-更完整的架构、开发边界和当前事实请从以下文档开始：
-
-- [当前开发目标](docs/developer/current-objectives.md)
-- [文档与事实状态](docs/developer/document-status.md)
-- [当前系统与分层](docs/architecture/current-system.md)
-- [架构索引](docs/architecture/index.md)
+开发入口：[当前开发目标](docs/developer/current-objectives.md)、[当前系统](docs/architecture/current-system.md)。
 
 ## 鸣谢
 
@@ -206,7 +147,7 @@ npm --prefix app run build
   <a href="https://github.com/shiluoshiro"><img src="https://github.com/shiluoshiro.png?size=96" width="72" height="72" alt="shiluoshiro"></a>
 </p>
 
-感谢在内测期间直接向仓库提交代码的同学。没有ta们，MilkSU 无法到今天这样基本可用的地步。
+感谢在内测期间直接向仓库提交代码的同学。没有 ta 们，MilkSU 无法到今天这样基本可用的地步。
 
 | 同学 | 主要贡献 |
 | --- | --- |
@@ -218,7 +159,7 @@ npm --prefix app run build
 | [AsabaLazy（Aeko233）](https://github.com/Aeko233)、[Luo](https://github.com/luo) | CTF 收藏/全部视图改走本地目录（PR #8）；Windows 源码换行测试（PR #9）；应用级本地调试模式（PR #10） |
 | [shiluoshiro](https://github.com/shiluoshiro) | 设置页切换分类时清掉上一分类提示（PR #25） |
 
-完整提交记录以 Git 历史为准。问题和产品建议可以继续提到 [GitHub Issues](https://github.com/MilkSU-Official/milksu/issues)，或发送邮件至 [milksu@proton.me](mailto:milksu@proton.me)。
+问题和产品建议可以提到 [GitHub Issues](https://github.com/MilkSU-Official/milksu/issues)，或发到 [milksu@proton.me](mailto:milksu@proton.me)。
 
 ## 开源组件
 
@@ -228,12 +169,12 @@ MilkSU 的 Agent 循环、记忆分层、视觉和界面行为分别建立在这
 | --- | --- | --- |
 | [Pi](https://github.com/earendil-works/pi) | 通用 Agent 会话、上下文压缩和工具循环。当前固定 `@earendil-works/pi-coding-agent` 0.84.1 | MIT |
 | [Obelisk](https://github.com/tommy0103/obelisk) | 本地会话记忆与学习记录的分层参考。MilkSU 以 AGPL-3.0-only 发布，以便嵌入该组件 | AGPL-3.0 |
-| [ak-ui](https://github.com/YunYouJun/ak-ui) | 少量界面彩蛋（列表筛选、连接状态、顶栏模块字标）。token / 场景 CSS 来自固定 0.2.1；不把 `@yunyoujun/ak-ui` 写进 app 依赖 | MIT |
-| [Beautiful UI](https://www.beautifului.dev/) | 产品表面主导设计语言。MIT copy-paste 原语；不引入其 React 运行时或付费图标。规范只写在 `AGENTS.md` | MIT |
-| [Felinic](https://github.com/memohai/ui) | Vue 组件库与交互行为，以 `packages/ui` 子模块引入 `@felinic/ui` | 上游未附 SPDX |
+| [ak-ui](https://github.com/YunYouJun/ak-ui) | 少量界面彩蛋（列表筛选、连接状态、顶栏模块字标）。不把 `@yunyoujun/ak-ui` 写进 app 依赖 | MIT |
+| [Beautiful UI](https://www.beautifului.dev/) | 产品表面主导设计语言。不引入其 React 运行时或付费图标 | MIT |
+| [Felinic](https://github.com/memohai/ui) | Vue 组件库与交互行为，以 `packages/ui` 引入 `@felinic/ui` | 上游未附 SPDX |
 
 桌面壳还使用 Electron、Vue、xterm.js、Playwright MCP、Archify、Cua 等，详见 NOTICE。
 
 ## 许可证
 
-MilkSU 以 [GNU Affero General Public License v3.0 only](LICENSE) 发布。第三方组件保留各自原许可，见 [NOTICE](NOTICE) 和 `third_party/licenses/`。Inter 与 Noto Sans SC 字体仍为 SIL Open Font License 1.1。
+MilkSU 以 [GNU Affero General Public License v3.0 only](LICENSE) 发布。第三方组件保留各自原许可，见 [NOTICE](NOTICE) 和 `third_party/licenses/`。

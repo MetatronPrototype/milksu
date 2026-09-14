@@ -4,7 +4,7 @@
 >
 > 目标范围：Ubuntu 24.04、Debian 13、Omarchy、当前仍受支持的 NixOS stable
 >
-> 最后审阅：2026-08-26
+> 最后审阅：2026-09-14
 >
 > 本文记录 Linux 安装面与 Computer Use 的产品边界。它不是实施队列，也不把计划写成已验证能力。
 > 当前发行事实仍以 [当前开发目标](current-objectives.md)、[文档状态](document-status.md)、当前代码和真实平台回执为准。
@@ -16,7 +16,7 @@
    - 一份 `.deb`：Ubuntu 24.04 与 Debian 13 共用；
    - 一份 `.tar.gz`：Omarchy / Arch 用仓库里的 PKGBUILD 安装，NixOS 用仓库 flake 包装同一目录。
    PKGBUILD、`.desktop` 和 flake 是安装方法，不是额外的二进制产品。不要为每个发行版、每种 CPU 再打一份。
-3. 正式发行架构仍是 `linux/amd64`。Apple Silicon 上的 ARM 虚拟机只作开发测试：ARM 上跑通后，同一代码打 x64 包。ARM DEB/tarball 可以留在本机或 CI 试验产物里，不进入 GitHub Latest。
+3. 正式发行架构仍是 `linux/amd64`。Apple Silicon 上的 ARM 虚拟机只作开发测试：ARM 上跑通后，同一代码打 x64 包。ARM DEB/tarball 可以留在本机或 CI 试验产物里，不进入 GitHub 可下载安装包。
 4. Ubuntu 与 Debian 共用那份 `.deb`，不能假定 Ubuntu-only 包名。Omarchy / NixOS 不要求用户拆 DEB。
 5. ISSUE [#19](https://github.com/MilkSU-Official/milksu/issues/19) 已关闭：X11 `cua-driver --permission-mode bounded` 与 `xinput detach/disable` 拒绝合入。Linux 产品代码不运行 `xinput detach/disable`，不把 root/uinput 或 `/dev/input` 做成隐式后门，也不接入 Cua Linux 驱动。Xorg 会话 Computer Use 保持 unavailable。若以后做 X11，另开 XTEST 合成事件的 issue，不复活摘设备路径。
 6. GNOME Wayland 的宿主 Computer Use 走 XDG Desktop Portal 最小路径：系统授权框、截屏、按坐标点击、打字；停止或崩溃后物理键鼠仍归用户。这是整桌面级输入，不能写成 macOS/Windows 那种精确窗口 Scope。Hyprland 在上游 RemoteDesktop 可依赖之前保持 unavailable。
@@ -25,7 +25,7 @@
 
 ## 当前事实
 
-正式发行 `v26.904.1` 的 Linux 产物是 Ubuntu/Debian 共用 x64 `.deb` 与 Omarchy/Arch/Nix 共用 x64 `.tar.gz`。自动化验证了包结构、Node/Pi Sidecar、Go Runtime 和 Xvfb Electron 启动。GNOME Wayland Computer Use 走 XDG Desktop Portal，已进包；Hyprland / Xorg unavailable。发布脚本明确记录 `localOcr: false`；Linux 仍无 Secret Service。
+Linux 产物是 Ubuntu/Debian 共用 x64 `.deb` 与 Omarchy/Arch/Nix 共用 x64 `.tar.gz`。自动化验证了包结构、Node/Pi Sidecar、Go Runtime 和 Xvfb Electron 启动。GNOME Wayland Computer Use 走 XDG Desktop Portal；Hyprland / Xorg unavailable。发布脚本明确记录 `localOcr: false`；Linux 仍无 Secret Service。
 
 - Sidecar 只有 `linux/amd64` Node runtime；Linux 没有已审阅的 `@napi-rs/system-ocr` 原生包。
 - Browser Use 查找 Chrome / Chromium / Edge、PATH、snap、Nix 与桌面入口。
@@ -33,9 +33,9 @@
 
 本机 Apple Silicon QEMU 上的 Ubuntu 24.04 ARM64 GNOME Wayland 已看到：应用窗口、hicolor 图标（不再落到齿轮）、隔离浏览器，以及装上 Chromium 后的 Browser Use 可执行文件探测。换入本切片 Go/Sidecar 后，用户点允许桌面共享：会话 `ready`，坐标点击成功，打字写入系统设置搜索框（`milksu-portal`），停止后 Portal session 与 socket 消失、Mutter 可再 CreateSession。锁屏会抑制 RemoteDesktop。Screenshot 接口在该 virtio-gpu 上返回 code 2，画面改从已授权 ScreenCast 流取出。
 
-Debian 13 ARM64 Hyprland 0.55.2（trixie-backports，virtio-gpu）：tarball 应用在 `ozone-platform=wayland` 下启动，Hyprland `hyprctl clients` 可见 class `milksu`。Computer Use 为 unavailable，文案写明 Hyprland 暂不可用、不走 xinput。Hyprland 上 `ready-to-show` 可能不触发，Linux 会在 5 秒后 `show()`。这是试验回执，不是 GitHub Latest。
+Debian 13 ARM64 Hyprland 0.55.2（trixie-backports，virtio-gpu）：tarball 应用在 `ozone-platform=wayland` 下启动，Hyprland `hyprctl clients` 可见 class `milksu`。Computer Use 为 unavailable，文案写明 Hyprland 暂不可用、不走 xinput。Hyprland 上 `ready-to-show` 可能不触发，Linux 会在 5 秒后 `show()`。这是试验回执，不是可下载安装包。
 
-NixOS 26.05 ARM64 GNOME 图形 live（virtio-gpu）：同一 ARM tarball 经 `packaging/linux` flake/`default.nix` 的 FHS 包装后，在 Wayland 上启动并显示出登录页。FHS 需要 `libgbm`（以及 fontconfig / freetype / gdk-pixbuf / wayland），否则 Electron 会在加载 `libgbm.so.1` 时退出。从 SSH 会话拉起时不要带无授权的 `DISPLAY`；图形会话内用 `ozone-platform=wayland`。这是试验回执，不是 GitHub Latest。Computer Use 未在该 live 上单独点授权，GNOME 仍走同一 Portal 路径。
+NixOS 26.05 ARM64 GNOME 图形 live（virtio-gpu）：同一 ARM tarball 经 `packaging/linux` flake/`default.nix` 的 FHS 包装后，在 Wayland 上启动并显示出登录页。FHS 需要 `libgbm`（以及 fontconfig / freetype / gdk-pixbuf / wayland），否则 Electron 会在加载 `libgbm.so.1` 时退出。从 SSH 会话拉起时不要带无授权的 `DISPLAY`；图形会话内用 `ozone-platform=wayland`。这是试验回执，不是可下载安装包。Computer Use 未在该 live 上单独点授权，GNOME 仍走同一 Portal 路径。
 
 因此“发了 DEB 和 tarball”不能写成四个发行版的 Computer Use / OCR / Secret Service 已经等价。
 
@@ -97,7 +97,6 @@ GNOME Portal 只承诺显示器级输入，产品文案必须写明，不得冒�
 - NixOS ARM GNOME live 已有 FHS 启动回执，仍没有正式 GitHub Release 回执；
 - Linux Secret Service 与本地 OCR 仍未实现；
 - Hyprland RemoteDesktop 尚未成为可依赖的正式上游能力，Computer Use 保持 unavailable；
-- Linux ARM64 不是发行架构；
-- Portal 与通用 tarball 尚未进入 GitHub Latest `v26.825.1`。
+- Linux ARM64 不是发行架构。
 
-在这些事实形成前，README、下载页与 Release Notes 继续只把已上传的 x64 包写成可下载产物。
+在这些事实形成前，下载页只把已上传的 x64 包写成可下载产物。

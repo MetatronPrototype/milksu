@@ -327,14 +327,14 @@ deferred to one destructive pre-release consolidation after the product slices a
 
 ## Release Claims
 
-- The last receipted three-platform GitHub Release is `v26.912.4` at `54ff0b6`. Write both that
-  baseline and the current development version line when HEAD is later. Keep `v26.912.3`, `v26.912.2`, `v26.911.2`, `v26.911.1`, `v26.905.2`, `v26.905.1`, `v26.904.1` and
-  `v26.827.1` as previous downloadable releases, not Latest. `v26.912.1` was never a receipted Latest.
-- After every GitHub Release, immediately update and push `docs/developer/current-objectives.md`,
-  `docs/developer/document-status.md`, `docs/architecture/current-system.md`, `README.md` and this
-  section. Do not leave the previous receipt as "latest".
-- A version bump, empty tag, local dirty package or later `main` commits on the same version number
-  are still not a new ship. `26.912.4` is a receipted GitHub Release; commits after `54ff0b6` are not.
+- The downloadable latest version is stated only in `README.md`. Do not write
+  "current latest is VERSION_OR_COMMIT" in this file, `current-objectives.md`,
+  `current-system.md`, `document-status.md`, or any other doc. Historical changelog
+  entries may name the tag they describe.
+- After a GitHub Release, update README's badge, download link and 当前状态. Other
+  Current docs record what that tag shipped and how the code works now.
+- A version bump, empty tag, dirty local package or later `main` is not a new ship
+  until README is updated from a receipted GitHub Release.
 - GitHub writes stay on the authorized MilkSU remote (`MilkSU-Official/milksu`) and still require
   the product's meaningful publish confirmation.
 

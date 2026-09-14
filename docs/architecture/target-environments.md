@@ -35,7 +35,7 @@
 
 | 优先级 | 做什么 | 不做的理由 / 做法 |
 | --- | --- | --- |
-| **P0** | 本地 **Web Hub** + **Docker Linux**（Juice Shop、WebGoat、白名单 Vulhub） | `internal/vuln` 已有 compose 白名单 `up/ps/down`，缺产品入口 |
+| **P0** | 本地 **Web Hub** + **Docker Linux**（Juice Shop、WebGoat、白名单 Vulhub） | 实验室 / CVE 档案已能打开靶机卡片并起本机 Docker；CTF 本地房仍未接 |
 | **P1** | 本机官方 **Android AVD**（Apple Silicon 用 ARM 系统镜像） | 不要把模拟器再塞进 Docker：Mac 上嵌套 KVM 基本不可用 |
 | 后做 | 真机适配（adb / usbmux） | 虚拟机盖不住 Play Integrity、TEE、基带、iOS 时再接 |
 | 后做 | 苹果 | 见文末可行性。不承诺 iOS 虚拟机 |
