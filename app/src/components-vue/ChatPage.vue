@@ -1908,9 +1908,107 @@ function verifyDeliveredTool() {
   })
 }
 
+// First paint mounts only the newest blocks, then the rest stream in on idle frames.
+// Mounting 3k messages in one task is what froze the renderer; slicing keeps every
+// task small while off-screen turns stay invisible thanks to content-visibility.
+const TRANSCRIPT_INITIAL_BLOCKS = 60
+const TRANSCRIPT_REFILL_CHUNK = 150
+const TRANSCRIPT_TOP_REFILL_CHUNK = 300
+const mountedTranscriptBlocks = ref(0)
+const visibleTranscript = computed(() => {
+  const blocks = chatTranscript.value
+  const mounted = mountedTranscriptBlocks.value
+  if (blocks.length <= mounted) return blocks
+  return blocks.slice(blocks.length - mounted)
+})
+const hiddenTranscriptBlocks = computed(() => (
+  Math.max(0, chatTranscript.value.length - visibleTranscript.value.length)
+))
+
+let transcriptRefillTimer = 0
+let transcriptInteractionUntil = 0
+
+/** Back off while the reader is scrolling or typing, so refills never fight input. */
+function noteTranscriptInteraction() {
+  transcriptInteractionUntil = Date.now() + 250
+}
+
+/** Inserting above the viewport must not move what the reader is looking at. */
+function restoreTranscriptScroll(beforeHeight: number, beforeTop: number) {
+  const element = scrollArea.value
+  if (!element) return
+  if (chatAutoScrollPinned.value) {
+    element.scrollTop = element.scrollHeight
+  } else {
+    element.scrollTop = beforeTop + Math.max(0, element.scrollHeight - beforeHeight)
+  }
+  lastChatScrollTop.value = element.scrollTop
+}
+
+function mountEarlierTranscriptBlocks(count: number) {
+  const element = scrollArea.value
+  const beforeHeight = element?.scrollHeight ?? 0
+  const beforeTop = element?.scrollTop ?? 0
+  mountedTranscriptBlocks.value = Math.min(
+    chatTranscript.value.length,
+    mountedTranscriptBlocks.value + count,
+  )
+  void nextTick(() => restoreTranscriptScroll(beforeHeight, beforeTop))
+}
+
+function scheduleTranscriptRefill(delay = 64) {
+  if (transcriptRefillTimer) return
+  if (mountedTranscriptBlocks.value >= chatTranscript.value.length) return
+  transcriptRefillTimer = window.setTimeout(() => {
+    transcriptRefillTimer = 0
+    if (mountedTranscriptBlocks.value >= chatTranscript.value.length) return
+    if (Date.now() < transcriptInteractionUntil) {
+      scheduleTranscriptRefill(160)
+      return
+    }
+    mountEarlierTranscriptBlocks(TRANSCRIPT_REFILL_CHUNK)
+    scheduleTranscriptRefill(64)
+  }, delay)
+}
+
+/**
+ * Adding blocks at the tail must not unload what is already mounted, so grow the
+ * mounted window with the list and let the idle refill catch up with the rest.
+ */
+watch(
+  () => [props.conversation?.id ?? '', chatTranscript.value.length] as const,
+  ([conversationId, length], previous) => {
+    if (!previous || previous[0] !== conversationId) {
+      mountedTranscriptBlocks.value = Math.min(length, TRANSCRIPT_INITIAL_BLOCKS)
+    } else {
+      const delta = Math.max(0, length - previous[1])
+      mountedTranscriptBlocks.value = Math.min(length, mountedTranscriptBlocks.value + delta)
+    }
+    scheduleTranscriptRefill()
+  },
+  { immediate: true },
+)
+
+/** Mount any block that is still hidden so a search jump can scroll to it. */
+async function revealTranscriptMessage(messageId: string) {
+  const blocks = chatTranscript.value
+  const index = blocks.findIndex(block => block.kind === 'message' && block.message.id === messageId)
+  if (index < 0) return false
+  const needed = blocks.length - index
+  if (needed > mountedTranscriptBlocks.value) {
+    mountedTranscriptBlocks.value = needed
+    await nextTick()
+  }
+  return true
+}
+
 function handleChatScroll() {
   const element = scrollArea.value
   if (!element) return
+  noteTranscriptInteraction()
+  if (element.scrollTop <= 8 && hiddenTranscriptBlocks.value > 0) {
+    mountEarlierTranscriptBlocks(TRANSCRIPT_TOP_REFILL_CHUNK)
+  }
   chatAutoScrollPinned.value = nextChatAutoScrollPinned(
     lastChatScrollTop.value,
     element.scrollTop,
@@ -2146,6 +2244,7 @@ function focusComposer() {
 
 defineExpose({
   focusComposer,
+  revealTranscriptMessage,
 })
 </script>
 
@@ -2216,7 +2315,7 @@ defineExpose({
       </div>
 
       <div v-else class="agent-thread min-w-0" :class="dockSurface ? 'agent-thread--dock' : ''">
-        <template v-for="item in chatTranscript" :key="item.id">
+        <template v-for="item in visibleTranscript" :key="item.id">
           <ChatProcessFold
             v-if="item.kind === 'process'"
             v-memo="transcriptBlockMemo(item)"
