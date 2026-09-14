@@ -793,6 +793,18 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
         >
           <component :is="ThemeToggleIcon" class="size-4" />
         </button>
+        <button
+          type="button"
+          class="agent-sidebar__theme app-no-drag"
+          :class="{ 'is-current': activeSection === 'settings' }"
+          data-testid="sidebar-open-settings"
+          :aria-label="t('设置', 'Settings')"
+          :title="t('设置', 'Settings')"
+          :aria-current="activeSection === 'settings' ? 'page' : undefined"
+          @click="$emit('settings')"
+        >
+          <Settings class="size-4" />
+        </button>
       </div>
     </div>
 
@@ -1005,6 +1017,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
   display: flex;
   min-height: 2rem;
   align-items: center;
+  gap: 0.25rem;
   margin: 0.75rem 0.5rem 0.25rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--border);
@@ -1037,7 +1050,8 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
   cursor: pointer;
 }
 
-.agent-sidebar__theme:hover {
+.agent-sidebar__theme:hover,
+.agent-sidebar__theme.is-current {
   background: var(--hover-2);
 }
 
