@@ -223,7 +223,37 @@ const sidecarResourceDirectory = existsSync(join(bridgeDirectory, "skills"))
   ? bridgeDirectory
   : resolve(bridgeDirectory, "..", "..");
 const approvalRequiredCodingTools = new Set(["bash", "edit", "write"]);
+// Streaming text is coalesced into ~60ms batches: one desktop event per batch instead
+// of one per token. Any other event flushes the pending text first, so ordering holds.
+const TEXT_DELTA_FLUSH_MS = 60;
+const pendingTextDeltas = new Map();
+let textDeltaTimer = null;
+
+function flushTextDeltas() {
+  if (textDeltaTimer !== null) {
+    clearTimeout(textDeltaTimer);
+    textDeltaTimer = null;
+  }
+  if (!pendingTextDeltas.size) return;
+  const batches = [...pendingTextDeltas.entries()];
+  pendingTextDeltas.clear();
+  for (const [id, delta] of batches) {
+    emit(id, "text_delta", { delta });
+  }
+}
+
+function queueTextDelta(conversationId, delta) {
+  if (!delta) return;
+  pendingTextDeltas.set(
+    conversationId,
+    `${pendingTextDeltas.get(conversationId) ?? ""}${delta}`,
+  );
+  if (textDeltaTimer !== null) return;
+  textDeltaTimer = setTimeout(flushTextDeltas, TEXT_DELTA_FLUSH_MS);
+}
+
 function emit(conversationId, type, data = {}) {
+  if (type !== "text_delta") flushTextDeltas();
   process.stdout.write(`${JSON.stringify({ type, id: conversationId ?? null, ...data })}\n`);
 }
 
@@ -1139,7 +1169,7 @@ function subscribeSession(
         });
       } else if (update.type === "text_delta") {
         assistantTextStreamed = true;
-        emit(conversationId, "text_delta", { delta: update.delta });
+        queueTextDelta(conversationId, String(update.delta ?? ""));
       }
       return;
     }
