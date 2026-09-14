@@ -111,6 +111,52 @@ func TestGitActionsCommitAndPushWithoutForce(t *testing.T) {
 	}
 }
 
+// A subject plus a real explanatory body runs well past the 500 characters the
+// old rule allowed, and Git itself has no such limit. The body must reach the
+// commit intact, including a line that starts with #.
+func TestGitActionsCommitKeepsALongMultiParagraphMessage(t *testing.T) {
+	requireGit(t)
+	workspace := initializedGitFixture(t)
+	if err := os.WriteFile(
+		filepath.Join(workspace, "hello.txt"),
+		[]byte("body\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := ApplyGitAction(ctx, workspace, GitActionStageAll, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	paragraph := strings.Repeat("Explain the change in detail. ", 24)
+	message := "fix(scope): subject line\n\n" + paragraph + "\n\n#123 keeps its leading hash.\n"
+	if len(message) <= 500 {
+		t.Fatalf("fixture message is not long enough to exercise the old limit: %d", len(message))
+	}
+	if _, err := ApplyGitAction(ctx, workspace, GitActionCommit, "", message); err != nil {
+		t.Fatalf("long commit message was refused: %v", err)
+	}
+
+	recorded := runGitFixtureOutput(t, workspace, "log", "-1", "--format=%B")
+	if !strings.Contains(recorded, "fix(scope): subject line") ||
+		!strings.Contains(recorded, strings.TrimSpace(paragraph)) ||
+		!strings.Contains(recorded, "#123 keeps its leading hash.") {
+		t.Fatalf("commit did not keep the message body: %q", recorded)
+	}
+
+	oversized := strings.Repeat("x", maxCommitMessageBytes+1)
+	if _, err := ApplyGitAction(
+		ctx,
+		workspace,
+		GitActionCommit,
+		"",
+		oversized,
+	); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("expected the memory rail to reject an oversized message, got %v", err)
+	}
+}
+
 func TestGitActionsRefuseUnsafeDiscardAndInvalidInputs(t *testing.T) {
 	requireGit(t)
 	workspace := initializedGitFixture(t)
@@ -145,6 +191,42 @@ func TestGitActionsRefuseUnsafeDiscardAndInvalidInputs(t *testing.T) {
 		"",
 	); err == nil || !strings.Contains(err.Error(), "message") {
 		t.Fatalf("expected empty commit message refusal, got %v", err)
+	}
+}
+
+// A file can carry a staged change and a further unstaged change at once.
+// Discarding restores the working tree from the index, so the staged half must
+// survive. The old refusal told the user to unstage first, which would have
+// destroyed exactly that staged work.
+func TestGitActionsDiscardKeepsTheStagedHalfOfAPartlyStagedFile(t *testing.T) {
+	requireGit(t)
+	workspace := initializedGitFixture(t)
+	tracked := filepath.Join(workspace, "tracked.txt")
+	ctx := context.Background()
+
+	if err := os.WriteFile(tracked, []byte("staged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyGitAction(ctx, workspace, GitActionStage, "tracked.txt", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tracked, []byte("staged\nunstaged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	discarded, err := ApplyGitAction(ctx, workspace, GitActionDiscardWork, "tracked.txt", "")
+	if err != nil {
+		t.Fatalf("partly staged discard was refused: %v", err)
+	}
+	content, err := os.ReadFile(tracked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "staged\n" {
+		t.Fatalf("discard did not restore the index content: %q", content)
+	}
+	if discarded.Snapshot.Git.Staged != 1 {
+		t.Fatalf("discard dropped the staged change: %#v", discarded.Snapshot.Git)
 	}
 }
 

@@ -156,12 +156,62 @@ export function isReadOnlySubagent(agent) {
   return readOnlyAgents.has(String(agent ?? "").trim());
 }
 
+// writerWorktreesRequired counts the writer worktrees this delegation needs,
+// without rejecting anything. The bridge asks before validating so isolation
+// can be prepared first; a malformed input still fails later in
+// validateSubagentInput with its own message.
+export function writerWorktreesRequired(input) {
+  try {
+    const effectful = taskEntries(input).values.filter(entry => (
+      worktreeAgents.has(String(entry?.agent ?? "").trim())
+    ));
+    return Math.min(effectful.length, maxWriterWorktrees);
+  } catch {
+    return 0;
+  }
+}
+
+// assignWriterWorktrees binds each effectful role to a registered writer
+// worktree. Pi documents tool_call input as mutable, so MilkSU patches the
+// delegation through that primitive: the model chooses the role, the product
+// chooses which prepared writer it runs in. Without this the model would have
+// to name an absolute path it was never told.
+export function assignWriterWorktrees(input, collaboration) {
+  const available = (collaboration?.worktrees ?? []).map(worktree => worktree.path);
+  if (!available.length) return input;
+  let entries;
+  try {
+    entries = taskEntries(input).values;
+  } catch {
+    return input;
+  }
+  const claimed = new Set();
+  const unassigned = [];
+  for (const entry of entries) {
+    if (!worktreeAgents.has(String(entry?.agent ?? "").trim())) continue;
+    const requested = String(entry?.cwd ?? input?.cwd ?? "").trim();
+    if (available.includes(requested)) {
+      claimed.add(requested);
+      continue;
+    }
+    unassigned.push(entry);
+  }
+  const free = available.filter(path => !claimed.has(path));
+  for (const entry of unassigned) {
+    const path = free.shift();
+    if (!path) break;
+    entry.cwd = path;
+  }
+  return input;
+}
+
+// The subagent tool's own schema already names the roles and describes when to
+// delegate. This adds only the host facts Pi cannot know: MilkSU's per-call cap
+// and who owns an effectful role's working directory.
 export function codingSubagentGuidance() {
   return [
-    "Read-only roles: scout, planner, reviewer, security-auditor. Those work without a writer worktree.",
-    "MilkSU allows at most four subagent tasks per approved call. Effectful roles still need prepared writer worktrees.",
-    "Do not treat the words subagent, sub-agent, or subapi as IDA Pro, idalib, or a security MCP.",
-    "IDA is only for a local binary the user named.",
+    "MilkSU runs at most four subagent tasks per approved call.",
+    "Delegating an effectful role prepares an isolated writer worktree from the current commit and assigns its working directory; do not choose that path yourself, and do not expect uncommitted main-workspace changes to be present there.",
   ].join(" ");
 }
 

@@ -22,6 +22,7 @@ type codingWorkspaceRequest struct {
 	Title      string   `json:"title"`
 	Archived   bool     `json:"archived"`
 	Limit      int      `json:"limit"`
+	Writers    int      `json:"writers"`
 	Scope      string   `json:"scope"`
 	Request    string   `json:"request"`
 	Statement  string   `json:"statement"`
@@ -53,6 +54,20 @@ func (a *App) handleCodingWorkspaceAction(conversationID, action, input string) 
 		action = request.Action
 	}
 	switch strings.TrimSpace(action) {
+	case "prepare_coding_worktree":
+		workspacePath, err := a.resolveConversationWorkspace(conversationID, "")
+		if err != nil {
+			return "", err
+		}
+		descriptor, err := a.prepareAgentManagedCodingCollaboration(
+			conversationID,
+			workspacePath,
+			request.Writers,
+		)
+		if err != nil {
+			return "", err
+		}
+		return encodeWorkspaceResult(descriptor)
 	case "computer_use_driver_status":
 		result, err := a.PrepareCodingComputerUseDriver(false)
 		if err != nil && !result.Ready {
@@ -187,7 +202,8 @@ func (a *App) handleCodingWorkspaceAction(conversationID, action, input string) 
 		if panel == "" {
 			panel = "browser"
 		}
-		if panel != "browser" && panel != "artifacts" && panel != "changes" && panel != "environment" {
+		if panel != "browser" && panel != "artifacts" && panel != "changes" &&
+			panel != "environment" && panel != "computer-use" {
 			return "", fmt.Errorf("unknown Coding panel")
 		}
 		changePath := ""

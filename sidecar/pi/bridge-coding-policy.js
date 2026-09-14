@@ -37,9 +37,12 @@ export const codingWorkspaceAutoToolNames = [
   ...codingGoalToolNames,
 ];
 
-// A Coding session must construct the full reviewed tool catalog up front.
-// Pi's setActiveTools() can narrow or restore tools that already exist, but it
-// cannot add definitions that were omitted when createAgentSession() ran.
+// This is the reviewed tool catalog a Coding session may ever call. Pi itself
+// accepts registerTool() after startup, but MilkSU passes this list as
+// createAgentSession({ tools }), which becomes Pi's allowlist and filters the
+// registry. That bound is deliberate: it keeps a session's callable surface
+// reviewed up front rather than growable at runtime. setActiveTools() then
+// narrows or restores names from this list; adding one needs a new session.
 export const codingSessionToolNames = [
   ...new Set(codingWorkspaceAutoToolNames),
 ];
@@ -159,7 +162,7 @@ export function normalizeCodingPolicy(
         id: "collaboration",
         label: "多 Agent 协作",
         status: "unavailable",
-        detail: "Agent 会在干净 Git 任务首次执行时自动准备隔离环境；委托跟随当前 Coding 权限档位。",
+        detail: "模型委托写入角色时才从当前提交准备隔离工作树，不要求主工作区干净且未提交改动不进入；委托跟随当前 Coding 权限档位。",
       },
     ],
   };
