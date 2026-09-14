@@ -207,6 +207,8 @@ function normalizeGoal(value: unknown): CodingGoalState | undefined {
 
 interface AgentEvent {
   sessionId?: string
+  /** Engine instance that produced the event; absent on session-less engine stops. */
+  engine?: string
   type: string
   text?: string
   toolName?: string
@@ -2017,6 +2019,7 @@ export function useConversations() {
     disposeEvents = await listenEvent<AgentEvent>('engine-event', event => {
       const {
         sessionId,
+        engine: engineType,
         type,
         text = '',
         toolName,
@@ -2048,9 +2051,16 @@ export function useConversations() {
         contextComposition,
       } = event.payload
       if (!sessionId && (type === 'engine.stopped' || type === 'engine.protocol_error')) {
-        activeTurnPolicies.clear()
-        const affected = [...runningIds.value]
-        for (const compactingId of continuity.value.compacting) {
+        // A session-less engine stop only proves that one engine instance went
+        // away. Scope the cleanup to the conversations that instance served so a
+        // concurrent turn on another engine keeps its running state.
+        const affected = [...runningIds.value].filter(id => (
+          (conversations.value.find(item => item.id === id)?.kernel ?? 'pi') === (engineType ?? 'pi')
+        ))
+        const affectedSet = new Set(affected)
+        for (const id of affectedSet) activeTurnPolicies.delete(id)
+        for (const compactingId of [...continuity.value.compacting]) {
+          if (!affectedSet.has(compactingId)) continue
           continuity.value = applyCodingContinuityEvent(
             continuity.value,
             compactingId,
@@ -2092,15 +2102,29 @@ export function useConversations() {
               }
             : conversation
         ))
-        for (const id of affected) clearTurnRunClock(id)
-        runningIds.value = new Set()
-        abortingIds.value = new Set()
-        for (const id of [...abortWatchdogs.keys()]) clearAbortWatchdog(id)
-        abortStalledIds.value = new Set()
-        const keptQueues = new Map<string, CodingMessageQueue>()
-        const stalledQueues = new Set<string>()
-        for (const [id, queue] of messageQueues.value) {
-          if (!queue.steering.length) continue
+        const nextRunning = new Set(runningIds.value)
+        const nextAborting = new Set(abortingIds.value)
+        for (const id of affectedSet) {
+          clearTurnRunClock(id)
+          clearAbortStalled(id)
+          nextRunning.delete(id)
+          nextAborting.delete(id)
+        }
+        runningIds.value = nextRunning
+        abortingIds.value = nextAborting
+        // Only the conversations the stopped engine served are affected. A queue that
+        // belongs to another engine keeps its steering and its follow-up untouched: a Pi
+        // sidecar going away must not turn a DSH turn's queued guidance into "the turn
+        // ended, nothing was delivered".
+        const keptQueues = new Map<string, CodingMessageQueue>(messageQueues.value)
+        const stalledQueues = new Set<string>(stalledQueueIds.value)
+        for (const id of affectedSet) {
+          const queue = keptQueues.get(id)
+          if (!queue || !queue.steering.length) {
+            keptQueues.delete(id)
+            stalledQueues.delete(id)
+            continue
+          }
           keptQueues.set(id, { steering: queue.steering, followUp: [] })
           stalledQueues.add(id)
         }

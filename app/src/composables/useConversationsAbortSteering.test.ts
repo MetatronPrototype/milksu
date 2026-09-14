@@ -131,3 +131,47 @@ describe('useConversations steering delivery', () => {
     expect(conversations.activeMessageQueue.value.stalled).toBeFalsy()
   })
 })
+
+describe('useConversations engine stop scoping', () => {
+  beforeEach(() => {
+    handlers.clear()
+    invokeCommand.mockClear()
+  })
+
+  // A session-less engine.stopped used to clear every running conversation.
+  // A turn on another engine instance must keep its running state.
+  it('keeps a concurrent turn on another engine running', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    stored = [
+      { id: 'conversation-pi', title: 'pi', createdAt: 1, kernel: 'pi', messages: [] },
+      { id: 'conversation-dsh', title: 'dsh', createdAt: 2, kernel: 'dsh', messages: [] },
+    ]
+    await conversations.load()
+    await conversations.listen()
+    emit('conversation-pi', { type: 'assistant.started' })
+    emit('conversation-dsh', { type: 'assistant.started' })
+    expect([...conversations.runningConversationIds.value].sort())
+      .toEqual(['conversation-dsh', 'conversation-pi'])
+
+    emit('', { type: 'engine.stopped', engine: 'pi', error: 'sidecar exited' })
+    expect(conversations.runningConversationIds.value).toEqual(['conversation-dsh'])
+  })
+
+  it('clears every session served by the stopped engine', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    stored = [
+      { id: 'conversation-pi-a', title: 'a', createdAt: 1, kernel: 'pi', messages: [] },
+      { id: 'conversation-pi-b', title: 'b', createdAt: 2, kernel: 'pi', messages: [] },
+    ]
+    await conversations.load()
+    await conversations.listen()
+    emit('conversation-pi-a', { type: 'assistant.started' })
+    emit('conversation-pi-b', { type: 'assistant.started' })
+    expect(conversations.runningConversationIds.value).toHaveLength(2)
+
+    emit('', { type: 'engine.protocol_error', engine: 'pi', error: 'stream closed' })
+    expect(conversations.runningConversationIds.value).toEqual([])
+  })
+})
