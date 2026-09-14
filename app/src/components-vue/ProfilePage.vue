@@ -143,34 +143,65 @@ watch(availableDays, days => {
   }
 }, { immediate: true, deep: true })
 
-async function load(options: { account?: boolean } = {}) {
-  loading.value = true
-  error.value = ''
-  try {
-    const requests: [Promise<CTFSummary[]>, Promise<CodingUsageSnapshot>, Promise<AccountStatus> | undefined] = [
-      invokeCommand<CTFSummary[]>('list_ctf_jobs'),
-      invokeCommand<CodingUsageSnapshot>('get_coding_usage_snapshot'),
-      options.account ? invokeCommand<AccountStatus>('get_account_status') : undefined,
-    ]
-    const [ctf, usage, account] = await Promise.all(requests)
-    ctfJobs.value = ctf
-    codingUsage.value = usage
-    if (account) emit('accountStatusChange', account)
-  } catch {
-    error.value = options.account
-      ? t('暂时无法刷新本机成长记录或账户状态，请稍后再试。', 'Could not refresh local progress or account status. Try again later.')
-      : t('暂时无法读取本机成长记录，请稍后再试。', 'Could not load local progress. Try again later.')
-  } finally {
-    loading.value = false
-  }
+const USAGE_RETRY_DELAYS = [2_000, 5_000, 10_000]
+let usageRetryTimer: number | undefined
+let usageRetryAttempt = 0
+
+function scheduleUsageRetry() {
+  if (usageRetryTimer !== undefined || usageRetryAttempt >= USAGE_RETRY_DELAYS.length) return
+  const delay = USAGE_RETRY_DELAYS[usageRetryAttempt] ?? 0
+  usageRetryAttempt += 1
+  usageRetryTimer = window.setTimeout(() => {
+    usageRetryTimer = undefined
+    void refreshUsage()
+  }, delay)
 }
 
 async function refreshUsage() {
   try {
     codingUsage.value = await invokeCommand<CodingUsageSnapshot>('get_coding_usage_snapshot')
+    error.value = ''
+    usageRetryAttempt = 0
   } catch {
-    error.value = t('模型用量已更新，但当前页面刷新失败，请手动刷新。', 'Model usage updated, but this page failed to refresh. Please refresh it yourself.')
+    // A busy renderer must not leave the usage page permanently empty: keep the
+    // failure visible and retry a bounded number of times instead of going blank.
+    error.value = t('模型用量暂时无法加载，正在自动重试。', 'Model usage could not be loaded yet. Retrying automatically.')
+    scheduleUsageRetry()
   }
+}
+
+async function load(options: { account?: boolean } = {}) {
+  loading.value = true
+  error.value = ''
+  const [ctfResult, usageResult, accountResult] = await Promise.allSettled([
+    invokeCommand<CTFSummary[]>('list_ctf_jobs'),
+    invokeCommand<CodingUsageSnapshot>('get_coding_usage_snapshot'),
+    options.account ? invokeCommand<AccountStatus>('get_account_status') : Promise.resolve(undefined),
+  ])
+  const failures: string[] = []
+  if (ctfResult.status === 'fulfilled') {
+    ctfJobs.value = ctfResult.value
+  } else {
+    failures.push(t('成长记录', 'progress'))
+  }
+  if (usageResult.status === 'fulfilled') {
+    codingUsage.value = usageResult.value
+    usageRetryAttempt = 0
+  } else {
+    failures.push(t('模型用量', 'model usage'))
+  }
+  if (accountResult.status === 'fulfilled' && accountResult.value) {
+    emit('accountStatusChange', accountResult.value)
+  } else if (options.account && accountResult.status === 'rejected') {
+    failures.push(t('账户状态', 'account status'))
+  }
+  if (failures.length) {
+    error.value = options.account
+      ? t(`暂时无法刷新${failures.join('、')}，正在自动重试。`, `Could not refresh ${failures.join(', ')}. Retrying automatically.`)
+      : t(`暂时无法读取${failures.join('、')}，正在自动重试。`, `Could not load ${failures.join(', ')}. Retrying automatically.`)
+    scheduleUsageRetry()
+  }
+  loading.value = false
 }
 
 function selectTab(tab: ProfileTab) {
@@ -323,7 +354,10 @@ onMounted(async () => {
   stopUsageEvents = await listenEvent('model-usage-changed', () => { void refreshUsage() })
 })
 
-onBeforeUnmount(() => stopUsageEvents?.())
+onBeforeUnmount(() => {
+  stopUsageEvents?.()
+  if (usageRetryTimer !== undefined) window.clearTimeout(usageRetryTimer)
+})
 </script>
 
 <template>
