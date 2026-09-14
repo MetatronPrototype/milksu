@@ -139,6 +139,7 @@ import { createEnvExtension } from "./bridge-env.js";
 import { createComputerUseDriverExtension } from "./bridge-computer-use-driver.js";
 import { resolveCodingSkillPaths, reviewedCodingSkillPaths } from "./bridge-skills.js";
 import { createToolResultBoundExtension } from "./bridge-tool-result-bound.js";
+import { createHangGuardExtension } from "./bridge-hang-guard.js";
 import {
   createSubagentYieldExtension,
   formatSubagentToolInput,
@@ -1338,6 +1339,9 @@ function createMilkSUResourceLoader(
   if (mcpConfig) {
     extensionFactories.push(createMcpAdapter({ config: mcpConfig }));
   }
+  // Bash safety: default timeout for every bash call, plus a preflight that refuses
+  // bulk scans inside iCloud-evicted directories (files present only in the cloud).
+  extensionFactories.push(createHangGuardExtension());
   // Last: Pi tool_result middleware. Every tool, including MCP, is clipped to
   // Pi's 50KB/2000-line contract before the result enters model context.
   extensionFactories.push(createToolResultBoundExtension());

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MilkSU-Official/milksu/internal/codingattachment"
@@ -26,6 +27,15 @@ import (
 )
 
 const eventSchemaVersion = 1
+
+const (
+	// maxParkedSidecars bounds how many inactive workspace sidecars stay alive. The
+	// active sidecar is not counted. Reaching the limit stops the least recently
+	// parked sidecar (its in-flight turn is expected to be finished by then).
+	maxParkedSidecars = 3
+	// sidecarIdleTimeout stops a parked sidecar the user has not come back to.
+	sidecarIdleTimeout = 15 * time.Minute
+)
 
 // defaultCompactionTimeout bounds a manual context compaction end to end. It
 // deliberately exceeds the Sidecar-side cancellation bound so the Sidecar
@@ -304,6 +314,11 @@ type childProcess struct {
 	stdin     io.WriteCloser
 	workspace string
 	stderr    *sidecarStderrBuffer
+	// retired marks a process the supervisor stopped on purpose (workspace switch,
+	// shutdown, idle reaping) rather than one that exited on its own. readEvents
+	// still reports engine.stopped for retired processes so the persisted
+	// sidecar.stopped event is written instead of disappearing silently.
+	retired atomic.Bool
 }
 
 type sidecarStderrBuffer struct {
@@ -391,11 +406,16 @@ func boundSidecarCrashLine(line string) string {
 }
 
 type Supervisor struct {
-	mu                  sync.Mutex
-	probeMu             sync.Mutex
-	process             *childProcess
-	dshProcess          *childProcess
+	mu         sync.Mutex
+	probeMu    sync.Mutex
+	process    *childProcess
+	dshProcess *childProcess
+	// parked keeps the sidecars of other workspaces alive so switching conversations
+	// no longer kills the turn that is still running there. Keyed by kernel+workspace.
+	parked              map[string]*childProcess
+	parkedAt            map[string]time.Time
 	sessionKernels      map[string]string
+	sessionWorkspaces   map[string]string
 	sessions            map[string]struct{}
 	probeWaiters        map[string]chan Event
 	silentSessions      map[string]struct{}
@@ -467,7 +487,20 @@ func (s *Supervisor) processForKernelLocked(kernel string) *childProcess {
 }
 
 func (s *Supervisor) processForSessionLocked(sessionID string) *childProcess {
-	return s.processForKernelLocked(s.kernelForLocked(sessionID))
+	kernel := s.kernelForLocked(sessionID)
+	workspace := ""
+	if s.sessionWorkspaces != nil {
+		workspace = s.sessionWorkspaces[sessionID]
+	}
+	if workspace == "" {
+		return s.processForKernelLocked(kernel)
+	}
+	if s.parked != nil {
+		if parked := s.parked[sidecarWorkspaceKey(kernel, workspace)]; parked != nil {
+			return parked
+		}
+	}
+	return s.processForKernelLocked(kernel)
 }
 
 func (s *Supervisor) sidecarMissingError(sessionID string) error {
@@ -526,17 +559,140 @@ func stopChildProcess(process *childProcess) {
 	}
 }
 
+// sidecarWorkspaceKey identifies one sidecar process: one per (kernel, workspace).
+func sidecarWorkspaceKey(kernel, workspace string) string {
+	return NormalizeKernel(kernel) + "\x00" + workspace
+}
+
+func (s *Supervisor) setKernelProcessLocked(kernel string, process *childProcess) {
+	if NormalizeKernel(kernel) == KernelDSH {
+		s.dshProcess = process
+		return
+	}
+	s.process = process
+}
+
+// bindSessionWorkspaceLocked records which workspace a session belongs to, so its
+// commands keep reaching the correct sidecar while that workspace is parked.
+func (s *Supervisor) bindSessionWorkspaceLocked(sessionID, workspace string) {
+	if sessionID == "" || workspace == "" {
+		return
+	}
+	if s.sessionWorkspaces == nil {
+		s.sessionWorkspaces = make(map[string]string)
+	}
+	s.sessionWorkspaces[sessionID] = workspace
+}
+
+// parkCurrentLocked moves the active sidecar of a kernel aside without stopping it.
+// The process keeps its in-flight turn running and keeps streaming events to the UI.
+func (s *Supervisor) parkCurrentLocked(kernel string, process *childProcess) {
+	if process == nil {
+		return
+	}
+	if s.parked == nil {
+		s.parked = make(map[string]*childProcess)
+	}
+	if s.parkedAt == nil {
+		s.parkedAt = make(map[string]time.Time)
+	}
+	key := sidecarWorkspaceKey(kernel, process.workspace)
+	s.parked[key] = process
+	s.parkedAt[key] = time.Now()
+	s.setKernelProcessLocked(kernel, nil)
+	s.evictParkedOverLimitLocked(kernel)
+}
+
+// evictParkedOverLimitLocked stops the least recently parked sidecar once the parked
+// set grows past maxParkedSidecars.
+func (s *Supervisor) evictParkedOverLimitLocked(kernel string) {
+	prefix := NormalizeKernel(kernel) + "\x00"
+	for len(s.parked) > maxParkedSidecars {
+		oldestKey := ""
+		var oldestAt time.Time
+		for key, at := range s.parkedAt {
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			if oldestKey == "" || at.Before(oldestAt) {
+				oldestKey, oldestAt = key, at
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		if process := s.parked[oldestKey]; process != nil {
+			s.stopParkedLocked(kernel, oldestKey, process)
+			continue
+		}
+		delete(s.parked, oldestKey)
+		delete(s.parkedAt, oldestKey)
+	}
+}
+
+// reapParkedLocked stops parked sidecars of one kernel that stayed unused too long.
+func (s *Supervisor) reapParkedLocked(kernel string) {
+	if len(s.parked) == 0 {
+		return
+	}
+	prefix := NormalizeKernel(kernel) + "\x00"
+	now := time.Now()
+	for key, at := range s.parkedAt {
+		if !strings.HasPrefix(key, prefix) || now.Sub(at) < sidecarIdleTimeout {
+			continue
+		}
+		if process := s.parked[key]; process != nil {
+			s.stopParkedLocked(kernel, key, process)
+			continue
+		}
+		delete(s.parked, key)
+		delete(s.parkedAt, key)
+	}
+}
+
+// stopParkedLocked retires one parked sidecar and forgets the sessions it served.
+func (s *Supervisor) stopParkedLocked(kernel, key string, process *childProcess) {
+	delete(s.parked, key)
+	delete(s.parkedAt, key)
+	s.dropWorkspaceSessionsLocked(kernel, process.workspace)
+	process.retired.Store(true)
+	stopChildProcess(process)
+}
+
+// dropWorkspaceSessionsLocked forgets the sessions bound to one workspace of a kernel.
+// Sessions whose workspace was never recorded are left alone; they are re-ensured on
+// their next message.
+func (s *Supervisor) dropWorkspaceSessionsLocked(kernel, workspace string) {
+	kernel = NormalizeKernel(kernel)
+	for id := range s.sessions {
+		if s.kernelForLocked(id) != kernel {
+			continue
+		}
+		if bound := s.sessionWorkspaces[id]; bound != "" && bound != workspace {
+			continue
+		}
+		delete(s.sessions, id)
+		delete(s.sessionKernels, id)
+		delete(s.sessionWorkspaces, id)
+		delete(s.recoveryFailures, id)
+		delete(s.backgroundTasks, id)
+	}
+}
+
 func NewSupervisor(emit func(Event)) *Supervisor {
 	return &Supervisor{
-		sessionKernels:   make(map[string]string),
-		sessions:         make(map[string]struct{}),
-		probeWaiters:     make(map[string]chan Event),
-		silentSessions:   make(map[string]struct{}),
-		controlWaiters:   make(map[string]chan Event),
-		recoveryWaiters:  make(map[string]map[chan Event]struct{}),
-		recoveryFailures: make(map[string]string),
-		backgroundTasks:  make(map[string][]BackgroundTask),
-		emit:             emit,
+		sessionKernels:    make(map[string]string),
+		sessionWorkspaces: make(map[string]string),
+		sessions:          make(map[string]struct{}),
+		parked:            make(map[string]*childProcess),
+		parkedAt:          make(map[string]time.Time),
+		probeWaiters:      make(map[string]chan Event),
+		silentSessions:    make(map[string]struct{}),
+		controlWaiters:    make(map[string]chan Event),
+		recoveryWaiters:   make(map[string]map[chan Event]struct{}),
+		recoveryFailures:  make(map[string]string),
+		backgroundTasks:   make(map[string][]BackgroundTask),
+		emit:              emit,
 	}
 }
 
@@ -842,6 +998,7 @@ func (s *Supervisor) sendMessage(
 	if err := s.ensureKernelProcessLocked(s.kernelForLocked(sessionID), settings, workspace); err != nil {
 		return err
 	}
+	s.bindSessionWorkspaceLocked(sessionID, workspace)
 	preference := ""
 	if len(modelSourcePreference) > 0 {
 		preference = modelSourcePreference[0]
@@ -1979,7 +2136,7 @@ func (s *Supervisor) StatusForSession(sessionID string) RuntimeStatus {
 func (s *Supervisor) statusLocked(sessionID string) RuntimeStatus {
 	status := RuntimeStatus{
 		DefaultEngine: "pi",
-		Running:       s.process != nil || s.dshProcess != nil,
+		Running:       s.process != nil || s.dshProcess != nil || len(s.parked) > 0,
 		SessionCount:  len(s.sessions),
 		Protocol:      "jsonl-stdio/v1alpha1",
 	}
@@ -2010,15 +2167,33 @@ func (s *Supervisor) Close() {
 	s.mu.Lock()
 	pi := s.process
 	dsh := s.dshProcess
+	parked := s.parked
 	s.process = nil
 	s.dshProcess = nil
+	s.parked = make(map[string]*childProcess)
+	s.parkedAt = make(map[string]time.Time)
 	s.sessions = make(map[string]struct{})
 	s.sessionKernels = make(map[string]string)
+	s.sessionWorkspaces = make(map[string]string)
 	s.recoveryFailures = make(map[string]string)
 	s.backgroundTasks = make(map[string][]BackgroundTask)
 	s.mu.Unlock()
+	if pi != nil {
+		pi.retired.Store(true)
+	}
+	if dsh != nil {
+		dsh.retired.Store(true)
+	}
+	for _, process := range parked {
+		if process != nil {
+			process.retired.Store(true)
+		}
+	}
 	stopChildProcess(pi)
 	stopChildProcess(dsh)
+	for _, process := range parked {
+		stopChildProcess(process)
+	}
 }
 
 func (s *Supervisor) currentWorkspace() string {
@@ -2040,18 +2215,24 @@ func (s *Supervisor) ensureKernelProcessLocked(
 	workspace string,
 ) error {
 	kernel = NormalizeKernel(kernel)
+	s.reapParkedLocked(kernel)
 	current := s.processForKernelLocked(kernel)
 	if current != nil && current.workspace == workspace {
 		return nil
 	}
 	if current != nil {
-		if kernel == KernelDSH {
-			s.dshProcess = nil
-		} else {
-			s.process = nil
+		// Park instead of killing: an in-flight turn in the previous workspace keeps
+		// running and its events keep streaming to the UI while the user works here.
+		s.parkCurrentLocked(kernel, current)
+	}
+	if s.parked != nil {
+		key := sidecarWorkspaceKey(kernel, workspace)
+		if parked := s.parked[key]; parked != nil {
+			delete(s.parked, key)
+			delete(s.parkedAt, key)
+			s.setKernelProcessLocked(kernel, parked)
+			return nil
 		}
-		s.dropKernelSessionsLocked(kernel)
-		stopChildProcess(current)
 	}
 	packaged := "chat-bridge.cjs"
 	source := developmentChatBridgePath
@@ -2109,11 +2290,7 @@ func (s *Supervisor) ensureKernelProcessLocked(
 		workspace: workspace,
 		stderr:    stderr,
 	}
-	if kernel == KernelDSH {
-		s.dshProcess = process
-	} else {
-		s.process = process
-	}
+	s.setKernelProcessLocked(kernel, process)
 	go s.readEvents(kernel, process, stdout)
 	s.emitEvent(Event{Engine: kernel, Type: "engine.started"})
 	return nil
@@ -2146,6 +2323,15 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 
 	waitError := process.command.Wait()
 	s.mu.Lock()
+	removedFromParked := false
+	if s.parked != nil {
+		if key := sidecarWorkspaceKey(kernel, process.workspace); s.parked[key] == process {
+			delete(s.parked, key)
+			delete(s.parkedAt, key)
+			removedFromParked = true
+			s.dropWorkspaceSessionsLocked(kernel, process.workspace)
+		}
+	}
 	current := false
 	if kernel == KernelDSH {
 		current = s.dshProcess == process
@@ -2161,7 +2347,7 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 		}
 	}
 	s.mu.Unlock()
-	if !current {
+	if !current && !removedFromParked && !process.retired.Load() {
 		return
 	}
 
