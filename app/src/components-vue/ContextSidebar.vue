@@ -37,7 +37,11 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
+  ArrowDown,
+  ArrowUp,
   Search,
   Settings,
   Sun,
@@ -93,6 +97,9 @@ const emit = defineEmits<{
   deleteConversationPermanently: [id: string]
   newProjectSession: [workspacePath: string]
   renameConversation: [id: string, title: string]
+  setPinned: [id: string, pinned: boolean]
+  movePinned: [id: string, direction: -1 | 1]
+  reorderPinned: [id: string, beforeId: string]
   navigateCtf: [value: CTFWorkspaceSection]
   navigate: [value: WorkspaceSection]
   profile: []
@@ -105,6 +112,29 @@ const emit = defineEmits<{
 }>()
 
 const unreadConversationIds = ref(new Set<string>())
+const PINNED_GROUP_KEY = 'pinned'
+const pinnedDragId = ref('')
+const pinnedDropTarget = ref('')
+
+function startPinnedDrag(id: string, event: DragEvent) {
+  pinnedDragId.value = id
+  pinnedDropTarget.value = ''
+  event.dataTransfer?.setData('text/plain', id)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function dropPinnedConversation(targetId: string) {
+  const sourceId = pinnedDragId.value
+  pinnedDragId.value = ''
+  pinnedDropTarget.value = ''
+  if (!sourceId || sourceId === targetId) return
+  emit('reorderPinned', sourceId, targetId)
+}
+
+function endPinnedDrag() {
+  pinnedDragId.value = ''
+  pinnedDropTarget.value = ''
+}
 let observedRunningIds: Set<string> | undefined
 const query = ref('')
 const searchOpen = ref(false)
@@ -569,9 +599,18 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
                     v-for="conversation in group.conversations"
                     :key="conversation.id"
                     class="agent-sidebar-item group mx-2 flex h-9 items-center overflow-hidden rounded-[8px]"
-                    :class="{ 'is-current': activeConversationId === conversation.id }"
+                    :class="{
+                      'is-current': activeConversationId === conversation.id,
+                      'is-pinned-drop-target': pinnedDropTarget === conversation.id,
+                    }"
+                    :draggable="group.key === PINNED_GROUP_KEY"
                     :data-ui-selected="activeConversationId === conversation.id ? '' : undefined"
                     :data-active-conversation-row="activeConversationId === conversation.id ? '' : undefined"
+                    @dragstart="group.key === PINNED_GROUP_KEY && startPinnedDrag(conversation.id, $event)"
+                    @dragover.prevent="group.key === PINNED_GROUP_KEY && (pinnedDropTarget = conversation.id)"
+                    @dragleave="pinnedDropTarget === conversation.id && (pinnedDropTarget = '')"
+                    @drop.prevent="dropPinnedConversation(conversation.id)"
+                    @dragend="endPinnedDrag"
                   >
                     <Input
                       v-if="editingConversationId === conversation.id"
@@ -627,6 +666,28 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
                         </button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" :side-offset="4" class="agent-floating w-40">
+                        <DropdownMenuItem
+                          :aria-label="conversation.pinned ? t('取消钉选', 'Unpin chat') : t('钉选对话', 'Pin chat')"
+                          @select="$emit('setPinned', conversation.id, !conversation.pinned)"
+                        >
+                          <PinOff v-if="conversation.pinned" class="size-4" />
+                          <Pin v-else class="size-4" />{{ conversation.pinned ? t('取消钉选', 'Unpin') : t('钉选', 'Pin') }}
+                        </DropdownMenuItem>
+                        <template v-if="conversation.pinned">
+                          <DropdownMenuItem
+                            :aria-label="t('钉选上移', 'Move pinned chat up')"
+                            @select="$emit('movePinned', conversation.id, -1)"
+                          >
+                            <ArrowUp class="size-4" />{{ t('上移', 'Move up') }}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            :aria-label="t('钉选下移', 'Move pinned chat down')"
+                            @select="$emit('movePinned', conversation.id, 1)"
+                          >
+                            <ArrowDown class="size-4" />{{ t('下移', 'Move down') }}
+                          </DropdownMenuItem>
+                        </template>
+                        <DropdownMenuSeparator />
                         <DropdownMenuItem :aria-label="t('重命名编码任务', 'Rename coding task')" @select="startRename(conversation)">
                           <Pencil class="size-4" />{{ t('重命名', 'Rename') }}
                         </DropdownMenuItem>
@@ -736,6 +797,14 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
                       </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" :side-offset="4" class="agent-floating w-40">
+                      <DropdownMenuItem
+                        :aria-label="conversation.pinned ? t('取消钉选', 'Unpin chat') : t('钉选对话', 'Pin chat')"
+                        @select="$emit('setPinned', conversation.id, !conversation.pinned)"
+                      >
+                        <PinOff v-if="conversation.pinned" class="size-4" />
+                        <Pin v-else class="size-4" />{{ conversation.pinned ? t('取消钉选', 'Unpin') : t('钉选', 'Pin') }}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
                       <DropdownMenuItem :aria-label="t('重命名编码任务', 'Rename coding task')" @select="startRename(conversation)">
                         <Pencil class="size-4" />{{ t('重命名', 'Rename') }}
                       </DropdownMenuItem>

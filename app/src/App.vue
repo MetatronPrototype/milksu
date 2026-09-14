@@ -1306,6 +1306,9 @@ onBeforeUnmount(() => {
         @delete-conversation-permanently="conversations.remove"
         @new-project-session="newCodingProjectSession"
         @rename-conversation="conversations.rename"
+        @set-pinned="conversations.setConversationPinned"
+        @move-pinned="conversations.movePinnedConversation"
+        @reorder-pinned="conversations.reorderPinnedConversation"
         @navigate-ctf="ctfSection = $event"
       />
 

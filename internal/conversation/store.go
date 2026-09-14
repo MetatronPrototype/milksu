@@ -84,6 +84,8 @@ type StoredConversation struct {
 	DomainTaskContext map[string]any      `json:"domainTaskContext,omitempty"`
 	LastContextUsage  *StoredContextUsage `json:"lastContextUsage,omitempty"`
 	ArchivedAt        uint64              `json:"archivedAt,omitempty"`
+	Pinned            bool                `json:"pinned,omitempty"`
+	PinnedOrder       *int64              `json:"pinnedOrder,omitempty"`
 	Messages          []StoredMessage     `json:"messages"`
 }
 

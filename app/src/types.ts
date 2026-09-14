@@ -154,6 +154,10 @@ export interface Conversation {
   title: string
   createdAt: number
   archivedAt?: number
+  /** Pinned conversations sit in their own section at the top, across projects. */
+  pinned?: boolean
+  /** Manual order inside the pinned section; smaller comes first. */
+  pinnedOrder?: number
   workspacePath?: string
   /** Agent runtime pinned for this conversation. Missing records are Pi. */
   kernel?: import('@/lib/agentKernel').AgentKernel
