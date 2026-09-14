@@ -154,8 +154,12 @@ describe('useConversations engine stop scoping', () => {
     expect([...conversations.runningConversationIds.value].sort())
       .toEqual(['conversation-dsh', 'conversation-pi'])
 
-    emit('', { type: 'engine.stopped', engine: 'pi', error: 'sidecar exited' })
+    emit('', { type: 'engine.stopped', engine: 'pi', sessions: ['conversation-pi'], error: 'sidecar exited' })
     expect(conversations.runningConversationIds.value).toEqual(['conversation-dsh'])
+    const stopped = conversations.conversations.value.find(item => item.id === 'conversation-pi')
+    const survivor = conversations.conversations.value.find(item => item.id === 'conversation-dsh')
+    expect(String(stopped?.messages.at(-1)?.content)).toContain('Agent 已停止')
+    expect(survivor?.messages.some(message => String(message.content).includes('Agent 已停止'))).toBe(false)
   })
 
   it('clears every session served by the stopped engine', async () => {
@@ -171,8 +175,35 @@ describe('useConversations engine stop scoping', () => {
     emit('conversation-pi-b', { type: 'assistant.started' })
     expect(conversations.runningConversationIds.value).toHaveLength(2)
 
-    emit('', { type: 'engine.protocol_error', engine: 'pi', error: 'stream closed' })
+    emit('', {
+      type: 'engine.protocol_error',
+      engine: 'pi',
+      sessions: ['conversation-pi-a', 'conversation-pi-b'],
+      error: 'stream closed',
+    })
     expect(conversations.runningConversationIds.value).toEqual([])
+  })
+
+  // Without an engine identity there is nothing safe to notify: broadcasting a
+  // stop marked seven unrelated sessions as stopped on 2026-09-13.
+  it('does not broadcast a stop that carries no session identity', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    stored = [storedConversation('conversation-1'), storedConversation('conversation-2')]
+    await conversations.load()
+    await conversations.listen()
+    conversations.activeId.value = 'conversation-1'
+
+    emit('conversation-1', { type: 'assistant.started' })
+    emit('conversation-2', { type: 'assistant.started' })
+    expect(conversations.runningConversationIds.value).toHaveLength(2)
+
+    emit('', { type: 'engine.stopped', engine: 'pi', error: 'signal: killed' })
+
+    expect([...conversations.runningConversationIds.value].sort())
+      .toEqual(['conversation-1', 'conversation-2'])
+    const messages = conversations.conversations.value.flatMap(item => item.messages)
+    expect(messages.some(message => String(message.content).includes('Agent 已停止'))).toBe(false)
   })
 })
 
@@ -195,7 +226,7 @@ describe('useConversations run-state recovery', () => {
     emit('conversation-1', { type: 'assistant.started' })
     expect(conversations.runningConversationIds.value).toEqual(['conversation-1'])
 
-    emit('', { type: 'engine.stopped', engine: 'pi', error: 'signal: killed' })
+    emit('', { type: 'engine.stopped', engine: 'pi', sessions: ['conversation-1'], error: 'signal: killed' })
     expect(conversations.runningConversationIds.value).toEqual([])
 
     emit('conversation-1', { type: 'assistant.delta', text: '还在跑' })
