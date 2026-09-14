@@ -153,11 +153,11 @@ npm run desktop:start
 
 | 同学 | 主要贡献 |
 | --- | --- |
-| [Hikaru（HikaruQwQ）](https://github.com/HikaruQwQ) | Windows / Linux 启动与打包（PR #4）、账户授权恢复、Sidecar 安装路径、发行 workflow 与测试门禁；Composer 目标/计划/目录 chips（PR #12）；工具活动组展开与完成态（PR #20）；项目会话后台完成提醒（PR #26）；前端 typecheck（PR #28） |
+| [Hikaru（HikaruQwQ）](https://github.com/HikaruQwQ) | Windows / Linux 启动与打包（PR #4）、账户授权恢复、Sidecar 安装路径、发行 workflow 与测试门禁；Composer 目标/计划/目录 chips（PR #12）；工具活动组展开与完成态（PR #20）；项目会话后台完成提醒（PR #26）；前端 typecheck（PR #28）；上下文用量与按模型思考档位（PR #31） |
 | [SuInk](https://github.com/SuInk) | 会话归档与恢复、行内改名、主题切换、回到 Coding 时恢复上次视图 |
 | [东云](https://github.com/2409324124) | 账户模型可用性与可调用目录（PR #3） |
-| [荒景肆（ArakeiShi）](https://github.com/ArakeiShi) | Windows 无 Git 启动与 Computer Use 驱动（PR #5）；产物目录和数据目录打开（PR #6） |
-| [薄荷布丁（SkyAerope）](https://github.com/SkyAerope) | 自定义中转站保存与 MilkSU 账户行（PR #7） |
+| [荒景肆（ArakeiShi）](https://github.com/ArakeiShi) | Windows 无 Git 启动与 Computer Use 驱动（PR #5）；产物目录和数据目录打开（PR #6）；实验性 v1 本地插件框架（PR #34） |
+| [薄荷布丁（SkyAerope）](https://github.com/SkyAerope) | 自定义中转站保存与 MilkSU 账户行、设置里的数据库兼容行（PR #7） |
 | [AsabaLazy（Aeko233）](https://github.com/Aeko233)、[Luo](https://github.com/luo) | CTF 收藏/全部视图改走本地目录（PR #8）；Windows 源码换行测试（PR #9）；应用级本地调试模式（PR #10） |
 | [shiluoshiro](https://github.com/shiluoshiro) | 设置页切换分类时清掉上一分类提示（PR #25） |
 | [メタトロン（MetatronPrototype）](https://github.com/MetatronPrototype) | bash 调用注入默认超时上界，非活跃工作区的 Sidecar 停靠保活（PR #80）；凭据变更改为惰性替换 Sidecar，停止与运行态跟住引擎真相（PR #83） |
