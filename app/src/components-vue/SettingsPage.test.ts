@@ -1143,10 +1143,23 @@ describe('SettingsPage database compatibility', () => {
   })
 
   it('lets a user explicitly enable and configure thinking for another model', async () => {
+    installModelCatalog({
+      ...defaultTokenFluxCatalog,
+      models: [
+        ...defaultTokenFluxCatalog.models,
+        {
+          id: 'vendor/unknown-chat',
+          name: 'Unknown Chat',
+          context_window: 128000,
+          max_tokens: 8192,
+          input: ['text'],
+        },
+      ],
+    })
     let savedSettings: AppSettings | null = null
     const settings = withAppSettingsDefaults({
       active_provider: 'tokenflux',
-      active_model: 'grok-4.3',
+      active_model: 'vendor/unknown-chat',
       model_routing: { source_order: ['personal', 'account'], auto_fallback: false },
       relay: {
         enabled: false,
@@ -1172,7 +1185,7 @@ describe('SettingsPage database compatibility', () => {
         GetSettings: async () => savedSettings ?? settings,
         TestAgentModel: async () => ({
           provider: 'tokenflux',
-          model: 'grok-4.3',
+          model: 'vendor/unknown-chat',
           ready: true,
           latencyMs: 42,
         }),
@@ -1192,12 +1205,16 @@ describe('SettingsPage database compatibility', () => {
       .find(button => button.textContent?.includes('保存并验证'))
     saveButton?.click()
     for (let index = 0; index < 6; index += 1) await settle()
-    expect((savedSettings as AppSettings | null)?.model_thinking?.tokenflux?.['grok-4.3'])
-      .toEqual({
-        enabled: true,
-        levels: ['low', 'medium', 'high'],
-        default_level: 'medium',
-      })
+    try {
+      expect((savedSettings as AppSettings | null)?.model_thinking?.tokenflux?.['vendor/unknown-chat'])
+        .toEqual({
+          enabled: true,
+          levels: ['low', 'medium', 'high'],
+          default_level: 'medium',
+        })
+    } finally {
+      installModelCatalog(defaultTokenFluxCatalog)
+    }
   })
 
   it('writes a context-window override and can restore automatic', async () => {

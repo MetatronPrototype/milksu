@@ -15,7 +15,7 @@ import {
   formatAskToolInput,
   normalizeAskOptions,
 } from "./bridge-ask.js";
-import { contextWindowOverride, registeredContextWindow } from "./known-context-window.cjs";
+import { contextWindowOverride, registeredContextWindow, registeredMaxTokens } from "./known-context-window.cjs";
 import {
   createMcpAdapter,
   listPiBackgroundTaskMetas,
@@ -909,7 +909,7 @@ function registerAccountModel(session, provider, model, thinking) {
         source?.contextWindow,
         contextWindowOverride("tokenflux", accountModelID),
       ),
-      maxTokens: source?.maxTokens ?? 16384,
+      maxTokens: registeredMaxTokens(accountModelID, source?.maxTokens),
     }, thinking)],
   }));
   return {

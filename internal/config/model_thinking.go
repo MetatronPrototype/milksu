@@ -161,12 +161,18 @@ func builtInModelThinking(model string) (ModelThinkingConfig, bool) {
 		strings.Contains(id, "claude-sonnet-4-6") {
 		return profile([]string{"low", "medium", "high", "max"}, "high")
 	}
+	if strings.Contains(id, "claude-opus-4-5") {
+		return profile([]string{"low", "medium", "high"}, "high")
+	}
 	if strings.Contains(id, "claude-opus-") ||
 		strings.Contains(id, "claude-sonnet-") ||
 		strings.Contains(id, "claude-fable-") {
 		return profile([]string{"low", "medium", "high"}, "high")
 	}
 
+	if strings.Contains(id, "gpt-6") {
+		return profile([]string{"low", "medium", "high", "xhigh", "max"}, "medium")
+	}
 	if strings.Contains(id, "gpt-5-6") {
 		return profile([]string{"off", "low", "medium", "high", "xhigh", "max"}, "medium")
 	}
@@ -189,6 +195,40 @@ func builtInModelThinking(model string) (ModelThinkingConfig, bool) {
 	}
 	if strings.Contains(id, "gpt-5") && !strings.Contains(id, "chat") {
 		return profile([]string{"minimal", "low", "medium", "high"}, "medium")
+	}
+
+	if strings.Contains(id, "deepseek-v4-pro") {
+		return profile([]string{"high", "max"}, "high")
+	}
+	if strings.Contains(id, "deepseek-v4-flash") ||
+		strings.Contains(id, "deepseek-flash") {
+		return profile([]string{"low", "high", "max"}, "high")
+	}
+
+	if strings.Contains(id, "grok-4-6") || strings.Contains(id, "grok-4-20-multi-agent") {
+		return profile([]string{"low", "medium", "high", "xhigh"}, "medium")
+	}
+	if strings.Contains(id, "grok-4-5") {
+		return profile([]string{"low", "medium", "high"}, "medium")
+	}
+	if strings.Contains(id, "grok-4-3") {
+		return profile([]string{"off", "low", "medium", "high"}, "medium")
+	}
+
+	if strings.Contains(id, "gemini-3-8") ||
+		strings.Contains(id, "gemini-3-7") ||
+		strings.Contains(id, "gemini-3-1-pro") {
+		return profile([]string{"low", "medium", "high"}, "medium")
+	}
+	if strings.Contains(id, "gemini-3-6") ||
+		strings.Contains(id, "gemini-3-5") ||
+		strings.Contains(id, "gemini-3-1-flash") ||
+		strings.Contains(id, "gemini-3-flash") {
+		return profile([]string{"minimal", "low", "medium", "high"}, "medium")
+	}
+
+	if strings.Contains(id, "qwen3-8-flash") || strings.Contains(id, "qwen3-8-max") {
+		return profile([]string{"low", "medium", "xhigh"}, "medium")
 	}
 
 	base := id

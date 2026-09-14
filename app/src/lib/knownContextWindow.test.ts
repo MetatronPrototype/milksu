@@ -3,6 +3,7 @@ import {
   modelContextWindowOverride,
   normalizeModelContextWindows,
   resolveModelContextWindow,
+  resolveModelMaxTokens,
 } from '@/lib/knownContextWindow'
 
 describe('knownContextWindow', () => {
@@ -18,10 +19,12 @@ describe('knownContextWindow', () => {
     expect(resolveModelContextWindow('openai/gpt-5.4-mini', 128_000)).toBe(400_000)
     expect(resolveModelContextWindow('openai/gpt-5.3-chat-latest', 128_000)).toBe(128_000)
     expect(resolveModelContextWindow('openai/gpt-4.1-mini', 128_000)).toBe(1_047_576)
-    expect(resolveModelContextWindow('anthropic/claude-sonnet-4.5', 128_000)).toBe(200_000)
+    expect(resolveModelContextWindow('anthropic/claude-sonnet-4.5', 128_000)).toBe(1_000_000)
     expect(resolveModelContextWindow('anthropic/claude-sonnet-5', 128_000)).toBe(1_000_000)
     expect(resolveModelContextWindow('anthropic/claude-opus-4-8', 128_000)).toBe(1_000_000)
     expect(resolveModelContextWindow('anthropic/claude-opus-4-6', 128_000)).toBe(1_000_000)
+    expect(resolveModelContextWindow('openai/gpt-6-astra', 128_000)).toBe(1_050_000)
+    expect(resolveModelContextWindow('deepseek-flash', 128_000)).toBe(1_000_000)
     expect(resolveModelContextWindow('custom-128k', 128_000)).toBe(128_000)
     expect(resolveModelContextWindow('custom-unknown', 0)).toBe(0)
   })
@@ -44,5 +47,12 @@ describe('knownContextWindow', () => {
     }, {})).toEqual({
       tokenflux: { 'x-ai/grok-4.6': 2_000_000 },
     })
+  })
+
+  it('fills known output limits instead of 8k/16k/32k placeholders', () => {
+    expect(resolveModelMaxTokens('deepseek-flash', 32_768)).toBe(384_000)
+    expect(resolveModelMaxTokens('x-ai/grok-4.6', 16_384)).toBe(500_000)
+    expect(resolveModelMaxTokens('openai/gpt-5.6-sol', 0)).toBe(128_000)
+    expect(resolveModelMaxTokens('custom-unknown', 8_192)).toBe(8_192)
   })
 })

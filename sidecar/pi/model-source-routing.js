@@ -1,5 +1,5 @@
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { contextWindowOverride, registeredContextWindow } from "./known-context-window.cjs";
+import { contextWindowOverride, registeredContextWindow, registeredMaxTokens } from "./known-context-window.cjs";
 
 export const accountSource = "account";
 export const personalSource = "personal";
@@ -198,7 +198,7 @@ export function createModelSourceRouteProvider({
         source?.contextWindow,
         contextWindowOverride("tokenflux", model),
       ),
-      maxTokens: source?.maxTokens ?? 16384,
+      maxTokens: registeredMaxTokens(model, source?.maxTokens),
       compat: source?.compat,
     }],
   };

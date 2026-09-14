@@ -24,7 +24,7 @@ describe('model thinking profiles', () => {
     })
   })
 
-  it('presets GPT and Claude reasoning-capable models', () => {
+  it('presets reasoning-capable families from models.dev effort lists', () => {
     expect(resolveModelThinking(settings(), 'tokenflux', 'openai/gpt-5.6')).toMatchObject({
       enabled: true,
       defaultLevel: 'medium',
@@ -35,20 +35,30 @@ describe('model thinking profiles', () => {
       defaultLevel: 'high',
       levels: ['low', 'medium', 'high', 'xhigh', 'max'],
     })
+    expect(resolveModelThinking(settings(), 'tokenflux', 'deepseek-flash')).toMatchObject({
+      enabled: true,
+      defaultLevel: 'high',
+      levels: ['low', 'high', 'max'],
+    })
+    expect(resolveModelThinking(settings(), 'tokenflux', 'x-ai/grok-4.6')).toMatchObject({
+      enabled: true,
+      defaultLevel: 'medium',
+      levels: ['low', 'medium', 'high', 'xhigh'],
+    })
   })
 
   it('requires an explicit override for models outside the preset families', () => {
-    expect(resolveModelThinking(settings(), 'tokenflux', 'x-ai/grok-4.6').enabled).toBe(false)
+    expect(resolveModelThinking(settings(), 'tokenflux', 'vendor/unknown-chat').enabled).toBe(false)
     const configured = settings({
       tokenflux: {
-        'x-ai/grok-4.6': {
+        'vendor/unknown-chat': {
           enabled: true,
           levels: ['low', 'high'],
           default_level: 'high',
         },
       },
     })
-    const profile = resolveModelThinking(configured, 'tokenflux', 'x-ai/grok-4.6')
+    const profile = resolveModelThinking(configured, 'tokenflux', 'vendor/unknown-chat')
     expect(profile.source).toBe('manual')
     expect(effectiveModelThinkingLevel(profile, 'medium')).toBe('high')
   })

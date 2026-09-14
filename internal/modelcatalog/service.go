@@ -136,6 +136,7 @@ func applyKnownContextWindows(models []Model, settings config.AppSettings) {
 			id,
 			resolved,
 		)
+		models[index].MaxTokens = resolveModelMaxTokens(id, models[index].MaxTokens)
 	}
 }
 
@@ -310,6 +311,8 @@ type catalogModelRaw struct {
 	Type          string `json:"type"`
 	ContextLength int    `json:"context_length"`
 	ContextWindow int    `json:"context_window"`
+	MaxTokens     int    `json:"max_tokens"`
+	MaxOutput     int    `json:"max_output_tokens"`
 	Architecture  struct {
 		InputModalities []string `json:"input_modalities"`
 	} `json:"architecture"`
@@ -339,6 +342,14 @@ func normalizeModels(values []catalogModelRaw) []Model {
 			catalogWindow = value.ContextWindow
 		}
 		contextWindow := resolveModelContextWindow(id, catalogWindow)
+		catalogMax := value.MaxTokens
+		if catalogMax <= 0 {
+			catalogMax = value.MaxOutput
+		}
+		maxTokens := resolveModelMaxTokens(id, catalogMax)
+		if maxTokens <= 0 {
+			maxTokens = defaultMaxTokens
+		}
 		name := strings.TrimSpace(value.Name)
 		if name == "" {
 			name = id
@@ -346,7 +357,7 @@ func normalizeModels(values []catalogModelRaw) []Model {
 		seen[id] = true
 		result = append(result, Model{
 			ID: id, Name: name, ContextWindow: contextWindow,
-			MaxTokens: defaultMaxTokens, Input: input,
+			MaxTokens: maxTokens, Input: input,
 		})
 	}
 	sort.SliceStable(result, func(left, right int) bool {
@@ -596,15 +607,17 @@ func writeSnapshot(path string, value Snapshot) error {
 
 func fallbackSnapshot() Snapshot {
 	models := []Model{
-		{ID: "x-ai/grok-4.6", Name: "Grok 4.6", ContextWindow: 500_000, MaxTokens: defaultMaxTokens, Input: []string{"text", "image"}},
-		{ID: "x-ai/grok-4.5", Name: "Grok 4.5", ContextWindow: 500_000, MaxTokens: defaultMaxTokens, Input: []string{"text", "image"}},
-		{ID: "grok-4.3", Name: "Grok 4.3", ContextWindow: 1_000_000, MaxTokens: defaultMaxTokens, Input: []string{"text", "image"}},
-		{ID: "openai/gpt-5.6-sol", Name: "GPT-5.6 Sol", ContextWindow: 1_050_000, MaxTokens: defaultMaxTokens, Input: []string{"text", "image"}},
-		{ID: "openai/gpt-5.2-codex", Name: "GPT-5.2 Codex", ContextWindow: 400_000, MaxTokens: defaultMaxTokens, Input: []string{"text", "image"}},
-		{ID: "anthropic/claude-sonnet-4.6", Name: "Claude Sonnet 4.6", ContextWindow: 1_000_000, MaxTokens: defaultMaxTokens, Input: []string{"text", "image"}},
-		{ID: "deepseek/deepseek-v4-flash", Name: "DeepSeek V4 Flash", ContextWindow: 1_048_576, MaxTokens: defaultMaxTokens, Input: []string{"text", "image"}},
-		{ID: "google/gemini-3.1-pro-preview", Name: "Gemini 3.1 Pro Preview", ContextWindow: 1_048_576, MaxTokens: defaultMaxTokens, Input: []string{"text", "image"}},
-		{ID: "qwen/qwen3-coder-plus", Name: "Qwen3 Coder Plus", ContextWindow: 1_000_000, MaxTokens: defaultMaxTokens, Input: []string{"text", "image"}},
+		{ID: "x-ai/grok-4.6", Name: "Grok 4.6", ContextWindow: 500_000, MaxTokens: 500_000, Input: []string{"text", "image"}},
+		{ID: "x-ai/grok-4.5", Name: "Grok 4.5", ContextWindow: 500_000, MaxTokens: 500_000, Input: []string{"text", "image"}},
+		{ID: "grok-4.3", Name: "Grok 4.3", ContextWindow: 1_000_000, MaxTokens: 30_000, Input: []string{"text", "image"}},
+		{ID: "openai/gpt-6-astra", Name: "GPT-6 Astra", ContextWindow: 1_050_000, MaxTokens: 128_000, Input: []string{"text", "image"}},
+		{ID: "openai/gpt-5.6-sol", Name: "GPT-5.6 Sol", ContextWindow: 1_050_000, MaxTokens: 128_000, Input: []string{"text", "image"}},
+		{ID: "anthropic/claude-fable-5-1", Name: "Claude Fable 5.1", ContextWindow: 1_000_000, MaxTokens: 128_000, Input: []string{"text", "image"}},
+		{ID: "anthropic/claude-sonnet-4.6", Name: "Claude Sonnet 4.6", ContextWindow: 1_000_000, MaxTokens: 128_000, Input: []string{"text", "image"}},
+		{ID: "deepseek/deepseek-flash", Name: "DeepSeek V4.1 Flash", ContextWindow: 1_000_000, MaxTokens: 384_000, Input: []string{"text", "image"}},
+		{ID: "deepseek/deepseek-v4-flash", Name: "DeepSeek V4 Flash", ContextWindow: 1_000_000, MaxTokens: 384_000, Input: []string{"text", "image"}},
+		{ID: "google/gemini-3.8-flash", Name: "Gemini 3.8 Flash", ContextWindow: 1_048_576, MaxTokens: 65_536, Input: []string{"text", "image"}},
+		{ID: "qwen/qwen3.8-flash", Name: "Qwen3.8 Flash", ContextWindow: 1_000_000, MaxTokens: 131_072, Input: []string{"text", "image"}},
 	}
 	return Snapshot{
 		Schema: catalogSchema, Provider: ProviderTokenFlux,

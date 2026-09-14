@@ -133,6 +133,9 @@ export function builtInModelThinking(model: string): ModelThinkingConfig | undef
   if (id.includes('claude-opus-4-6') || id.includes('claude-sonnet-4-6')) {
     return profile(['low', 'medium', 'high', 'max'], 'high')
   }
+  if (id.includes('claude-opus-4-5')) {
+    return profile(['low', 'medium', 'high'], 'high')
+  }
   if (
     id.includes('claude-opus-')
     || id.includes('claude-sonnet-')
@@ -141,6 +144,9 @@ export function builtInModelThinking(model: string): ModelThinkingConfig | undef
     return profile(['low', 'medium', 'high'], 'high')
   }
 
+  if (id.includes('gpt-6')) {
+    return profile(['low', 'medium', 'high', 'xhigh', 'max'], 'medium')
+  }
   if (id.includes('gpt-5-6')) {
     return profile(['off', 'low', 'medium', 'high', 'xhigh', 'max'], 'medium')
   }
@@ -165,6 +171,43 @@ export function builtInModelThinking(model: string): ModelThinkingConfig | undef
   }
   if (id.includes('gpt-5') && !id.includes('chat')) {
     return profile(['minimal', 'low', 'medium', 'high'], 'medium')
+  }
+
+  if (id.includes('deepseek-v4-pro')) {
+    return profile(['high', 'max'], 'high')
+  }
+  if (id.includes('deepseek-v4-flash') || id.includes('deepseek-flash')) {
+    return profile(['low', 'high', 'max'], 'high')
+  }
+
+  if (id.includes('grok-4-6') || id.includes('grok-4-20-multi-agent')) {
+    return profile(['low', 'medium', 'high', 'xhigh'], 'medium')
+  }
+  if (id.includes('grok-4-5')) {
+    return profile(['low', 'medium', 'high'], 'medium')
+  }
+  if (id.includes('grok-4-3')) {
+    return profile(['off', 'low', 'medium', 'high'], 'medium')
+  }
+
+  if (
+    id.includes('gemini-3-8')
+    || id.includes('gemini-3-7')
+    || id.includes('gemini-3-1-pro')
+  ) {
+    return profile(['low', 'medium', 'high'], 'medium')
+  }
+  if (
+    id.includes('gemini-3-6')
+    || id.includes('gemini-3-5')
+    || id.includes('gemini-3-1-flash')
+    || id.includes('gemini-3-flash')
+  ) {
+    return profile(['minimal', 'low', 'medium', 'high'], 'medium')
+  }
+
+  if (id.includes('qwen3-8-flash') || id.includes('qwen3-8-max')) {
+    return profile(['low', 'medium', 'xhigh'], 'medium')
   }
 
   const base = id.split('/').at(-1) ?? id

@@ -10,8 +10,11 @@ func TestResolveModelThinkingUsesBuiltInPresets(t *testing.T) {
 		wantContains string
 	}{
 		{model: "openai/gpt-5.6", requested: "max", wantLevel: "max", wantContains: "xhigh"},
+		{model: "openai/gpt-6-astra", requested: "max", wantLevel: "max", wantContains: "xhigh"},
 		{model: "anthropic/claude-opus-4.6", requested: "max", wantLevel: "max", wantContains: "high"},
 		{model: "anthropic/claude-fable-5", requested: "xhigh", wantLevel: "xhigh", wantContains: "max"},
+		{model: "deepseek-flash", requested: "max", wantLevel: "max", wantContains: "high"},
+		{model: "x-ai/grok-4.6", requested: "xhigh", wantLevel: "xhigh", wantContains: "medium"},
 	}
 	for _, test := range tests {
 		profile := ResolveModelThinking(AppSettings{}, "tokenflux", test.model, test.requested)
@@ -25,7 +28,7 @@ func TestResolveModelThinkingRequiresManualOptInForOtherModels(t *testing.T) {
 	settings := AppSettings{
 		ModelThinking: map[string]map[string]ModelThinkingConfig{
 			"tokenflux": {
-				"x-ai/grok-4.6": {
+				"vendor/unknown-chat": {
 					Enabled:      true,
 					Levels:       []string{"low", "high"},
 					DefaultLevel: "high",
@@ -33,12 +36,12 @@ func TestResolveModelThinkingRequiresManualOptInForOtherModels(t *testing.T) {
 			},
 		},
 	}
-	if profile := ResolveModelThinking(AppSettings{}, "tokenflux", "x-ai/grok-4.6", "high"); profile.Enabled {
-		t.Fatalf("unexpected built-in Grok thinking profile: %#v", profile)
+	if profile := ResolveModelThinking(AppSettings{}, "tokenflux", "vendor/unknown-chat", "high"); profile.Enabled {
+		t.Fatalf("unexpected built-in thinking profile: %#v", profile)
 	}
-	profile := ResolveModelThinking(settings, "tokenflux", "x-ai/grok-4.6", "medium")
+	profile := ResolveModelThinking(settings, "tokenflux", "vendor/unknown-chat", "medium")
 	if !profile.Enabled || profile.Level != "high" {
-		t.Fatalf("manual Grok thinking profile = %#v", profile)
+		t.Fatalf("manual thinking profile = %#v", profile)
 	}
 }
 

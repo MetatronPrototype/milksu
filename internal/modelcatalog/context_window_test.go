@@ -28,12 +28,15 @@ func TestKnownContextWindow(t *testing.T) {
 		{"anthropic/claude-sonnet-5", 1_000_000},
 		{"anthropic/claude-opus-4-8", 1_000_000},
 		{"anthropic/claude-opus-4-6", 1_000_000},
-		{"anthropic/claude-sonnet-4.5", 200_000},
+		{"anthropic/claude-sonnet-4.5", 1_000_000},
 		{"anthropic/claude-haiku-4-5", 200_000},
+		{"openai/gpt-6-astra", 1_050_000},
 		{"x-ai/grok-4-fast-reasoning", 1_000_000},
 		{"x-ai/grok-build-0.1", 256_000},
-		{"deepseek-flash", 1_048_576},
-		{"deepseek/deepseek-v4-pro", 1_048_576},
+		{"deepseek-flash", 1_000_000},
+		{"deepseek/deepseek-v4-pro", 1_000_000},
+		{"google/gemini-3.8-flash", 1_048_576},
+		{"qwen/qwen3.8-flash", 1_000_000},
 		{"unknown-model", 0},
 	}
 	for _, test := range cases {
@@ -56,8 +59,14 @@ func TestResolveModelContextWindowPrefersCatalogUnlessPlaceholder(t *testing.T) 
 	if got := resolveModelContextWindow("custom-128k", 128_000); got != 128_000 {
 		t.Fatalf("unknown 128k model = %d", got)
 	}
-	if got := resolveModelContextWindow("claude-sonnet-4.5", 128_000); got != 200_000 {
-		t.Fatalf("Claude family preset = %d", got)
+	if got := resolveModelContextWindow("claude-sonnet-4.5", 128_000); got != 1_000_000 {
+		t.Fatalf("Claude Sonnet 4.5 window = %d", got)
+	}
+	if got := resolveModelMaxTokens("deepseek-flash", 32_768); got != 384_000 {
+		t.Fatalf("DeepSeek output placeholder = %d", got)
+	}
+	if got := resolveModelMaxTokens("x-ai/grok-4.6", 0); got != 500_000 {
+		t.Fatalf("Grok 4.6 output = %d", got)
 	}
 	if got := resolveModelContextWindow("custom-unknown", 0); got != 0 {
 		t.Fatalf("unknown omitted window = %d", got)

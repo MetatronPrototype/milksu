@@ -167,7 +167,7 @@ test("registers Groq's current vision model with image input", async () => {
   assert.deepEqual(definition.models.map(item => item.id), ["qwen/qwen3.6-27b"]);
   const vision = definition.models.find(item => item.id === "qwen/qwen3.6-27b");
   assert.deepEqual(vision.input, ["text", "image"]);
-  assert.equal(vision.maxTokens, 16_384);
+  assert.equal(vision.maxTokens, 65_536);
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
     modelsStore: new InMemoryModelsStore(),

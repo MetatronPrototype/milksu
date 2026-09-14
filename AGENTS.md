@@ -9,6 +9,10 @@ Before changing anything, read:
 3. `docs/architecture/current-system.md`;
 4. the current Git branch, HEAD and working tree.
 
+When changing model windows, output limits or thinking presets, check
+`Model facts (models.dev)` below. Do not invent 128000 / 32768 / 16384
+placeholders for a known series.
+
 Product UI language lives only in this file (`Product UI Design Language` below).
 Do not restate layers, tokens or primitives in other docs.
 
@@ -45,6 +49,50 @@ one of those decisions.
 - Do not use emoji in code, comments, documentation, UI text or commit messages.
 - Explain relevant Agent Harness concepts when they materially help product decisions or the user's
   interview and presentation preparation.
+
+## Model facts (models.dev)
+
+https://models.dev/ is the public baseline for context, output, reasoning and
+tool-call facts (`https://models.dev/api.json`). Check that page or the table
+below before writing a MilkSU default. Do not invent 128000 / 32768 / 16384
+placeholders for a known series.
+
+Do not fetch models.dev at product runtime. TokenFlux / the official provider
+catalog is the live product source. models.dev only fills omitted or placeholder
+catalog fields.
+
+Checked 2026-09-14 against official labs (deepseek, openai, anthropic, xai,
+google, alibaba). If a number below disagrees with models.dev, update this table
+and the three code copies together:
+
+- `internal/modelcatalog/context_window.go`
+- `app/src/lib/knownContextWindow.ts`
+- `sidecar/pi/known-context-window.cjs`
+
+Thinking effort lists live in `internal/config/model_thinking.go` and
+`app/src/lib/modelThinking.ts`. Map models.dev `none` to Pi `off`.
+
+| Series | Context | Output | Thinking |
+| --- | ---: | ---: | --- |
+| DeepSeek Flash / V4 Flash / V4 Pro | 1,000,000 | 384,000 | Flash: `low / high / max` (default high); Pro: `high / max` |
+| Grok 4.6 | 500,000 | 500,000 | `low / medium / high / xhigh` |
+| Grok 4.5 | 500,000 | 500,000 | `low / medium / high` |
+| Grok 4.3 / 4.20 | 1,000,000 | 30,000 | 4.3: `off / low / medium / high` |
+| Grok Build 0.1 | 256,000 | 256,000 | reasoning, no effort list |
+| GPT-6 Astra | 1,050,000 | 128,000 | `low / medium / high / xhigh / max` |
+| GPT-5.6 / 5.5 / 5.4 | 1,050,000 | 128,000 | `off / low / medium / high / xhigh` (5.6 also `max`) |
+| GPT-5.4 mini / nano | 400,000 | 128,000 | `off / low / medium / high / xhigh` |
+| GPT-5.3 Codex | 400,000 | 128,000 | `off / low / medium / high / xhigh` |
+| GPT-5.3 Chat | 128,000 | 16,384 | no reasoning |
+| GPT-5.2 / 5 | 400,000 | 128,000 | see code |
+| GPT-4.1 | 1,047,576 | 32,768 | none |
+| Claude Fable 5 / 5.1, Opus 5, Sonnet 5, Opus 4.8 / 4.7 | 1,000,000 | 128,000 | `low / medium / high / xhigh / max` |
+| Claude Opus 4.6 / Sonnet 4.6 | 1,000,000 | 128,000 | `low / medium / high / max` |
+| Claude Sonnet 4.5 | 1,000,000 | 64,000 | reasoning, empty effort |
+| Claude Opus 4.5 / Haiku 4.5 | 200,000 | 64,000 | Opus 4.5: `low / medium / high` |
+| Gemini 3.x Flash / Pro | 1,048,576 | 65,536 | 3.8 / 3.7 / 3.1 Pro: `low / medium / high` |
+| Qwen3.8 Flash / Max | 1,000,000 | 131,072 | `low / medium / xhigh` |
+| Qwen3 Coder Plus | 1,048,576 | 65,536 | none |
 
 ## User-visible language
 

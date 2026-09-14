@@ -1,7 +1,11 @@
 "use strict";
 
 const fs = require("node:fs");
-const { contextWindowOverride, registeredContextWindow } = require("./known-context-window.cjs");
+const {
+  contextWindowOverride,
+  registeredContextWindow,
+  registeredMaxTokens,
+} = require("./known-context-window.cjs");
 
 const providerRuntime = Object.freeze({
   anthropic: {
@@ -59,8 +63,8 @@ const groqModelCatalog = Object.freeze([
     name: "Qwen 3.6 27B",
     reasoning: true,
     input: ["text", "image"],
-    contextWindow: 131_072,
-    maxTokens: 16_384,
+    contextWindow: 262_144,
+    maxTokens: 65_536,
     thinkingLevelMap: { off: "none", high: "default" },
   },
 ]);
@@ -96,9 +100,10 @@ function runtimeTokenfluxModelCatalogSnapshot(environment = process.env) {
           Number.isInteger(item?.context_window) ? item.context_window : 0,
           contextWindowOverride("tokenflux", id, environment),
         ),
-        maxTokens: Number.isInteger(item?.max_tokens) && item.max_tokens > 0
-          ? item.max_tokens
-          : 16_384,
+        maxTokens: registeredMaxTokens(
+          id,
+          Number.isInteger(item?.max_tokens) ? item.max_tokens : 0,
+        ),
         input: modelInput(item?.input),
       }];
     });
@@ -160,7 +165,7 @@ function tokenfluxModel(model, environment = process.env) {
       0,
       contextWindowOverride("tokenflux", model, environment),
     ),
-    maxTokens: 16_384,
+    maxTokens: registeredMaxTokens(model, 0),
     input: modelInput(),
   };
 }
@@ -208,7 +213,7 @@ function currentProviderDefinition(provider, model, environment = process.env) {
           0,
           contextWindowOverride(provider, model, environment),
         ),
-        maxTokens: 16_384,
+        maxTokens: registeredMaxTokens(model, 0),
         compat: {
           supportsDeveloperRole: false,
           supportsReasoningEffort: false,
