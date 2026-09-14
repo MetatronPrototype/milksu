@@ -647,6 +647,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
                       </span>
                       <span class="flex size-5 shrink-0" aria-hidden="true" />
                       <span class="agent-sidebar__copy ml-1.5 truncate text-[14px] font-medium">{{ conversation.title }}</span>
+                      <Pin
+                        v-if="conversation.pinned"
+                        class="ml-1 size-3.5 shrink-0 text-primary"
+                        :aria-label="t('已钉选', 'Pinned')"
+                        data-testid="conversation-pinned-mark"
+                      />
                     </button>
                     <span
                       v-if="editingConversationId === conversation.id"
