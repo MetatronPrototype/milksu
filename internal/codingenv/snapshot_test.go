@@ -189,7 +189,8 @@ func TestInspectDiffRejectsWorkspaceEscape(t *testing.T) {
 
 func runGitFixture(t *testing.T, workspace string, arguments ...string) {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", workspace}, arguments...)...)
+	// Hermetic: never inherit the machine's commit signing configuration.
+	command := exec.Command("git", append([]string{"-c", "commit.gpgsign=false", "-C", workspace}, arguments...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v failed: %v\n%s", arguments, err, output)
 	}

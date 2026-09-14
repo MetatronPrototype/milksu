@@ -407,6 +407,9 @@ func runGitMutation(
 	label string,
 	arguments ...string,
 ) error {
+	// Never inherit the machine's commit signing configuration: a GUI action cannot
+	// answer an ssh-agent prompt, and a hung prompt is worse than an unsigned commit.
+	arguments = append([]string{"-c", "commit.gpgsign=false"}, arguments...)
 	output, err := runGit(ctx, gitPath, workspace, arguments...)
 	if err == nil {
 		return nil
@@ -427,7 +430,7 @@ func runGitMutationWithInput(
 	arguments ...string,
 ) error {
 	commandArguments := append(
-		[]string{"--no-optional-locks", "-C", workspace},
+		[]string{"--no-optional-locks", "-C", workspace, "-c", "commit.gpgsign=false"},
 		arguments...,
 	)
 	command := exec.CommandContext(ctx, gitPath, commandArguments...)

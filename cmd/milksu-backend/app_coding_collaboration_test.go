@@ -340,7 +340,8 @@ func newAgentManagedTestRepository(t *testing.T) string {
 
 func runAgentManagedTestGit(t *testing.T, directory string, arguments ...string) {
 	t.Helper()
-	command := exec.Command("git", arguments...)
+	// Hermetic: never inherit the machine's commit signing configuration.
+	command := exec.Command("git", append([]string{"-c", "commit.gpgsign=false"}, arguments...)...)
 	command.Dir = directory
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v failed: %v\n%s", arguments, err, output)

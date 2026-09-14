@@ -477,6 +477,29 @@ func mustReadFile(t *testing.T, path string) []byte {
 	return content
 }
 
+// A MilkSU git action cannot answer an ssh-agent prompt, so it must not inherit the
+// machine's signing configuration. The fixture points signing at a program that does
+// not exist: the commit only succeeds if the app overrides commit.gpgsign itself.
+func TestGitCommitIgnoresHostSigningConfiguration(t *testing.T) {
+	requireGit(t)
+	workspace := initializedGitFixture(t)
+	runGitFixture(t, workspace, "config", "commit.gpgsign", "true")
+	runGitFixture(t, workspace, "config", "gpg.format", "ssh")
+	runGitFixture(t, workspace, "config", "gpg.ssh.program", "/nonexistent/milksu-signer")
+
+	if err := os.WriteFile(filepath.Join(workspace, "hello.txt"), []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if _, err := ApplyGitAction(ctx, workspace, GitActionStageAll, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyGitAction(ctx, workspace, GitActionCommit, "", "test: commit without signing"); err != nil {
+		t.Fatalf("MilkSU commit must not invoke the host signing program: %v", err)
+	}
+}
+
 func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -486,7 +509,8 @@ func requireGit(t *testing.T) {
 
 func runGitFixtureOutput(t *testing.T, workspace string, arguments ...string) string {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", workspace}, arguments...)...)
+	// Hermetic: never inherit the machine's commit signing configuration.
+	command := exec.Command("git", append([]string{"-c", "commit.gpgsign=false", "-C", workspace}, arguments...)...)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", arguments, err, output)
