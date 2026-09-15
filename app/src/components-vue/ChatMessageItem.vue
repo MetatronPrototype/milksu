@@ -339,6 +339,18 @@ const thinkingElapsed = computed(() => {
 })
 
 const thinkingRunning = computed(() => props.message.thinkingStatus === 'running')
+// Liveness: how long since this message actually produced new output. Updated once a
+// second from the existing thinking clock, so it stays well under 1Hz of work.
+const lastOutputAt = ref(Date.now())
+watch(
+  () => [props.message.content, props.message.thinking],
+  () => {
+    lastOutputAt.value = Date.now()
+  },
+)
+const quietSeconds = computed(() => (
+  Math.max(0, Math.round((thinkingNow.value - lastOutputAt.value) / 1000))
+))
 const conclusionStarted = computed(() => Boolean(props.message.content?.trim()))
 const THINKING_COLLAPSE_CHARS = 300
 const THINKING_COLLAPSE_ROWS = 3
@@ -585,6 +597,15 @@ const approvalKicker = computed(() => (
           :elapsed="thinkingElapsed"
           :running="thinkingRunning"
         />
+        <span
+          v-if="thinkingRunning"
+          class="agent-think__pulse"
+          aria-hidden="true"
+        />
+        <span
+          v-if="thinkingRunning && quietSeconds >= 3"
+          class="agent-think__quiet"
+        >{{ t(`最近 ${quietSeconds}s 前有输出`, `Last output ${quietSeconds}s ago`) }}</span>
         <svg
           class="agent-think__chevron"
           :class="{ 'agent-think__chevron--open': thinkOpen }"

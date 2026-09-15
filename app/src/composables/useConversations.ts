@@ -377,6 +377,10 @@ export function normalizeConversation(raw: Record<string, unknown>): Conversatio
     title: String(raw.title ?? t('未命名对话', 'Untitled conversation')),
     createdAt: Number(raw.createdAt ?? 0),
     workspacePath: typeof raw.workspacePath === 'string' ? raw.workspacePath : undefined,
+    pinned: raw.pinned === true ? true : undefined,
+    pinnedOrder: Number.isFinite(Number(raw.pinnedOrder))
+      ? Number(raw.pinnedOrder)
+      : undefined,
     kernel: normalizeAgentKernel(raw.kernel),
     modelMode: ['auto', 'manual'].includes(String(raw.modelMode))
       ? raw.modelMode as Conversation['modelMode']
@@ -1141,6 +1145,62 @@ export function useConversations() {
       turnStatusById.value = next
     }
     if (activeId.value === id) activeId.value = null
+  }
+
+  function comparePinnedConversations(left: Conversation, right: Conversation) {
+    return (
+      (left.pinnedOrder ?? Number.MAX_SAFE_INTEGER) - (right.pinnedOrder ?? Number.MAX_SAFE_INTEGER)
+      || left.createdAt - right.createdAt
+    )
+  }
+
+  function applyPinnedOrder(ordered: Conversation[]) {
+    const nextOrder = new Map(ordered.map((conversation, index) => [conversation.id, index]))
+    conversations.value = conversations.value.map(conversation => {
+      const order = nextOrder.get(conversation.id)
+      return order === undefined ? conversation : { ...conversation, pinned: true, pinnedOrder: order }
+    })
+    for (const conversation of ordered) {
+      const updated = conversations.value.find(item => item.id === conversation.id)
+      if (updated) persist(updated)
+    }
+  }
+
+  function setConversationPinned(id: string, pinned: boolean) {
+    const existing = conversations.value.filter(conversation => (
+      conversation.pinned && conversation.id !== id
+    )).sort(comparePinnedConversations)
+    update(id, conversation => pinned
+      ? { ...conversation, pinned: true, pinnedOrder: existing.length }
+      : { ...conversation, pinned: undefined, pinnedOrder: undefined })
+  }
+
+  function movePinnedConversation(id: string, direction: -1 | 1) {
+    const pinned = conversations.value
+      .filter(conversation => conversation.pinned)
+      .sort(comparePinnedConversations)
+    const index = pinned.findIndex(conversation => conversation.id === id)
+    const target = index + direction
+    if (index < 0 || target < 0 || target >= pinned.length) return
+    const reordered = [...pinned]
+    const [moved] = reordered.splice(index, 1)
+    if (!moved) return
+    reordered.splice(target, 0, moved)
+    applyPinnedOrder(reordered)
+  }
+
+  function reorderPinnedConversation(id: string, beforeId: string) {
+    if (id === beforeId) return
+    const pinned = conversations.value
+      .filter(conversation => conversation.pinned)
+      .sort(comparePinnedConversations)
+    const source = pinned.find(conversation => conversation.id === id)
+    if (!source) return
+    const reordered = pinned.filter(conversation => conversation.id !== id)
+    const target = reordered.findIndex(conversation => conversation.id === beforeId)
+    if (target < 0) return
+    reordered.splice(target, 0, source)
+    applyPinnedOrder(reordered)
   }
 
   function rename(id: string, title: string) {
@@ -2608,6 +2668,9 @@ export function useConversations() {
     archive,
     remove,
     rename,
+    setConversationPinned,
+    movePinnedConversation,
+    reorderPinnedConversation,
     conversationActionError,
     cancelQueuedGuidance,
     editQueuedGuidance,

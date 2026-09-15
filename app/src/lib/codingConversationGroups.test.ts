@@ -263,3 +263,52 @@ describe('Coding conversation groups', () => {
       .toEqual(['loose'])
   })
 })
+
+describe('Pinned conversations', () => {
+  it('puts pinned chats in one section at the top, ordered by hand', () => {
+    const groups = groupCodingConversations([
+      conversation('a', 'A', 10, { pinned: true, pinnedOrder: 1, workspacePath: '/p/a' }),
+      conversation('b', 'B', 20, { pinned: true, pinnedOrder: 0, workspacePath: '/p/b' }),
+      conversation('c', 'C', 30, { workspacePath: '/p/c' }),
+    ])
+
+    expect(groups[0]?.key).toBe('pinned')
+    expect(groups[0]?.name).toBe('钉选')
+    expect(groups[0]?.conversations.map(item => item.id)).toEqual(['b', 'a'])
+    const rest = groups.slice(1).flatMap(group => group.conversations.map(item => item.id))
+    expect(rest).toContain('c')
+    expect(rest).not.toContain('a')
+  })
+
+  it('does not reorder pinned chats when one becomes the most recent', () => {
+    const before = groupCodingConversations([
+      conversation('a', 'A', 10, { pinned: true, pinnedOrder: 0 }),
+      conversation('b', 'B', 20, { pinned: true, pinnedOrder: 1 }),
+    ])
+    const after = groupCodingConversations([
+      conversation('a', 'A', 10, {
+        pinned: true,
+        pinnedOrder: 0,
+        messages: [{ id: 'm', role: 'assistant', content: 'x', timestamp: 999, status: 'done' }],
+      }),
+      conversation('b', 'B', 20, { pinned: true, pinnedOrder: 1 }),
+    ])
+
+    expect(before[0]?.conversations.map(item => item.id)).toEqual(['a', 'b'])
+    expect(after[0]?.conversations.map(item => item.id)).toEqual(['a', 'b'])
+  })
+
+  it('matches the previous grouping exactly when nothing is pinned', () => {
+    const withFlag = groupCodingConversations([
+      conversation('a', 'A', 10, { pinned: false }),
+      conversation('b', 'B', 20),
+    ])
+    const withoutFlag = groupCodingConversations([
+      conversation('a', 'A', 10),
+      conversation('b', 'B', 20),
+    ])
+
+    expect(withFlag.map(group => [group.key, group.conversations.map(item => item.id)]))
+      .toEqual(withoutFlag.map(group => [group.key, group.conversations.map(item => item.id)]))
+  })
+})

@@ -165,4 +165,36 @@ describe('ProfilePage', () => {
     expect(host.textContent).not.toContain('228.7万')
     app.unmount()
   })
+
+  // A failed usage load used to stay blank until the user refreshed by hand; the
+  // profile page has to surface the failure and retry on its own.
+  it('retries a failed usage load instead of staying blank', async () => {
+    vi.useFakeTimers()
+    const usage: CodingUsageSnapshot = { ...EMPTY_CODING_USAGE, totalTokens: 4321 }
+    let usageCalls = 0
+    const invoke = vi.fn(async (method: string) => {
+      if (method === 'ListCTFJobs') return []
+      if (method === 'GetCodingUsageSnapshot') {
+        usageCalls += 1
+        if (usageCalls === 1) throw new Error('renderer busy')
+        return usage
+      }
+      throw new Error(`unexpected method: ${method}`)
+    })
+    installDesktop(invoke)
+    const { app, host } = mountProfile()
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(0)
+    await nextTick()
+
+    expect(host.textContent).toContain('自动重试')
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    await nextTick()
+
+    expect(usageCalls).toBeGreaterThanOrEqual(2)
+    expect(host.textContent).toContain('4,321 Token')
+    app.unmount()
+    vi.useRealTimers()
+  })
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { latestCodingPlan, settleIdleCodingPlan, type CodingPlanStep } from '@/lib/codingPlan'
 import { t } from '@/lib/uiLocale'
 import type { Message } from '@/types'
@@ -17,13 +17,69 @@ const props = withDefaults(defineProps<{
   running: false,
 })
 
+const AUTO_HIDE_MS = 4_000
+
 const expanded = ref(false)
 let closeTimer: ReturnType<typeof setTimeout> | undefined
+let autoHideTimer: ReturnType<typeof setTimeout> | undefined
+
+// A plan belongs to the turn it was published in: everything before the last user
+// message is history, so a new turn without milksu_progress must not resurrect the
+// previous turn's checklist.
+const currentTurnMessages = computed(() => {
+  const messages = props.messages
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') return messages.slice(index + 1)
+  }
+  return messages
+})
 
 const plan = computed(() => {
-  const current = latestCodingPlan(props.messages)
+  const current = latestCodingPlan(currentTurnMessages.value)
   if (!current) return null
   return props.running ? current : settleIdleCodingPlan(current)
+})
+
+const planKey = computed(() => {
+  // Keyed on the published plan, not on the settled projection: finishing a turn
+  // must not look like a new plan and cancel the auto-hide timer.
+  const current = latestCodingPlan(currentTurnMessages.value)
+  if (!current) return ''
+  return `${current.summary}\u0000${current.steps.map(step => `${step.status}:${step.text}`).join('\u0001')}`
+})
+
+// An idle turn has nothing to show: switching away and back must not resurrect a
+// finished checklist, so a remount starts hidden unless the turn is still running.
+const visible = ref(props.running)
+let sawRunning = props.running
+
+function clearAutoHide() {
+  if (autoHideTimer !== undefined) {
+    clearTimeout(autoHideTimer)
+    autoHideTimer = undefined
+  }
+}
+
+watch(() => props.running, running => {
+  if (running) {
+    sawRunning = true
+    clearAutoHide()
+    visible.value = true
+    return
+  }
+  if (!sawRunning) return
+  // The turn just ended: keep the result on screen briefly, then fold it away.
+  clearAutoHide()
+  autoHideTimer = setTimeout(() => {
+    autoHideTimer = undefined
+    visible.value = false
+  }, AUTO_HIDE_MS)
+})
+
+watch(planKey, (next, previous) => {
+  if (!next || next === previous) return
+  clearAutoHide()
+  visible.value = true
 })
 
 const headlineStatus = computed<CodingPlanStep['status']>(() => {
@@ -62,11 +118,16 @@ function toggle() {
   if (closeTimer !== undefined) clearTimeout(closeTimer)
   expanded.value = !expanded.value
 }
+
+onBeforeUnmount(() => {
+  clearAutoHide()
+  if (closeTimer !== undefined) clearTimeout(closeTimer)
+})
 </script>
 
 <template>
   <section
-    v-if="plan"
+    v-if="plan && visible"
     class="agent-task-rows"
     :aria-label="t('执行计划', 'Execution plan')"
     data-testid="agent-execution-plan"

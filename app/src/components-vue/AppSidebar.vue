@@ -31,6 +31,9 @@ defineEmits<{
   deleteConversationPermanently: [id: string]
   newProjectSession: [workspacePath: string]
   renameConversation: [id: string, title: string]
+  setPinned: [id: string, pinned: boolean]
+  movePinned: [id: string, direction: -1 | 1]
+  reorderPinned: [id: string, beforeId: string]
   navigateCtf: [value: CTFWorkspaceSection]
   openCodingContext: []
   collapseCodingContext: []
@@ -64,6 +67,9 @@ defineEmits<{
       @delete-conversation-permanently="$emit('deleteConversationPermanently', $event)"
       @new-project-session="$emit('newProjectSession', $event)"
       @rename-conversation="(id, title) => $emit('renameConversation', id, title)"
+      @set-pinned="(id, pinned) => $emit('setPinned', id, pinned)"
+      @move-pinned="(id, direction) => $emit('movePinned', id, direction)"
+      @reorder-pinned="(id, beforeId) => $emit('reorderPinned', id, beforeId)"
       @navigate-ctf="$emit('navigateCtf', $event)"
       @navigate="$emit('navigate', $event)"
       @profile="$emit('profile')"

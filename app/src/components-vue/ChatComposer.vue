@@ -137,6 +137,8 @@ const props = defineProps<{
   selectedMcpServers?: string[]
   mcpCatalog?: Array<{ name: string; reviewReady: boolean; scope?: string }>
   mcpConfigDigest?: string
+  /** Conversation the draft belongs to; switching saves and restores per chat. */
+  conversationKey?: string
   queuedGuidance?: string[]
   /** True while an uninterruptible tool (running bash) must finish before steer applies. */
   queuedGuidanceAwaitingTool?: boolean
@@ -177,6 +179,30 @@ const emit = defineEmits<{
 }>()
 
 const draft = ref('')
+// One draft per conversation. The HTML is stored, not just the text: skill and
+// scope tokens (and image placeholders) live in the editor markup.
+const draftsByConversation = new Map<string, { html: string; text: string }>()
+
+function currentConversationKey() {
+  return String(props.conversationKey ?? '')
+}
+
+function captureComposerDraft() {
+  return { html: composerHtml(), text: readComposerText() }
+}
+
+function applyStoredComposerDraft(stored?: { html: string; text: string }) {
+  applyComposerHtml(stored?.html ?? '')
+  draft.value = stored?.text ?? ''
+}
+
+watch(
+  () => currentConversationKey(),
+  (key, previous) => {
+    if (previous) draftsByConversation.set(previous, captureComposerDraft())
+    applyStoredComposerDraft(key ? draftsByConversation.get(key) : undefined)
+  },
+)
 const composerFrame = ref<HTMLElement | null>(null)
 const messageEditor = ref<HTMLElement | null>(null)
 const pendingAttachments = ref<CodingAttachment[]>([])
@@ -928,6 +954,7 @@ function insertSkillToken(name: string) {
 function clearComposerInput() {
   rememberComposerSnapshot()
   if (messageEditor.value) messageEditor.value.replaceChildren()
+  draftsByConversation.delete(currentConversationKey())
   draft.value = ''
   slashQuery.value = null
   slashQueryRange.value = null

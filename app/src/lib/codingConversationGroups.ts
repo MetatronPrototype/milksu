@@ -19,6 +19,7 @@ export interface CodingConversationGroup {
 }
 
 const TEMPORARY_GROUP_KEY = 'temporary'
+const PINNED_GROUP_KEY = 'pinned'
 
 function normalizeWorkspacePath(value?: string | null) {
   const normalized = value
@@ -61,9 +62,14 @@ export function groupCodingConversations(
 ): CodingConversationGroup[] {
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const groups = new Map<string, CodingConversationGroup>()
+  const pinnedConversations: Conversation[] = []
 
   for (const conversation of projectUniqueDomainConversations(conversations)) {
     if (conversation.ctfJobId) continue
+    if (conversation.pinned) {
+      pinnedConversations.push(conversation)
+      continue
+    }
 
     const normalizedPath = normalizeWorkspacePath(conversation.workspacePath)
     const path = isGeneratedScratchWorkspace(normalizedPath) ? null : normalizedPath
@@ -87,7 +93,7 @@ export function groupCodingConversations(
     groups.set(key, group)
   }
 
-  return [...groups.values()]
+  const result = [...groups.values()]
     .map((group) => {
       group.conversations.sort(newestFirst)
       if (!normalizedQuery) return group
@@ -109,6 +115,34 @@ export function groupCodingConversations(
       if (left.temporary !== right.temporary) return left.temporary ? 1 : -1
       return right.lastActiveAt - left.lastActiveAt || left.name.localeCompare(right.name)
     })
+
+  // Pinned chats get one section at the very top, across every project, ordered by
+  // hand only: new messages and running turns must never move them.
+  if (pinnedConversations.length) {
+    const pinned = [...pinnedConversations].sort((left, right) => (
+      (left.pinnedOrder ?? Number.MAX_SAFE_INTEGER) - (right.pinnedOrder ?? Number.MAX_SAFE_INTEGER)
+      || left.createdAt - right.createdAt
+      || left.title.localeCompare(right.title)
+    ))
+    const matching = normalizedQuery
+      ? pinned.filter(conversation => (
+          conversation.title.toLocaleLowerCase().includes(normalizedQuery)
+        ))
+      : pinned
+    if (matching.length) {
+      result.unshift({
+        key: PINNED_GROUP_KEY,
+        name: t('钉选', 'Pinned'),
+        path: null,
+        paths: [],
+        temporary: false,
+        conversations: matching,
+        lastActiveAt: Math.max(...matching.map(conversationActivityAt)),
+      })
+    }
+  }
+
+  return result
 }
 
 function domainGroupName(conversation: Conversation) {

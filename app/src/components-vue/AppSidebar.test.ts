@@ -27,6 +27,8 @@ interface SidebarOptions {
   onDeleteConversation?: (id: string) => void
   onDeleteConversationPermanently?: (id: string) => void
   onRenameConversation?: (id: string, title: string) => void
+  onSetPinned?: (id: string, pinned: boolean) => void
+  onMovePinned?: (id: string, direction: -1 | 1) => void
   conversationActionError?: string
 }
 
@@ -53,6 +55,8 @@ async function mountSidebar(
     onNew: options.onNew ?? vi.fn(),
     onDeleteConversation: options.onDeleteConversation ?? vi.fn(),
     onRenameConversation: options.onRenameConversation ?? vi.fn(),
+    onSetPinned: options.onSetPinned ?? vi.fn(),
+    onMovePinned: options.onMovePinned ?? vi.fn(),
     onDeleteConversationPermanently: options.onDeleteConversationPermanently ?? vi.fn(),
   })
   app.mount(host)
@@ -491,5 +495,52 @@ describe('AppSidebar', () => {
     expect(contextSidebarSource).toContain('background: transparent')
     expect(selected[0]?.querySelector('[data-button]')).toBeNull()
     expect(contextSidebarSource).not.toContain('--overlay-hover-strong: rgb(255 255 255 / 0.13)')
+  })
+
+  // The pin action used to die inside AppSidebar: ContextSidebar emitted it, but no
+  // one forwarded it, so the store was never called and the click was a no-op.
+  it('forwards pin from the chat menu to the store binding', async () => {
+    const onSetPinned = vi.fn()
+    const host = await mountSidebar('chat', {
+      conversations: [{ id: 'pin-me', title: '要钉的会话', createdAt: 1, messages: [] }],
+      codingContextOpen: true,
+      onSetPinned,
+    })
+    host.querySelector<HTMLButtonElement>('[aria-label="会话操作"]')?.click()
+    await nextTick()
+    document.querySelector<HTMLElement>('[aria-label="钉选对话"]')?.click()
+    await nextTick()
+    expect(onSetPinned).toHaveBeenCalledWith('pin-me', true)
+  })
+
+  it('offers unpin and reorder for a pinned conversation and marks it', async () => {
+    const onSetPinned = vi.fn()
+    const onMovePinned = vi.fn()
+    const host = await mountSidebar('chat', {
+      conversations: [{
+        id: 'pinned-one',
+        title: '已钉会话',
+        createdAt: 1,
+        messages: [],
+        pinned: true,
+        pinnedOrder: 0,
+      }],
+      codingContextOpen: true,
+      onSetPinned,
+      onMovePinned,
+    })
+    expect(host.querySelector('[data-testid="conversation-pinned-mark"]')).not.toBeNull()
+
+    host.querySelector<HTMLButtonElement>('[aria-label="会话操作"]')?.click()
+    await nextTick()
+    document.querySelector<HTMLElement>('[aria-label="取消钉选"]')?.click()
+    await nextTick()
+    expect(onSetPinned).toHaveBeenCalledWith('pinned-one', false)
+
+    host.querySelector<HTMLButtonElement>('[aria-label="会话操作"]')?.click()
+    await nextTick()
+    document.querySelector<HTMLElement>('[aria-label="钉选上移"]')?.click()
+    await nextTick()
+    expect(onMovePinned).toHaveBeenCalledWith('pinned-one', -1)
   })
 })
