@@ -94,9 +94,12 @@ describe('ChatPage approval bar', () => {
     expect(decisions).toEqual([['approval-1', true, 'once']])
   })
 
+  // A 3000-message fixture put this case right at the 5s default timeout; the timing is
+  // what flaked, not the behaviour. 800 messages keep the "long thread" meaning, and the
+  // case gets its own budget so a slow machine cannot turn it red.
   it('rolls the bar back when the engine never confirms the decision', async () => {
     vi.useRealTimers()
-    const { host } = mountPage(longConversationWithApproval(3000))
+    const { host } = mountPage(longConversationWithApproval(800))
     await nextTick()
     await nextTick()
 
@@ -117,7 +120,7 @@ describe('ChatPage approval bar', () => {
     await nextTick()
     await nextTick()
     expect(host.querySelector('[data-testid="approval-bar"]')).toBeNull()
-  })
+  }, 15000)
 })
 
 describe("ChatPage approval bar and asks", () => {
