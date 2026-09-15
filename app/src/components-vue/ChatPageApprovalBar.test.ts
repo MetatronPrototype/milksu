@@ -117,7 +117,8 @@ describe('ChatPage approval bar', () => {
     await nextTick()
     expect(host.querySelector('[data-testid="approval-bar-submitting"]')).toBeNull()
     expect(host.textContent).toContain('审批未确认')
-  })
+    // The case waits 3.4s on purpose, so the default 5s budget is too tight under load.
+  }, 20_000)
 
   it('has no bar when nothing is waiting for a decision', async () => {
     const conversation = longConversationWithApproval(20)
