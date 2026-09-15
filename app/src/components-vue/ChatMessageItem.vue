@@ -463,6 +463,64 @@ const approvalKicker = computed(() => (
         ? t('已拒绝', 'Denied')
         : t('已失效', 'Expired')
 ))
+// --- destructive approval brief -------------------------------------------
+import { assessDestructiveRequest, type DestructiveAssessment, type DestructiveFacts } from '@/lib/destructiveTarget'
+
+const destructiveAssessment = ref<DestructiveAssessment | null>(null)
+const approvalCommand = computed(() => (props.message.content ?? '').trim())
+
+// The requester's own words, or an explicit "not provided" - never an inference.
+const approvalPurpose = computed(() => (
+  props.message.approvalJustification?.purpose?.trim()
+  || t('发起者未提供', 'Not provided by the requester')
+))
+const approvalSafety = computed(() => (
+  props.message.approvalJustification?.safety?.trim()
+  || t('发起者未提供', 'Not provided by the requester')
+))
+const approvalVerification = computed(() => (
+  destructiveAssessment.value ?? assessDestructiveRequest(approvalCommand.value)
+))
+// The gate is the verification result, but only for commands that actually delete:
+// an MCP or read-only approval must keep its allow button.
+const approvalIsDestructive = computed(() => (/(^|\s)(rm|find|unlink|shred)\b/.test(approvalCommand.value)
+  || /\bxargs\b/.test(approvalCommand.value)
+  || approvalVerification.value.targets.some(target => target.kind !== 'unknown')))
+const approvalBlocked = computed(() => (
+  approvalIsDestructive.value
+  && (approvalVerification.value.risk === 'high' || approvalVerification.value.undetermined)
+))
+
+async function measureApprovalCommand(command: string) {
+  const base = assessDestructiveRequest(command)
+  if (!command) {
+    destructiveAssessment.value = base
+    return
+  }
+  const facts: DestructiveFacts[] = []
+  for (const target of base.targets) {
+    if (!target.path) {
+      facts.push({})
+      continue
+    }
+    try {
+      facts.push(await invokeCommand('inspect_destructive_target', { path: target.path }) as DestructiveFacts)
+    } catch {
+      // Measurement is best effort: the verdict stays useful without it.
+      facts.push({})
+    }
+  }
+  destructiveAssessment.value = assessDestructiveRequest(command, facts)
+}
+
+watch(
+  () => [props.message.approvalRequestId, approvalCommand.value] as const,
+  ([requestId, command]) => {
+    if (!requestId) return
+    void measureApprovalCommand(command)
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -535,12 +593,50 @@ const approvalKicker = computed(() => (
       <template v-else>
       <div class="agent-approve__kicker">{{ approvalKicker }}</div>
       <h4 class="agent-approve__title">{{ approvalTitle }}</h4>
+      <section
+        class="mt-2 space-y-1.5 rounded-xl border border-border/70 bg-background/40 px-3 py-2"
+        data-testid="approval-brief"
+      >
+        <div class="flex gap-2 text-caption">
+          <span class="w-16 shrink-0 font-medium text-muted-foreground">{{ t('用途', 'Purpose') }}</span>
+          <p class="min-w-0 flex-1 text-foreground">{{ visibleApprovalText(approvalPurpose) }}</p>
+        </div>
+        <div class="flex gap-2 text-caption">
+          <span class="w-16 shrink-0 font-medium text-muted-foreground">{{ t('安全性', 'Safety') }}</span>
+          <p class="min-w-0 flex-1 text-foreground">{{ visibleApprovalText(approvalSafety) }}</p>
+        </div>
+        <div class="space-y-1 border-t border-border/60 pt-1.5 text-caption" data-testid="approval-verification">
+          <div class="flex gap-2">
+            <span class="w-16 shrink-0 font-medium text-muted-foreground">{{ t('核验', 'Verification') }}</span>
+            <span class="rounded-md bg-muted px-1.5 py-0.5 text-muted-foreground">
+              {{ t('MilkSU 实测', 'Measured by MilkSU') }}
+            </span>
+          </div>
+          <ul class="space-y-0.5 pl-18">
+            <li v-for="(target, index) in approvalVerification.targets" :key="`${index}:${target.raw}`">
+              <span class="font-medium">{{ target.kind === 'file' ? t('文件', 'file') : target.kind === 'glob' ? t('通配', 'glob') : target.kind === 'directory-tree' ? t('目录树', 'directory tree') : t('无法确定', 'unknown') }}</span>
+              · {{ visibleApprovalText(target.path ?? target.raw) }}
+              <span class="text-muted-foreground">（{{ target.recursive ? t('递归', 'recursive') : t('不递归', 'not recursive') }}：{{ target.reason }}）</span>
+            </li>
+          </ul>
+          <p
+            class="font-medium"
+            :class="approvalVerification.risk === 'high' ? 'text-destructive' : 'text-foreground'"
+            data-testid="approval-verdict"
+          >
+            {{ approvalVerification.verdict }}
+          </p>
+        </div>
+      </section>
       <p class="agent-approve__message">
-        {{ message.approvalGrantable
-          ? t('Agent 已暂停。允许这一次只执行当前操作；本对话始终允许后，同类操作不再询问。', 'The agent is paused. Allow once to run only this action. Always allow for this conversation to skip the same kind of action later.')
-          : t('Agent 已暂停；只有允许本次操作后才会继续。', 'The agent is paused and will continue only after you allow this action.') }}
+        {{ t('Agent 已暂停。允许这一次只会执行当前操作，不会扩大权限。', 'The agent is paused. Allow once runs only this action and grants nothing more.') }}
       </p>
-      <pre v-if="message.content">{{ visibleApprovalText(message.content) }}</pre>
+      <details v-if="message.content" class="mt-2" @toggle="pinApproval">
+        <summary class="cursor-pointer text-caption text-muted-foreground">
+          {{ t('查看原始命令', 'View the raw command') }}
+        </summary>
+        <pre>{{ visibleApprovalText(message.content) }}</pre>
+      </details>
       <details v-if="message.approvalInput" class="mt-2" @toggle="pinApproval">
         <summary class="cursor-pointer text-caption text-muted-foreground">
           {{ t('查看完整参数', 'View full arguments') }}
@@ -551,6 +647,13 @@ const approvalKicker = computed(() => (
         v-if="message.approvalState === 'pending' && message.approvalRequestId"
         class="agent-approve__actions"
       >
+        <p
+          v-if="approvalBlocked"
+          class="w-full text-caption font-medium text-destructive"
+          data-testid="approval-gate"
+        >
+          {{ t('核验为高风险或目标无法确定：本卡不提供「允许」。请让发起者补上用途与安全性，或改用更小的目标。', 'Verification failed (high risk or unknown scope): this card offers no allow. Ask the requester for a purpose and safety note, or narrow the target.') }}
+        </p>
         <Button
           type="button"
           variant="outline"
@@ -560,21 +663,13 @@ const approvalKicker = computed(() => (
           {{ t('拒绝', 'Deny') }}
         </Button>
         <Button
+          v-if="!approvalBlocked"
           type="button"
           :variant="message.approvalGrantable ? 'outline' : 'brand'"
           size="sm"
           @click="$emit('respondApproval', message.approvalRequestId, true, 'once')"
         >
           {{ t('允许这一次', 'Allow once') }}
-        </Button>
-        <Button
-          v-if="message.approvalGrantable"
-          type="button"
-          variant="brand"
-          size="sm"
-          @click="$emit('respondApproval', message.approvalRequestId, true, 'conversation')"
-        >
-          {{ t('本对话始终允许', 'Always allow in this chat') }}
         </Button>
       </div>
       <p v-else-if="message.approvalReason" class="mt-2 text-caption text-muted-foreground">

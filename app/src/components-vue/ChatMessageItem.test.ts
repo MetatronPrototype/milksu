@@ -103,8 +103,9 @@ describe('ChatMessageItem', () => {
     expect(host.textContent ?? '').not.toContain('正在回复')
   })
 
-  it('offers a conversation-wide grant only when the request is grantable', async () => {
-    const { host, responses } = await mountMessage({
+  // The card must not offer a conversation-wide grant: every decision is per action.
+  it('never offers a conversation-wide grant', async () => {
+    const { host } = await mountMessage({
       id: 'message-grantable',
       role: 'tool',
       content: '隔离 Coding Browser · 工具 browser_click',
@@ -117,14 +118,10 @@ describe('ChatMessageItem', () => {
 
     const always = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent?.includes('本对话始终允许'))
-    expect(always).toBeDefined()
-    always?.click()
-    await nextTick()
-    expect(responses).toEqual([{
-      requestId: 'approval-browser',
-      approved: true,
-      scope: 'conversation',
-    }])
+    expect(always).toBeUndefined()
+    const allowOnce = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('允许这一次'))
+    expect(allowOnce).toBeDefined()
   })
 
   it('shows context-specific recovery hints for resumable failures', async () => {
@@ -550,5 +547,98 @@ describe('ChatMessageItem', () => {
     await nextTick()
     expect(host.textContent).toContain("前有输出")
     vi.useRealTimers()
+  })
+})
+
+describe('ChatMessageItem destructive approval brief', () => {
+  // The card must lead with purpose/safety/verification and fold the raw command away.
+  it('shows purpose, safety and a measured verification block above a folded command', async () => {
+    const { host } = await mountMessage({
+      id: 'message-destructive',
+      role: 'tool',
+      content: "rm -rf /Users/me/backups/old",
+      timestamp: 1,
+      toolName: 'bash',
+      approvalRequestId: 'approval-destructive',
+      approvalState: 'pending',
+      approvalJustification: {
+        purpose: '删除 20260914 那份旧备份：新包已生成新备份。',
+        safety: 'App 程序副本，不含用户数据；对应提交在 git 中可达。',
+      },
+    })
+    await nextTick()
+
+    const brief = host.querySelector('[data-testid="approval-brief"]')
+    expect(brief?.textContent).toContain('用途')
+    expect(brief?.textContent).toContain('删除 20260914 那份旧备份')
+    expect(brief?.textContent).toContain('安全性')
+    expect(brief?.textContent).toContain('App 程序副本')
+
+    const verification = host.querySelector('[data-testid="approval-verification"]')
+    expect(verification?.textContent).toContain('核验')
+    expect(verification?.textContent).toContain('MilkSU 实测')
+    expect(verification?.textContent).toContain('目录树')
+    expect(verification?.textContent).toContain('/Users/me/backups/old')
+
+    const verdict = host.querySelector('[data-testid="approval-verdict"]')
+    expect(verdict?.textContent).toMatch(/风险：(低|中|高)/)
+
+    // The raw command lives in a collapsed details element, not in the card body.
+    const details = [...host.querySelectorAll('details')]
+    expect(details.some(element => element.textContent?.includes('查看原始命令'))).toBe(true)
+  })
+
+  it('says the requester did not provide a purpose instead of leaving it empty', async () => {
+    const { host } = await mountMessage({
+      id: 'message-notext',
+      role: 'tool',
+      content: 'rm -rf /Users/me/work/notes',
+      timestamp: 1,
+      toolName: 'bash',
+      approvalRequestId: 'approval-notext',
+      approvalState: 'pending',
+    })
+    await nextTick()
+
+    const brief = host.querySelector('[data-testid="approval-brief"]')
+    expect(brief?.textContent).toContain('发起者未提供')
+  })
+
+  // Defect 11: a find -delete must show its start directory, never the workspace root.
+  it('reports the find start directory for find -delete', async () => {
+    const { host } = await mountMessage({
+      id: 'message-find',
+      role: 'tool',
+      content: "find work/logs -name '*.log' -delete",
+      timestamp: 1,
+      toolName: 'bash',
+      approvalRequestId: 'approval-find',
+      approvalState: 'pending',
+    })
+    await nextTick()
+
+    const verification = host.querySelector('[data-testid="approval-verification"]')
+    expect(verification?.textContent).toContain('work/logs')
+    expect(verification?.textContent).toContain('目录树')
+  })
+
+  // High risk (protected target) must hide the allow button entirely.
+  it('offers only deny when the verification is high risk', async () => {
+    const { host } = await mountMessage({
+      id: 'message-protected',
+      role: 'tool',
+      content: `rm -rf ${process.env.HOME}/Library/Application Support/com.milksu.app.beta/runtime-data`,
+      timestamp: 1,
+      toolName: 'bash',
+      approvalRequestId: 'approval-protected',
+      approvalState: 'pending',
+      approvalGrantable: true,
+    })
+    await nextTick()
+
+    expect(host.querySelector('[data-testid="approval-gate"]')).not.toBeNull()
+    const labels = [...host.querySelectorAll('button')].map(button => button.textContent ?? '')
+    expect(labels.some(label => label.includes('拒绝'))).toBe(true)
+    expect(labels.some(label => label.includes('允许这一次'))).toBe(false)
   })
 })
