@@ -1313,7 +1313,9 @@ describe('useConversations blocked deletion notice', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(conversations.engineNotice.value).toContain('已拦截一条删除命令')
-    expect(conversations.engineNotice.value).toContain('no reviewed approval left')
+    expect(conversations.engineNotice.value).toContain('未执行')
+    // The engine's English wording is summarised, not pasted into a Chinese status line.
+    expect(conversations.engineNotice.value).not.toContain('reviewed approval')
     expect(conversations.conversations.value[0]?.messages.length).toBe(0)
   })
 })

@@ -2416,15 +2416,17 @@ export function useConversations() {
       if (type === 'destructive.blocked') {
         // The guard refused a deletion without asking. The reader must see that the command
         // did nothing and why - as a status line, never as a message in the transcript.
-        const notice = String(
+        const reason = String(
           (event.payload as unknown as { reason?: string; notice?: string })?.reason
           ?? (event.payload as unknown as { notice?: string })?.notice
           ?? '',
         ).trim()
-        pushEngineNotice(t(
-          `已拦截一条删除命令：${notice || '未通过安全判定'} —— 未执行。`,
-          `Refused a delete command: ${notice || 'it did not pass the safety check'} - nothing ran.`,
-        ))
+        // The engine speaks English for these refusals. Mixing that into a Chinese status
+        // line reads badly, so an untranslated reason is summarised instead of pasted.
+        const localized = /[\u4e00-\u9fff]/.test(reason) ? reason : ''
+        pushEngineNotice(localized
+          ? t(`已拦截一条删除命令：${localized} —— 未执行。`, `Refused a delete command: ${localized} - nothing ran.`)
+          : t('已拦截一条删除命令 —— 未执行。', 'Refused a delete command - nothing ran.'))
         return
       }
       if (type === 'agent.delivery') {
