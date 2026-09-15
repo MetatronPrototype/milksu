@@ -156,3 +156,30 @@ describe("ChatPage approval bar and asks", () => {
     expect(bar?.textContent).toContain("bash")
   })
 })
+
+describe("ChatPage approval bar gate", () => {
+  // The card refuses an unknown target; the bar used to offer Allow anyway, which let
+  // the reader grant exactly what the card denied.
+  it("offers only deny when the verification refuses", async () => {
+    const conversation = longConversationWithApproval(20)
+    conversation.messages.at(-1)!.content = "ls /tmp/old | xargs rm -rf"
+    const { host } = mountPage(conversation)
+    await nextTick()
+    await nextTick()
+
+    expect(host.querySelector('[data-testid="approval-bar-gate"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="approval-bar-allow"]')).toBeNull()
+    expect(host.querySelector('[data-testid="approval-bar-deny"]')).not.toBeNull()
+  })
+
+  it("still offers allow for a scoped delete", async () => {
+    const conversation = longConversationWithApproval(20)
+    conversation.messages.at(-1)!.content = "rm -rf /Users/me/work/build"
+    const { host } = mountPage(conversation)
+    await nextTick()
+    await nextTick()
+
+    expect(host.querySelector('[data-testid="approval-bar-gate"]')).toBeNull()
+    expect(host.querySelector('[data-testid="approval-bar-allow"]')).not.toBeNull()
+  })
+})

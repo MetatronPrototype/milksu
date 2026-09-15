@@ -45,6 +45,7 @@ import {
 } from 'lucide-vue-next'
 import { invokeCommand, listenEvent } from '@/desktop'
 import { nextChatAutoScrollPinned } from '@/lib/chatAutoScroll'
+import { assessDestructiveRequest } from '@/lib/destructiveTarget'
 import { t } from '@/lib/uiLocale'
 import { isGeneratedScratchWorkspace } from '@/lib/codingConversationGroups'
 import AgentPixelLoader from '@/components-vue/AgentPixelLoader.vue'
@@ -286,6 +287,19 @@ const pendingApprovalMessage = computed(() => (
     && !isAskMessage(message)
   )) ?? null
 ))
+// The bar must use the same verdict as the card, or the reader can approve from the
+// bar what the card refused. `canAllow` only depends on the command text, so both
+// places compute it from the same function and the same input.
+const approvalAssessed = computed(() => assessDestructiveRequest(pendingApprovalMessage.value?.content ?? ''))
+const approvalBarIsDestructive = computed(() => {
+  const command = pendingApprovalMessage.value?.content ?? ''
+  return /(^|\s)(rm|find|unlink|shred)\b/.test(command)
+    || /\bxargs\b/.test(command)
+    || approvalAssessed.value.targets.some(target => target.kind !== 'unknown')
+})
+const approvalCanAllow = computed(() => (
+  !approvalBarIsDestructive.value || approvalAssessed.value.canAllow
+))
 const approvalSubmitting = ref(false)
 const approvalError = ref('')
 const approvalSummary = computed(() => {
@@ -298,6 +312,8 @@ const approvalSummary = computed(() => {
 function submitApproval(approved: boolean) {
   const message = pendingApprovalMessage.value
   if (!message?.approvalRequestId || approvalSubmitting.value) return
+  // Never send an approval the verification refused, whatever the UI shows.
+  if (approved && !approvalCanAllow.value) return
   approvalSubmitting.value = true
   approvalError.value = ''
   emit('respondApproval', message.approvalRequestId, approved, 'once')
@@ -2364,6 +2380,13 @@ defineExpose({
         <span v-else-if="approvalError" class="shrink-0 text-caption text-destructive">
           {{ approvalError }}
         </span>
+        <span
+          v-else-if="!approvalCanAllow"
+          class="shrink-0 text-caption font-medium text-destructive"
+          data-testid="approval-bar-gate"
+        >
+          {{ t('核验拒绝：本卡只提供「拒绝」', 'Verification refused: deny only') }}
+        </span>
         <Button
           type="button"
           variant="outline"
@@ -2375,6 +2398,7 @@ defineExpose({
           {{ t('拒绝', 'Deny') }}
         </Button>
         <Button
+          v-if="approvalCanAllow"
           type="button"
           variant="brand"
           size="sm"
