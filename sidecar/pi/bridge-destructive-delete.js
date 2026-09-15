@@ -134,6 +134,33 @@ function shellWords(command) {
   return words;
 }
 
+// A heredoc body is data, not commands: "cat <<EOF" followed by "rm -rf /" must not be
+// read as a delete. Only the line that opens the heredoc is kept.
+function stripHeredocBodies(command) {
+  const lines = String(command ?? "").split("\n");
+  const kept = [];
+  let pending = null;
+  for (const line of lines) {
+    if (pending) {
+      const candidate = pending.stripTabs ? line.replace(/^\t+/, "") : line;
+      if (candidate.trim() === pending.marker) pending = null;
+      continue;
+    }
+    kept.push(line);
+    const match = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(line);
+    if (match) pending = { marker: match[3], stripTabs: match[1] === "-" };
+  }
+  return kept.join("\n");
+}
+
+// These read, print or search - they never delete a tree. Without this, a pattern like
+// `grep rm -rf .` (or any unquoted search term) looked like an actual recursive delete.
+const readOnlyShellCommands = new Set([
+  "grep", "egrep", "fgrep", "rg", "ag", "ack",
+  "echo", "printf", "cat", "head", "tail", "less", "more", "wc",
+  "which", "whereis", "type",
+]);
+
 function commandSegments(command) {
   const segments = [[]];
   for (const word of shellWords(command)) {
@@ -174,7 +201,25 @@ function positionalTargets(words, start, ignoredOptions = new Set()) {
 
 export function recursiveDeleteTargets(command) {
   const targets = [];
-  for (const words of commandSegments(command)) {
+  for (const words of commandSegments(stripHeredocBodies(command))) {
+    const head = (words[0] ?? "").split(/[\\/]/).at(-1).toLowerCase();
+    if (readOnlyShellCommands.has(head)) continue;
+    // A delete hidden in a shell string (`bash -c "rm -rf x"`) is still a delete.
+    if (["sh", "bash", "zsh", "dash", "ksh"].includes(head)) {
+      const commandFlag = words.slice(1).findIndex(value => value === "-c");
+      if (commandFlag >= 0 && words[commandFlag + 2]) {
+        targets.push(...recursiveDeleteTargets(words.slice(commandFlag + 2).join(" ")));
+      }
+      continue;
+    }
+    // `... | xargs rm -rf` takes its targets from stdin, so the target is unknown: treat
+    // it as the working directory instead of letting it pass unseen.
+    if (head === "xargs") {
+      const inner = recursiveDeleteTargets(words.slice(1).join(" "));
+      if (inner.length) targets.push(...inner);
+      else if (words.some(value => /(^|\/)rm$/.test(value))) targets.push(".");
+      continue;
+    }
     const lowered = words.map(value => value.toLowerCase());
     const powershellIndex = lowered.findIndex(value => (
       ["powershell", "powershell.exe", "pwsh", "pwsh.exe"].includes(

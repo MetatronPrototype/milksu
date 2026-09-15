@@ -204,3 +204,21 @@ test("requires a purpose and a safety note for a recursive delete", () => {
   assert.equal(provided.purpose, "删除旧备份");
   assert.equal(provided.safety, "程序副本，可重建");
 });
+
+// A pattern or a heredoc body is data, not a command: searching for "rm -rf" must not be
+// treated as deleting, while a delete hidden inside a shell string still must be.
+test("the parser ignores quoted text, grep patterns and heredoc bodies", () => {
+  assert.deepEqual(recursiveDeleteTargets('grep -rn "rm -rf /" .'), []);
+  assert.deepEqual(recursiveDeleteTargets("grep rm -rf ."), []);
+  assert.deepEqual(recursiveDeleteTargets('echo "rm -rf /tmp/x"'), []);
+  assert.deepEqual(recursiveDeleteTargets("cat <<EOF\nrm -rf /tmp/x\nEOF\n"), []);
+  assert.deepEqual(recursiveDeleteTargets("cat <<-\"EOT\"\n\trm -rf /tmp/x\n\tEOT\n"), []);
+  // ... but a real delete is still found.
+  assert.deepEqual(recursiveDeleteTargets("rm -rf /tmp/x"), ["/tmp/x"]);
+  assert.deepEqual(recursiveDeleteTargets('rm -rf "/tmp/a b"'), ["/tmp/a b"]);
+  assert.deepEqual(recursiveDeleteTargets('bash -c "rm -rf /tmp/y"'), ["/tmp/y"]);
+  assert.deepEqual(recursiveDeleteTargets("sh -c 'rm -rf /tmp/z'"), ["/tmp/z"]);
+  assert.deepEqual(recursiveDeleteTargets("find /tmp/x -delete"), ["/tmp/x"]);
+  // A pipe into xargs has no visible target, so the working directory is assumed.
+  assert.deepEqual(recursiveDeleteTargets("grep x . | xargs rm -rf"), ["."]);
+})
