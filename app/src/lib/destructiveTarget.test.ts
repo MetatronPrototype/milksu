@@ -241,14 +241,14 @@ describe('approval assessment uses the structured input', () => {
   })
 })
 
-describe('evidence: the old input was the bug', () => {
-  // Keeping this assertion documents why the structured input is required: the card's own
-  // prose really does look undetermined when it is parsed as a command.
-  it('prose content alone used to look undetermined', () => {
-    const legacy = assessDestructiveRequest(proseCard.content)
-    expect(legacy.undetermined).toBe(true)
-    expect(legacy.canAllow).toBe(false)
-    // ... while the structured input of the very same card is clear.
-    expect(assessApprovalRequest(proseCard).undetermined).toBe(false)
+describe("evidence: prose and structured input agree on the target", () => {
+  // The structured input is the source of truth for the card and the bar. This asserts the
+  // two paths cannot point at different things for the very same request.
+  it("names the same target from prose and from the structured input", () => {
+    const structured = assessApprovalRequest(proseCard)
+    const fromProse = assessDestructiveRequest(proseCard.content)
+    expect(structured.targets[0]?.path).toBe("/private/tmp/probe-v3")
+    expect(fromProse.targets[0]?.path).toBe(structured.targets[0]?.path)
+    expect(structured.unverified).toBeUndefined()
   })
 })
