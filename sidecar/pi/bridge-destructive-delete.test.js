@@ -13,7 +13,12 @@ import {
   destructiveDeleteDecision,
   destructiveJustification,
   expandDeleteTarget,
+  commandForTool,
+  consumeDestructiveDeleteCredential,
+  consumeMatchingDestructiveDeleteCredential,
+  issueDestructiveDeleteCredential,
   recursiveDeleteTargets,
+  resetDestructiveDeleteCredentials,
 } from "./bridge-destructive-delete.js";
 
 test("recursive deletion parser covers POSIX, PowerShell, Windows, find, and git clean", () => {
@@ -221,4 +226,90 @@ test("the parser ignores quoted text, grep patterns and heredoc bodies", () => {
   assert.deepEqual(recursiveDeleteTargets("find /tmp/x -delete"), ["/tmp/x"]);
   // A pipe into xargs has no visible target, so the working directory is assumed.
   assert.deepEqual(recursiveDeleteTargets("grep x . | xargs rm -rf"), ["."]);
+})
+
+// An approval authorises one concrete action, once. The credential binds the normalised
+// command, the conversation and the targets, and is spent on first use.
+test("a destructive credential is spent on first use", () => {
+  resetDestructiveDeleteCredentials();
+  const input = { command: "rm -rf /tmp/x", conversationId: "conversation-a", targets: ["/tmp/x"] };
+  const token = issueDestructiveDeleteCredential(input);
+
+  assert.equal(consumeDestructiveDeleteCredential(token, input).ok, true);
+  const replay = consumeDestructiveDeleteCredential(token, input);
+  assert.equal(replay.ok, false);
+  assert.match(replay.reason, /approval/i);
+})
+
+test("a credential only matches the command it was issued for", () => {
+  resetDestructiveDeleteCredentials();
+  const token = issueDestructiveDeleteCredential({
+    command: "rm -rf /tmp/x",
+    conversationId: "conversation-a",
+    targets: ["/tmp/x"],
+  })
+
+  assert.equal(consumeDestructiveDeleteCredential(token, {
+    command: "rm -rf /tmp/y",
+    conversationId: "conversation-a",
+    targets: ["/tmp/y"],
+  }).ok, false)
+  // Spent by the mismatching attempt, so the original no longer passes either.
+  assert.equal(consumeDestructiveDeleteCredential(token, {
+    command: "rm -rf /tmp/x",
+    conversationId: "conversation-a",
+    targets: ["/tmp/x"],
+  }).ok, false)
+})
+
+test("a credential belongs to one conversation", () => {
+  resetDestructiveDeleteCredentials();
+  const token = issueDestructiveDeleteCredential({
+    command: "rm -rf /tmp/x",
+    conversationId: "conversation-a",
+    targets: ["/tmp/x"],
+  })
+  assert.equal(consumeDestructiveDeleteCredential(token, {
+    command: "rm -rf /tmp/x",
+    conversationId: "conversation-b",
+    targets: ["/tmp/x"],
+  }).ok, false)
+})
+
+// The argv shape and the string shape describe the same delete, so they must decide
+// identically - at the parser and at the execution point.
+test("the argv shape and the string shape decide alike", () => {
+  const asString = commandForTool("bash", { command: "rm -rf a b" })
+  const asArgv = commandForTool("bash", { shell: false, argv: ["rm", "-rf", "a", "b"] })
+  assert.deepEqual(recursiveDeleteTargets(asArgv), recursiveDeleteTargets(asString))
+
+  resetDestructiveDeleteCredentials();
+  issueDestructiveDeleteCredential({
+    command: asString,
+    conversationId: "conversation-a",
+    targets: recursiveDeleteTargets(asString),
+  })
+  assert.equal(consumeMatchingDestructiveDeleteCredential({
+    command: asArgv,
+    conversationId: "conversation-a",
+    targets: recursiveDeleteTargets(asArgv),
+  }).ok, true)
+})
+
+// The execution point refuses a delete it never saw approved, even when the tool layer
+// was bypassed.
+test("a background launch refuses an unreviewed recursive delete", async () => {
+  resetDestructiveDeleteCredentials()
+  const { spawnCommand } = await import("./bridge-background-process.js")
+  assert.throws(
+    () => spawnCommand({ command: "rm -rf /tmp/unreviewed" }, "/tmp/milksu-d9-test.log", false),
+    /refused this deletion/i,
+  )
+  // A command that deletes nothing is not refused by this guard (any other failure of
+  // the background runtime is unrelated).
+  try {
+    spawnCommand({ command: "echo hello" }, "/tmp/milksu-d9-test.log", false)
+  } catch (error) {
+    assert.doesNotMatch(String(error?.message ?? error), /refused this deletion/i)
+  }
 })

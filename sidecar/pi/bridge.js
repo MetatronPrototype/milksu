@@ -150,8 +150,11 @@ import {
   steerSession,
 } from "./bridge-steering.js";
 import {
+  commandForTool,
   destructiveDeleteDecision,
   destructiveJustification,
+  issueDestructiveDeleteCredential,
+  recursiveDeleteTargets,
 } from "./bridge-destructive-delete.js";
 import piWebResearchExtension from "./bridge-web-research.js";
 import currentProviderRuntime from "./current-provider-runtime.cjs";
@@ -642,6 +645,14 @@ function createCodingPermissionExtension(
           };
         }
         destructiveDeleteApproved = true;
+        // The approval is spent here: it authorises exactly this command against exactly
+        // these targets in this conversation, once. Re-running it needs a new review.
+        const approvedCommand = commandForTool(event.toolName, event.input);
+        issueDestructiveDeleteCredential({
+          command: approvedCommand,
+          conversationId,
+          targets: recursiveDeleteTargets(approvedCommand),
+        });
       }
       if (event.toolName === "mcp") {
         const serverName = selectedMcpServer(policy, event.input);

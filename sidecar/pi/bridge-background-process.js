@@ -8,6 +8,10 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { buildCodingBackgroundLaunch } from "./bridge-policy.js";
+import {
+  consumeMatchingDestructiveDeleteCredential,
+  recursiveDeleteTargets,
+} from "./bridge-destructive-delete.js";
 
 export function validateCommandSpec(specification) {
   if (specification.shell === false) {
@@ -34,6 +38,23 @@ function reviewedLaunch(specification, trustedOutputPath = "") {
   return buildCodingBackgroundLaunch(specification, trustedOutputPath);
 }
 
+// The execution point checks the same approval the interactive path does. A recursive
+// delete that reaches a real spawn without an unspent, matching review is refused here
+// even though the tool layer already refused it: this is the last place before the disk.
+function guardDestructiveExecution(specification, conversationId = "") {
+  const command = typeof specification.command === "string"
+    ? specification.command
+    : (specification.argv ?? []).join(" ");
+  const targets = recursiveDeleteTargets(command);
+  if (!targets.length) return;
+  const outcome = consumeMatchingDestructiveDeleteCredential({
+    command,
+    conversationId,
+    targets,
+  });
+  if (!outcome.ok) throw new Error(outcome.reason);
+}
+
 function spawnLaunch(launch, detached, stdio) {
   const child = spawn(launch.file, launch.arguments, {
     cwd: launch.cwd,
@@ -49,9 +70,10 @@ function spawnLaunch(launch, detached, stdio) {
   return child;
 }
 
-export function spawnCommand(specification, logPath, detached) {
+export function spawnCommand(specification, logPath, detached, conversationId = "") {
   // Build and validate the launch before creating the log. The background
   // extension owns this path; model input never does.
+  guardDestructiveExecution(specification, conversationId);
   const launch = reviewedLaunch(specification, logPath);
   mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
   const descriptor = openSync(logPath, "a", 0o600);
@@ -94,6 +116,7 @@ export function spawnCommand(specification, logPath, detached) {
 
 export function runCommandOnce(specification, maxBufferBytes = 1024 * 1024) {
   const startedAt = Date.now();
+  guardDestructiveExecution(specification);
   const launch = reviewedLaunch(specification);
   const child = spawnLaunch(
     launch,

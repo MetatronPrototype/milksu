@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   lstat,
   readdir,
@@ -15,6 +16,82 @@ import {
 
 const largeDirectoryEntryLimit = 1000;
 const largeDirectoryByteLimit = 1024 * 1024 * 1024;
+
+// An approval is for one concrete action, not for a class of actions. The credential
+// binds the normalised command, the conversation and the targets together, and it is
+// spent on first use, so re-running "the same" delete needs a fresh review.
+const destructiveCredentialTtlMs = 5 * 60 * 1000;
+const destructiveCredentials = new Map();
+
+function normalizeCommandText(command) {
+  return String(command ?? "").replace(/\s+/g, " ").trim();
+}
+
+export function destructiveCredentialFingerprint(input = {}) {
+  const targets = [...(input.targets ?? [])].map(value => String(value)).sort();
+  return createHash("sha256")
+    .update([
+      normalizeCommandText(input.command),
+      String(input.conversationId ?? ""),
+      targets.join("\u0000"),
+    ].join("\u0001"))
+    .digest("hex");
+}
+
+export function issueDestructiveDeleteCredential(input, now = Date.now()) {
+  const fingerprint = destructiveCredentialFingerprint(input);
+  const token = createHash("sha256")
+    .update(`${fingerprint}:${now}:${Math.random()}:${destructiveCredentials.size}`)
+    .digest("hex");
+  destructiveCredentials.set(token, { fingerprint, issuedAt: now });
+  return token;
+}
+
+// Returns the reason instead of throwing so both callers report the same wording.
+export function consumeDestructiveDeleteCredential(token, input, now = Date.now()) {
+  const key = String(token ?? "");
+  const record = destructiveCredentials.get(key);
+  if (!record) {
+    return {
+      ok: false,
+      reason:
+        "MilkSU refused this deletion: it has no reviewed approval left (an approval is "
+        + "spent once, so run it again to review it again)",
+    };
+  }
+  // Spent on first use, whatever the outcome: a mismatching replay must not keep it alive.
+  destructiveCredentials.delete(key);
+  if (now - record.issuedAt > destructiveCredentialTtlMs) {
+    return { ok: false, reason: "MilkSU refused this deletion: the approval expired" };
+  }
+  if (record.fingerprint !== destructiveCredentialFingerprint(input)) {
+    return {
+      ok: false,
+      reason: "MilkSU refused this deletion: it does not match the command that was approved",
+    };
+  }
+  return { ok: true, reason: "" };
+}
+
+export function resetDestructiveDeleteCredentials() {
+  destructiveCredentials.clear();
+}
+
+// The execution point does not receive a token: it presents the command it is about to
+// run and only passes when a reviewed approval for exactly that command is still unspent.
+export function consumeMatchingDestructiveDeleteCredential(input, now = Date.now()) {
+  const fingerprint = destructiveCredentialFingerprint(input);
+  for (const [token, record] of destructiveCredentials) {
+    if (record.fingerprint !== fingerprint) continue;
+    return consumeDestructiveDeleteCredential(token, input, now);
+  }
+  return {
+    ok: false,
+    reason:
+      "MilkSU refused this deletion: it was never reviewed here, and a background launch "
+      + "cannot be approved interactively. Run it in the foreground so it can be reviewed.",
+  };
+}
 
 function samePath(left, right, platform = process.platform) {
   const normalize = value => (
@@ -337,13 +414,25 @@ export function destructiveJustification(input) {
   };
 }
 
-function commandForTool(toolName, input) {
-  if (toolName === "bash") return String(input?.command ?? "");
+export function commandForTool(toolName, input) {
+  const record = input && typeof input === "object" ? input : {};
+  // An argv shape and a command string describe the same execution, so they must be read
+  // the same way for every tool - including shell:false, where only argv exists.
+  const argv = Array.isArray(record.argv)
+    ? record.argv
+    : Array.isArray(record.args)
+      ? record.args
+      : null;
+  if (argv?.length) return argv.map(value => String(value)).join(" ");
+  if (toolName === "bash") return String(record.command ?? "");
   if (toolName !== "bg_task") return "";
-  const action = String(input?.action ?? "").trim();
-  if (!["start", "restart"].includes(action)) return "";
-  if (typeof input?.command === "string") return input.command;
-  return Array.isArray(input?.argv) ? input.argv.join(" ") : "";
+  // Any action that carries a command or an argv executes something; the guard must
+  // judge all of them (spawn/start/restart/resume), not just the ones we remembered.
+  return typeof record.command === "string"
+    ? record.command
+    : typeof record.commandText === "string"
+      ? record.commandText
+      : "";
 }
 
 export async function destructiveDeleteDecision({
