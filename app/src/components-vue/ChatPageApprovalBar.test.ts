@@ -3,7 +3,7 @@
 import { createApp, nextTick, ref, type App } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import ChatPage from './ChatPage.vue'
-import type { Conversation } from '@/types'
+import type { Conversation, Message } from '@/types'
 
 vi.mock('@/desktop', () => ({
   hasDesktopRuntime: () => false,
@@ -23,7 +23,7 @@ afterEach(() => {
 
 /** A long thread whose last message is waiting for a decision. */
 function longConversationWithApproval(messageCount: number): Conversation {
-  const messages = Array.from({ length: messageCount }, (_, index) => ({
+  const messages: Message[] = Array.from({ length: messageCount }, (_, index) => ({
     id: `m${index}`,
     role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
     content: `第 ${index} 条`,
@@ -32,7 +32,7 @@ function longConversationWithApproval(messageCount: number): Conversation {
   }))
   messages.push({
     id: 'approval-1',
-    role: 'tool' as const,
+    role: 'assistant' as const,
     content: 'rm -rf /Users/me/backups/old',
     timestamp: messageCount + 1,
     status: 'done' as const,
