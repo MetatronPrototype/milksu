@@ -1,60 +1,8 @@
-// The requester's purpose/safety note must reach the approval card. It used to be dropped
-// by the broker, so every destructive request showed "not provided by the requester".
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import { createApprovalBroker } from "./bridge-approval.js";
 
-test("an approval request carries the requester's justification", async () => {
-  const events = [];
-  let counter = 0;
-  const broker = createApprovalBroker(
-    (conversationId, type, payload) => events.push({ conversationId, type, payload }),
-    () => `request-${counter += 1}`,
-  );
-
-  const pending = broker.request({
-    conversationId: "conversation-a",
-    toolName: "destructive-delete",
-    content: 'rm -rf "/private/tmp/gate-probe-big"',
-    input: 'rm -rf "/private/tmp/gate-probe-big"',
-    justification: { purpose: "验收测试", safety: "可随时重建" },
-  });
-
-  const requested = events.find(event => event.type === "approval_requested");
-  assert.deepEqual(requested?.payload.justification, {
-    purpose: "验收测试",
-    safety: "可随时重建",
-  });
-
-  broker.respond({
-    conversationId: "conversation-a",
-    requestId: "request-1",
-    approved: false,
-  });
-  assert.equal(await pending, false);
-});
-
-test("a request without a justification stays without one", async () => {
-  const events = [];
-  const broker = createApprovalBroker((conversationId, type, payload) => {
-    events.push({ conversationId, type, payload });
-  }, () => "request-1");
-
-  void broker.request({
-    conversationId: "conversation-a",
-    toolName: "bash",
-    content: "echo hi",
-    input: "echo hi",
-  });
-
-  const requested = events.find(event => event.type === "approval_requested");
-  assert.equal("justification" in (requested?.payload ?? {}), false);
-});
-
-// The requester's purpose/safety note must reach the approval card. It used to be dropped
-// by the broker, so every destructive request showed "not provided by the requester".
-test("an approval request carries the requester's justification", async () => {
+test("choice broker waits for a selected option", async () => {
   const events = [];
   const broker = createApprovalBroker(
     (id, type, data) => events.push({ id, type, ...data }),
@@ -297,4 +245,53 @@ test("conversation grant skips later matching approvals and ignores paid or acco
   });
   assert.equal(await imageGen, true);
   assert.equal(events.at(-1).reason, "approved by user");
+});
+
+// The requester's purpose/safety note must reach the approval card. It used to be dropped
+// by the broker, so every destructive request showed "not provided by the requester".
+test("an approval request carries the requester's justification", async () => {
+  const events = [];
+  let counter = 0;
+  const broker = createApprovalBroker(
+    (conversationId, type, payload) => events.push({ conversationId, type, payload }),
+    () => `request-${counter += 1}`,
+  );
+
+  const pending = broker.request({
+    conversationId: "conversation-a",
+    toolName: "destructive-delete",
+    content: 'rm -rf "/private/tmp/gate-probe-big"',
+    input: 'rm -rf "/private/tmp/gate-probe-big"',
+    justification: { purpose: "验收测试", safety: "可随时重建" },
+  });
+
+  const requested = events.find(event => event.type === "approval_requested");
+  assert.deepEqual(requested?.payload.justification, {
+    purpose: "验收测试",
+    safety: "可随时重建",
+  });
+
+  broker.respond({
+    conversationId: "conversation-a",
+    requestId: "request-1",
+    approved: false,
+  });
+  assert.equal(await pending, false);
+});
+
+test("a request without a justification stays without one", async () => {
+  const events = [];
+  const broker = createApprovalBroker((conversationId, type, payload) => {
+    events.push({ conversationId, type, payload });
+  }, () => "request-1");
+
+  void broker.request({
+    conversationId: "conversation-a",
+    toolName: "bash",
+    content: "echo hi",
+    input: "echo hi",
+  });
+
+  const requested = events.find(event => event.type === "approval_requested");
+  assert.equal("justification" in (requested?.payload ?? {}), false);
 });

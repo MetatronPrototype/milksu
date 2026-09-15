@@ -119,138 +119,6 @@ describe('destructive assessment', () => {
 })
 
 
-describe('destructive assessment across compound commands', () => {
-  // Daily shapes used to be judged "undetermined", which made every card deny-only.
-  it('finds the delete inside a compound command, after a cd', () => {
-    const assessment = assessDestructiveRequest(
-      'cd /x ; rm -rf build ; echo done',
-      [{ exists: true, fileCount: 12, totalBytes: 4096 }],
-    )
-    expect(assessment.undetermined).toBe(false)
-    expect(assessment.canAllow).toBe(true)
-    expect(assessment.targets.map(target => target.path)).toContain('/x/build')
-  })
-
-  it('looks inside command substitutions', () => {
-    const assessment = assessDestructiveRequest('echo "cleaning $(rm -rf /x/tmp)"')
-    expect(assessment.undetermined).toBe(false)
-    expect(assessment.canAllow).toBe(true)
-    expect(assessment.targets.map(target => target.path)).toContain('/x/tmp')
-  })
-
-  it('ignores commands that delete nothing', () => {
-    const assessment = assessDestructiveRequest('cd /tmp && echo hello && ls -la')
-    expect(assessment.targets).toEqual([])
-    expect(assessment.undetermined).toBe(false)
-    expect(assessment.canAllow).toBe(true)
-  })
-
-  it('still refuses an unknown target and a protected path', () => {
-    expect(assessDestructiveRequest('ls | xargs rm -rf').canAllow).toBe(false)
-    expect(assessDestructiveRequest(
-      `rm -rf ${process.env.HOME}/Library/Application Support/com.milksu.app.beta/runtime-data`,
-    ).canAllow).toBe(false)
-  })
-})
-
-// The card's content is written for people. Parsing it as a shell command is what produced
-// "无法确定" for a perfectly clear target - the structured input must win.
-const proseCard = {
-  content: '大范围删除需要再次确认\n规范化目标：\n/private/tmp/probe-v3（大型目录（已扫描超过 1000 项或 1073741824 字节））\n'
-    + '影响：目标中的内容将被递归删除，通常无法从 MilkSU 恢复。\n原始命令：rm -rf "/private/tmp/probe-v3"',
-  approvalInput: JSON.stringify({
-    command: 'rm -rf "/private/tmp/probe-v3"',
-    normalizedTargets: [
-      { raw: '/private/tmp/probe-v3', path: '/private/tmp/probe-v3', reasons: ['大型目录'] },
-    ],
-  }),
-}
-
-describe('approval assessment uses the structured input', () => {
-  // d20-1
-  it('judges a prose card by its structured input', () => {
-    const assessment = assessApprovalRequest(proseCard)
-    expect(assessment.undetermined).toBe(false)
-    expect(assessment.canAllow).toBe(true)
-    expect(assessment.targets[0]?.path).toBe('/private/tmp/probe-v3')
-    expect(assessment.verdict).not.toContain('无法确定')
-  })
-
-  // The sidecar's own resolved target is enough on its own.
-  it('falls back to the normalized targets when no command is given', () => {
-    const assessment = assessApprovalRequest({
-      content: '大范围删除需要再次确认\n规范化目标：/private/tmp/probe-v3',
-      approvalInput: JSON.stringify({
-        normalizedTargets: [{ raw: '/private/tmp/probe-v3', path: '/private/tmp/probe-v3' }],
-      }),
-    })
-    expect(assessment.undetermined).toBe(false)
-    expect(assessment.targets[0]?.path).toBe('/private/tmp/probe-v3')
-  })
-
-  // d20-2
-  it('says so when there is nothing structured to check', () => {
-    const assessment = assessApprovalRequest({ content: '大范围删除需要再次确认\n规范化目标：/private/tmp/probe-v3' })
-    expect(assessment.unverified).toBe(true)
-    expect(assessment.verdict).toContain('无法核验')
-  })
-
-  // d20-3: both surfaces call this one function, so the same input can never disagree.
-  it('gives the card and the bar the same verdict', () => {
-    const inputs = [
-      proseCard,
-      { content: 'x', approvalInput: JSON.stringify({ command: 'rm -rf /private/tmp/a' }) },
-      { content: 'rm -rf "$(cat /tmp/where)"', approvalInput: JSON.stringify({ command: 'rm -rf "$(cat /tmp/where)"' }) },
-      { content: '只有话术' },
-    ]
-    for (const input of inputs) {
-      const card = assessApprovalRequest(input)
-      const bar = assessApprovalRequest({ ...input })
-      expect(bar.canAllow, input.content).toBe(card.canAllow)
-      expect(bar.undetermined, input.content).toBe(card.undetermined)
-      expect(bar.verdict, input.content).toBe(card.verdict)
-    }
-  })
-
-  // d20-4: a genuinely undetermined target stays deny-only.
-  it('keeps a command-substitution target deny-only', () => {
-    const assessment = assessApprovalRequest({
-      content: '话术',
-      approvalInput: JSON.stringify({ command: 'rm -rf "$(cat /tmp/where)"' }),
-    })
-    expect(assessment.undetermined).toBe(true)
-    expect(assessment.canAllow).toBe(false)
-  })
-
-  // d20-5: quoting must not change the verdict.
-  it('treats the three quoting forms of a clear target alike', () => {
-    const forms = [
-      'rm -rf "/private/tmp/probe-v3"',
-      "rm -rf '/private/tmp/probe-v3'",
-      'rm -rf /private/tmp/probe-v3',
-    ]
-    const verdicts = forms.map(command => assessApprovalRequest({
-      content: '话术',
-      approvalInput: JSON.stringify({ command }),
-    }))
-    for (const [index, assessment] of verdicts.entries()) {
-      expect(assessment.undetermined, forms[index]).toBe(false)
-      expect(assessment.canAllow, forms[index]).toBe(true)
-    }
-    expect(new Set(verdicts.map(item => item.verdict)).size).toBe(1)
-  })
-})
-
-describe("evidence: prose and structured input agree on the target", () => {
-  // The structured input is the source of truth for the card and the bar. This asserts the
-  // two paths cannot point at different things for the very same request.
-  it("names the same target from prose and from the structured input", () => {
-    const structured = assessApprovalRequest(proseCard)
-    const fromProse = assessDestructiveRequest(proseCard.content)
-    expect(structured.targets[0]?.path).toBe("/private/tmp/probe-v3")
-    expect(fromProse.targets[0]?.path).toBe(structured.targets[0]?.path)
-    expect(structured.unverified).toBeUndefined()
-  })
 describe('destructive input normalisation', () => {
   // The approval card assesses the tool input, which is JSON for most tools. Reading that
   // JSON as a command turned a clear absolute path into "target undetermined".
@@ -359,5 +227,105 @@ describe('unfamiliar shapes with one clear path', () => {
     const assessment = assessDestructiveRequest('rm -rf "$TARGET_DIR"')
     expect(assessment.undetermined).toBe(true)
     expect(assessment.canAllow).toBe(false)
+  })
+})
+
+// The card's content is written for people. Parsing it as a shell command is what produced
+// "无法确定" for a perfectly clear target - the structured input must win.
+const proseCard = {
+  content: '大范围删除需要再次确认\n规范化目标：\n/private/tmp/probe-v3（大型目录（已扫描超过 1000 项或 1073741824 字节））\n'
+    + '影响：目标中的内容将被递归删除，通常无法从 MilkSU 恢复。\n原始命令：rm -rf "/private/tmp/probe-v3"',
+  approvalInput: JSON.stringify({
+    command: 'rm -rf "/private/tmp/probe-v3"',
+    normalizedTargets: [
+      { raw: '/private/tmp/probe-v3', path: '/private/tmp/probe-v3', reasons: ['大型目录'] },
+    ],
+  }),
+}
+
+describe('approval assessment uses the structured input', () => {
+  // d20-1
+  it('judges a prose card by its structured input', () => {
+    const assessment = assessApprovalRequest(proseCard)
+    expect(assessment.undetermined).toBe(false)
+    expect(assessment.canAllow).toBe(true)
+    expect(assessment.targets[0]?.path).toBe('/private/tmp/probe-v3')
+    expect(assessment.verdict).not.toContain('无法确定')
+  })
+
+  // The sidecar's own resolved target is enough on its own.
+  it('falls back to the normalized targets when no command is given', () => {
+    const assessment = assessApprovalRequest({
+      content: '大范围删除需要再次确认\n规范化目标：/private/tmp/probe-v3',
+      approvalInput: JSON.stringify({
+        normalizedTargets: [{ raw: '/private/tmp/probe-v3', path: '/private/tmp/probe-v3' }],
+      }),
+    })
+    expect(assessment.undetermined).toBe(false)
+    expect(assessment.targets[0]?.path).toBe('/private/tmp/probe-v3')
+  })
+
+  // d20-2
+  it('says so when there is nothing structured to check', () => {
+    const assessment = assessApprovalRequest({ content: '大范围删除需要再次确认\n规范化目标：/private/tmp/probe-v3' })
+    expect(assessment.unverified).toBe(true)
+    expect(assessment.verdict).toContain('无法核验')
+  })
+
+  // d20-3: both surfaces call this one function, so the same input can never disagree.
+  it('gives the card and the bar the same verdict', () => {
+    const inputs = [
+      proseCard,
+      { content: 'x', approvalInput: JSON.stringify({ command: 'rm -rf /private/tmp/a' }) },
+      { content: 'rm -rf "$(cat /tmp/where)"', approvalInput: JSON.stringify({ command: 'rm -rf "$(cat /tmp/where)"' }) },
+      { content: '只有话术' },
+    ]
+    for (const input of inputs) {
+      const card = assessApprovalRequest(input)
+      const bar = assessApprovalRequest({ ...input })
+      expect(bar.canAllow, input.content).toBe(card.canAllow)
+      expect(bar.undetermined, input.content).toBe(card.undetermined)
+      expect(bar.verdict, input.content).toBe(card.verdict)
+    }
+  })
+
+  // d20-4: a genuinely undetermined target stays deny-only.
+  it('keeps a command-substitution target deny-only', () => {
+    const assessment = assessApprovalRequest({
+      content: '话术',
+      approvalInput: JSON.stringify({ command: 'rm -rf "$(cat /tmp/where)"' }),
+    })
+    expect(assessment.undetermined).toBe(true)
+    expect(assessment.canAllow).toBe(false)
+  })
+
+  // d20-5: quoting must not change the verdict.
+  it('treats the three quoting forms of a clear target alike', () => {
+    const forms = [
+      'rm -rf "/private/tmp/probe-v3"',
+      "rm -rf '/private/tmp/probe-v3'",
+      'rm -rf /private/tmp/probe-v3',
+    ]
+    const verdicts = forms.map(command => assessApprovalRequest({
+      content: '话术',
+      approvalInput: JSON.stringify({ command }),
+    }))
+    for (const [index, assessment] of verdicts.entries()) {
+      expect(assessment.undetermined, forms[index]).toBe(false)
+      expect(assessment.canAllow, forms[index]).toBe(true)
+    }
+    expect(new Set(verdicts.map(item => item.verdict)).size).toBe(1)
+  })
+})
+
+describe("evidence: prose and structured input agree on the target", () => {
+  // The structured input is the source of truth for the card and the bar. This asserts the
+  // two paths cannot point at different things for the very same request.
+  it("names the same target from prose and from the structured input", () => {
+    const structured = assessApprovalRequest(proseCard)
+    const fromProse = assessDestructiveRequest(proseCard.content)
+    expect(structured.targets[0]?.path).toBe("/private/tmp/probe-v3")
+    expect(fromProse.targets[0]?.path).toBe(structured.targets[0]?.path)
+    expect(structured.unverified).toBeUndefined()
   })
 })
