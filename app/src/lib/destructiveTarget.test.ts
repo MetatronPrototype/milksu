@@ -321,3 +321,43 @@ describe('create-then-delete in one command', () => {
     expect(assessment.undetermined).toBe(false)
   })
 })
+
+describe('delete targets behind wrappers and shells', () => {
+  // `sudo rm -rf X` and `bash -c "rm -rf X"` delete exactly what their inner command does.
+  it('sees through sudo, env and shell -c wrappers', () => {
+    const forms = [
+      'sudo rm -rf /private/tmp/probe-v3',
+      'env A=b rm -rf /private/tmp/probe-v3',
+      'bash -c "rm -rf /private/tmp/probe-v3"',
+      "sh -c 'rm -rf /private/tmp/probe-v3'",
+    ]
+    for (const command of forms) {
+      const assessment = assessDestructiveRequest(command)
+      expect(assessment.undetermined, command).toBe(false)
+      expect(assessment.targets[0]?.path, command).toBe('/private/tmp/probe-v3')
+    }
+  })
+})
+
+describe('unfamiliar shapes with one clear path', () => {
+  // A wrapper we do not know about must not turn a single absolute path into "undetermined":
+  // that silently made a reviewed deletion impossible to approve.
+  it('still finds the target when only one absolute path is named', () => {
+    for (const command of [
+      'rm -rf "/private/tmp/probe-v3" --interactive',
+      'nice -n 5 rm -rf "/private/tmp/probe-v3"',
+      'sh -lc "rm -rf /private/tmp/probe-v3"',
+    ]) {
+      const assessment = assessDestructiveRequest(command)
+      expect(assessment.targets[0]?.path, command).toBe('/private/tmp/probe-v3')
+      expect(assessment.undetermined, command).toBe(false)
+    }
+  })
+
+  // ... but a variable target stays undetermined: we cannot know what it points at.
+  it('keeps a variable target undetermined', () => {
+    const assessment = assessDestructiveRequest('rm -rf "$TARGET_DIR"')
+    expect(assessment.undetermined).toBe(true)
+    expect(assessment.canAllow).toBe(false)
+  })
+})

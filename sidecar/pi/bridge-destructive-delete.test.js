@@ -341,3 +341,30 @@ test("a command that creates its own delete target is blocked", async (t) => {
   });
   assert.notEqual(plain?.action, "block");
 });
+
+// The three quoting forms of the same delete must reach the same decision on the sidecar
+// side too: the card's "核验 / 风险" line is produced here, not only in the renderer.
+test("quoted, single-quoted and bare delete targets decide alike", async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), "milksu-quoting-"));
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const target = join(workspace, "probe-quoting");
+  const actions = [];
+  for (const command of [`rm -rf "${target}"`, `rm -rf '${target}'`, `rm -rf ${target}`]) {
+    const decision = await destructiveDeleteDecision({
+      toolName: "bash",
+      input: { command },
+      policy: { workspace },
+    });
+    actions.push(decision?.action ?? "none");
+  }
+  assert.equal(new Set(actions).size, 1, `actions differed: ${JSON.stringify(actions)}`);
+  // Quoting must not change whether the guard recognises the target at all.
+  const guarded = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: 'rm -rf "/"' },
+    policy: { workspace },
+  });
+  assert.ok(guarded?.action, "a quoted root target must still be recognised as destructive");
+});

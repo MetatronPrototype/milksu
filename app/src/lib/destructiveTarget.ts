@@ -200,32 +200,50 @@ export function parseDestructiveTargets(command: string, cwd = '/'): Destructive
   if (!text) return []
   const segments = splitTopLevel(text)
   const collected: DestructiveTarget[] = []
-  let currentCwd = cwd
   for (const segment of segments) {
-    // `cd /x ; rm -rf build` deletes /x/build: track the directory change.
-    const change = /^cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s*$/.exec(segment)
-    if (change) {
-      const raw = change[1] ?? change[2] ?? change[3] ?? ''
-      const next = absolute(raw, currentCwd)
-      if (next) currentCwd = next
-      continue
-    }
-    collected.push(...parseSingleCommand(segment, currentCwd))
+    collected.push(...parseSingleCommand(segment, cwd))
     for (const inner of substitutions(segment)) {
-      collected.push(...parseSingleCommand(inner, currentCwd))
+      collected.push(...parseSingleCommand(inner, cwd))
     }
   }
   return collected
 }
 
-function parseSingleCommand(text: string, cwd: string): DestructiveTarget[] {
-  // A delete inside `$(…)` or backticks is handled by the caller; the outer text must
-  // not be judged on words that only appear inside that substitution.
-  const stripped = text.replace(/\$\([^()]*\)|`[^`]*`/g, ' ')
-  const tokens = tokenize(stripped)
-  if (!tokens.length) {
-    return text === stripped ? [] : []
+// Wrappers that change nothing about what is deleted: `sudo rm -rf x`, `env A=b rm -rf x`.
+const commandWrappers = new Set(['sudo', 'command', 'nice', 'ionice', 'nohup', 'env', 'doas', 'time'])
+
+function stripWrappers(tokens: string[]): string[] {
+  let index = 0
+  while (index < tokens.length && commandWrappers.has(tokens[index] ?? '')) {
+    index += 1
+    // `env NAME=value …` keeps a run of assignments after it.
+    while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] ?? '')) index += 1
   }
+  return index === 0 ? tokens : tokens.slice(index)
+}
+
+/** `sh -c "rm -rf x"`, `bash -lc '…'`: judge the script the shell would run. */
+function shellCommandScript(tokens: string[], text: string): string | undefined {
+  const head = (tokens[0] ?? '').split(/[\\/]/).at(-1)
+  if (!head || !['sh', 'bash', 'zsh', 'dash', 'ksh'].includes(head)) return undefined
+  const flagIndex = tokens.findIndex((token, index) => index > 0 && token === '-c')
+  if (flagIndex >= 0 && tokens[flagIndex + 1]) return tokens.slice(flagIndex + 1).join(' ')
+  // `bash -lc "…"` keeps the script inside the flag.
+  const combined = tokens.slice(1).find(token => /^-[A-Za-z]*c$/.test(token))
+  if (combined) {
+    const script = text.slice(text.indexOf(combined) + combined.length).trim()
+    if (script) return script.replace(/^['"]|['"]$/g, '')
+  }
+  return undefined
+}
+
+function parseSingleCommand(text: string, cwd: string): DestructiveTarget[] {
+  const rawTokens = tokenize(text)
+  if (!rawTokens.length) return []
+  const script = shellCommandScript(rawTokens, text)
+  if (script?.trim()) return parseSingleCommand(script, cwd)
+  const tokens = stripWrappers(rawTokens)
+  if (!tokens.length) return []
 
   // `… | xargs rm` deletes whatever the upstream command produced: not determinable.
   if (/\|\s*xargs\s+rm/.test(text) || /\bxargs\b[^|]*\brm\b/.test(text)) {
@@ -239,7 +257,7 @@ function parseSingleCommand(text: string, cwd: string): DestructiveTarget[] {
 
   if (tokens[0] === 'rm') {
     const operands = tokens.slice(1).filter(token => !isFlag(token))
-    const recursive = /(^|\s)-[a-z]*r/i.test(stripped)
+    const recursive = /(^|\s)-[a-z]*r/i.test(text)
     if (!operands.length) {
       return [{ raw: text, kind: 'unknown', recursive, reason: '没有可识别的删除目标' }]
     }
@@ -278,7 +296,19 @@ function parseSingleCommand(text: string, cwd: string): DestructiveTarget[] {
     return []
   }
 
-  if (/\b(rm|unlink|shred|rmdir|truncate)\b|\bfind\b[^|]*-delete|\bxargs\b|\bgit\s+clean\b|Remove-Item|(^|\s)del\s/i.test(stripped)) {
+  if (/\b(rm|unlink|shred|rmdir|truncate)\b|\bfind\b[^|]*-delete|\bxargs\b|\bgit\s+clean\b|Remove-Item|del\s/i.test(text)) {
+    // Last resort before giving up: when the text names exactly one absolute path and no
+    // variables, the target IS knowable even if the command shape was unfamiliar
+    // (a wrapper we do not list, a quoting style we do not expect). Without this, a clear
+    // `rm -rf "/abs/path"` from an unexpected shape kept reporting "target undetermined"
+    // and could never be approved.
+    const paths = [...new Set((text.match(/\/[^\s"';|&)]+/g) ?? []).filter(path => path.length > 1))]
+    if (paths.length === 1 && !/\$\(|`|\$\{|\$[A-Za-z_]/.test(text)) {
+      const only = classify(paths[0], cwd)
+      if (only.kind !== 'unknown') {
+        return [{ ...only, recursive: true, reason: '递归删除（-r/-R）' }]
+      }
+    }
     return [{
       raw: text,
       kind: 'unknown',
