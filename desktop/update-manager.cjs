@@ -1,8 +1,8 @@
 'use strict'
 
 const { createHash } = require('node:crypto')
-const { createWriteStream } = require('node:fs')
-const { mkdir, mkdtemp, readFile, unlink, writeFile } = require('node:fs/promises')
+const { createReadStream, createWriteStream } = require('node:fs')
+const { mkdir, mkdtemp, readFile, stat, unlink, writeFile } = require('node:fs/promises')
 const path = require('node:path')
 const { Readable } = require('node:stream')
 const {
@@ -14,6 +14,8 @@ const {
 const {
   createPreparedUpdateFeed,
   downloadUpdateArtifact,
+  feedVersion,
+  prepareMacUpdate,
   removeUpdateDirectory,
   verifyArtifact,
 } = require('./update-artifacts.cjs')
@@ -74,6 +76,25 @@ function desktopInstallBlocker({ platform, execPath }) {
   return null
 }
 
+function currentAppPath(execPath) {
+  const match = /^(.*)\/Contents\/MacOS\//u.exec(String(execPath || ''))
+  return match ? match[1] : ''
+}
+
+function installError(error) {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/read.only|permission|EACCES|EROFS|ShipIt|quarantine|只读|隔离/iu.test(message)) {
+    return {
+      code: 'install_permission',
+      message: '无法安装更新。请确认 MilkSU 已在应用程序文件夹且安装目录可写，再重试。',
+    }
+  }
+  return {
+    code: 'install_failed',
+    message: '更新安装失败，请稍后重试',
+  }
+}
+
 class UpdateManager {
   constructor({
     updater,
@@ -92,6 +113,7 @@ class UpdateManager {
     downloadArtifact = downloadUpdateArtifact,
     verifyDownloaded = verifyArtifact,
     createFeed = createPreparedUpdateFeed,
+    prepareMac = prepareMacUpdate,
     now = () => Date.now(),
     onChanged = () => {},
     pollIntervalMs = POLL_MS,
@@ -111,6 +133,7 @@ class UpdateManager {
     this.downloadArtifact = downloadArtifact
     this.verifyDownloaded = verifyDownloaded
     this.createFeed = createFeed
+    this.prepareMac = prepareMac
     this.now = now
     this.onChanged = onChanged
     this.pollIntervalMs = Number(pollIntervalMs) > 0 ? Number(pollIntervalMs) : POLL_MS
@@ -129,6 +152,9 @@ class UpdateManager {
     this.pollTimer = null
     this.downloadedPath = ''
     this.verified = null
+    this.installer = null
+    this.updaterDownloadedFile = ''
+    this.installRequested = false
     this.feed = null
     this.updateDirectory = ''
     if (!this.enabled) return
@@ -149,12 +175,23 @@ class UpdateManager {
         })
       })
       this.updater.on('update-downloaded', info => {
+        this.updaterDownloadedFile = boundedText(info?.downloadedFile, 1024)
         this.setStatus({
           state: 'downloaded',
           version: boundedText(info?.version, 64) || this.status.version,
         })
       })
-      this.updater.on('error', () => {
+      this.updater.on('error', error => {
+        if (this.installRequested) {
+          const failed = installError(error)
+          this.installRequested = false
+          this.setStatus({
+            state: 'error',
+            code: failed.code,
+            message: failed.message,
+          })
+          return
+        }
         if (!this.downloadRequested) {
           this.setStatus({ state: 'idle' }, false)
           return
@@ -206,6 +243,9 @@ class UpdateManager {
   async discardPreparedUpdate() {
     this.downloadedPath = ''
     this.verified = null
+    this.installer = null
+    this.updaterDownloadedFile = ''
+    this.installRequested = false
     if (this.feed) {
       await this.feed.close().catch(() => {})
       this.feed = null
@@ -289,6 +329,7 @@ class UpdateManager {
       return downloads[kind] ? { kind, ...downloads[kind] } : null
     }
     if (this.platform === 'win32') return downloads.nsis ? { kind: 'nsis', ...downloads.nsis } : null
+    if (downloads.dmg) return { kind: 'dmg', ...downloads.dmg }
     return downloads.zip ? { kind: 'zip', ...downloads.zip } : null
   }
 
@@ -299,7 +340,10 @@ class UpdateManager {
       const selected = this.selectedDownload()
       return `MilkSU-${version}.${selected?.kind === 'tar.gz' ? 'tar.gz' : 'deb'}`
     }
-    return `MilkSU-macOS-arm64-${version}.zip`
+    const selected = this.selectedDownload()
+    return selected?.kind === 'dmg'
+      ? `MilkSU-macOS-arm64-${version}.dmg`
+      : `MilkSU-macOS-arm64-${version}.zip`
   }
 
   async download() {
@@ -374,7 +418,18 @@ class UpdateManager {
       || typeof this.updater?.downloadUpdate !== 'function') {
       throw new Error('updater_unavailable')
     }
-    this.feed = await this.createFeed(destination, this.release.version)
+    let prepared = destination
+    if (this.platform === 'darwin' && selected.kind === 'dmg') {
+      const currentApp = currentAppPath(this.execPath)
+      if (!currentApp) throw new Error('not_installed_app')
+      prepared = await this.prepareMac(
+        destination,
+        this.updateDirectory,
+        currentApp,
+        this.release.version,
+      )
+    }
+    this.feed = await this.createFeed(prepared, this.release.version)
     const configPath = path.join(this.updateDirectory, 'app-update.yml')
     let configContents = 'updaterCacheDirName: milksu-updater\n'
     if (process.resourcesPath) {
@@ -396,9 +451,21 @@ class UpdateManager {
     if (checked && checked.isUpdateAvailable === false) {
       throw new Error('update_not_available')
     }
+    const expectedVersion = feedVersion(this.release.version)
+    if (checked?.updateInfo?.version && feedVersion(checked.updateInfo.version) !== expectedVersion) {
+      throw new Error('update_version_mismatch')
+    }
+    const digest = createHash('sha256')
+    for await (const chunk of createReadStream(prepared)) digest.update(chunk)
+    const installerSize = (await stat(prepared)).size
+    const installerSha256 = digest.digest('hex')
+    this.updaterDownloadedFile = ''
     await this.updater.downloadUpdate()
-    this.downloadedPath = destination
+    if (!this.updaterDownloadedFile) throw new Error('updater_unavailable')
+    await this.verifyDownloaded(this.updaterDownloadedFile, installerSize, installerSha256)
+    this.downloadedPath = prepared
     this.verified = { file: destination, size, sha256: String(selected.sha256).toLowerCase() }
+    this.installer = { file: this.updaterDownloadedFile, size: installerSize, sha256: installerSha256 }
     this.setStatus({
       state: 'downloaded',
       version: boundedText(this.release.version, 64),
@@ -482,13 +549,19 @@ class UpdateManager {
       if (this.verified) {
         await this.verifyDownloaded(this.verified.file, this.verified.size, this.verified.sha256)
       }
+      if (this.installer) {
+        await this.verifyDownloaded(this.installer.file, this.installer.size, this.installer.sha256)
+      }
+      this.installRequested = true
       this.updater.autoInstallOnAppQuit = false
       this.updater.quitAndInstall(true, true)
-    } catch {
+    } catch (error) {
+      this.installRequested = false
+      const failed = installError(error)
       this.setStatus({
         state: 'error',
-        code: 'install_failed',
-        message: '更新安装失败，请稍后重试',
+        code: failed.code,
+        message: failed.message,
       })
       return false
     }
@@ -521,7 +594,9 @@ class UpdateManager {
 module.exports = {
   UpdateManager,
   boundedText,
+  currentAppPath,
   normalizeReleaseNotes,
   versionNewer,
   desktopInstallBlocker,
+  installError,
 }

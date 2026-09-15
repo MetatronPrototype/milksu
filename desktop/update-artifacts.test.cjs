@@ -2,13 +2,15 @@
 
 const assert = require('node:assert/strict')
 const { createHash } = require('node:crypto')
-const { mkdtemp, readFile, readdir, rm, writeFile } = require('node:fs/promises')
+const { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } = require('node:fs/promises')
 const { tmpdir } = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const {
   createPreparedUpdateFeed,
   downloadUpdateArtifact,
+  ensureOwnerWritable,
+  prepareMacUpdate,
   verifyArtifact,
 } = require('./update-artifacts.cjs')
 
@@ -87,6 +89,59 @@ test('private feed serves exactly the verified file without exposing other paths
   }
   assert.equal((await fetch(`${feed.url}latest-mac.yml`, { method: 'POST' })).status, 405)
   assert.equal((await fetch(new URL('/', feed.url))).status, 404)
+})
+
+test('owner-writable helper makes copied 0444 licenses writable for ShipIt', async t => {
+  const dir = await temporary(t)
+  const license = path.join(dir, 'gopls-BSD-3-Clause.txt')
+  await writeFile(license, 'license', { mode: 0o444 })
+  await ensureOwnerWritable(dir)
+  assert.equal((await stat(license)).mode & 0o777, 0o644)
+})
+
+test('macOS DMG prepare verifies identity, team and version then dittos a writable zip', async t => {
+  const dir = await temporary(t)
+  const mount = path.join(dir, 'volume')
+  const app = path.join(mount, 'MilkSU.app')
+  const commands = []
+  await mkdir(path.join(app, 'Contents'), { recursive: true })
+  const zip = await prepareMacUpdate(
+    path.join(dir, 'MilkSU.dmg'),
+    dir,
+    '/Applications/MilkSU.app',
+    '26.915.2',
+    {
+      async run(file, args) {
+        commands.push([file, ...args])
+        if (file === '/usr/bin/hdiutil' && args[0] === 'attach') {
+          return { stdout: '', stderr: '' }
+        }
+        if (file === '/usr/libexec/PlistBuddy' && args[1]?.includes('CFBundleIdentifier')) {
+          return { stdout: 'com.milksu.app\n', stderr: '' }
+        }
+        if (file === '/usr/libexec/PlistBuddy' && args[1]?.includes('CFBundleShortVersionString')) {
+          return { stdout: '26.915.2\n', stderr: '' }
+        }
+        if (file === '/usr/bin/codesign' && args[0] === '-dv') {
+          return { stdout: '', stderr: 'TeamIdentifier=48Y78X426T\n' }
+        }
+        if (file === '/usr/bin/ditto' && args[0] !== '-c') {
+          await mkdir(path.join(args[1], 'Contents'), { recursive: true })
+          await writeFile(path.join(args[1], 'Contents', 'keep'), 'app', { mode: 0o444 })
+          return { stdout: '', stderr: '' }
+        }
+        if (file === '/usr/bin/ditto' && args[0] === '-c') {
+          await writeFile(args[args.length - 1], 'zip')
+          return { stdout: '', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      },
+    },
+  )
+  assert.equal(path.basename(zip), 'MilkSU-arm64.zip')
+  assert.equal(await readFile(zip, 'utf8'), 'zip')
+  assert.equal(commands.some(command => command[0] === '/usr/sbin/spctl'), true)
+  assert.equal(await readdir(dir).then(names => names.includes('staged')), false)
 })
 
 test('install-time checksum detects a package changed after download', async t => {

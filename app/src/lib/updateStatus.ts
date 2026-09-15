@@ -7,6 +7,11 @@ export function updateStatusMessage(status: UpdateStatus | null | undefined): st
       return t('请先把 MilkSU 安装到应用程序文件夹，再安装这次更新', 'Install MilkSU to the Applications folder first, then install this update.')
     case 'install_failed':
       return t('更新安装失败，请稍后重试', 'Update install failed. Try again later.')
+    case 'install_permission':
+      return t(
+        '无法安装更新。请确认 MilkSU 已在应用程序文件夹且安装目录可写，再重试。',
+        'Could not install the update. Move MilkSU to Applications and make sure the folder is writable, then try again.',
+      )
     case 'download_failed':
       return t('更新下载失败，请稍后重试', 'Update download failed. Try again later.')
     default:

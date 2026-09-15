@@ -17,6 +17,7 @@ import {
 } from './lib/desktop-build-provenance.mjs'
 import { desktopAccountConfigFromEnvironment } from './lib/desktop-account-config.mjs'
 import { inspectPackagedApp } from './lib/desktop-package-inspect.mjs'
+import { ensureOwnerWritable } from './lib/bundle-owner-writable.mjs'
 import { generateBetaAppIconFiles } from './generate-beta-appicon.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -300,6 +301,8 @@ async function buildApp() {
 
   // TCC probes run inside milksu-backend. Sign it with the channel bundle id so
   // AX/Screen Recording identity matches the shell (not a.out).
+  await ensureOwnerWritable(resolvedSource)
+
   const backendInApp = join(resolvedSource, 'Contents', 'Resources', 'milksu-backend')
   if (!(await exists(backendInApp))) {
     throw new Error(`packaged milksu-backend missing: ${backendInApp}`)

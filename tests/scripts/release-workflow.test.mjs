@@ -54,6 +54,16 @@ test('electron-builder cache stays outside the ESM repository root', () => {
   }
 })
 
+test('macOS release makes the notarized app owner-writable before the OTA zip', () => {
+  assert.match(macReleaseScript, /ensureOwnerWritable\(appPath\)/u)
+  assert.match(macReleaseScript, /assertShipItCanClearQuarantine\(appPath/u)
+  assert.match(macReleaseScript, /assertOtaZipShipItReady\(zipPath\)/u)
+  const writableAt = macReleaseScript.indexOf('ensureOwnerWritable(appPath)')
+  const zipAt = macReleaseScript.indexOf("ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath]")
+  const extractedAt = macReleaseScript.indexOf('assertOtaZipShipItReady(zipPath)')
+  assert.ok(writableAt > 0 && zipAt > writableAt && extractedAt > zipAt)
+})
+
 test('official packaging always uploads OTA artifacts and creates an Admin draft', () => {
   assert.doesNotMatch(macWorkflow, /upload_release/u)
   assert.doesNotMatch(macReleaseScript, /const buildOta =/u)

@@ -16,6 +16,7 @@ import {
 import { createServer as createHttpServer } from 'node:http'
 import { createConnection, createServer as createNetServer } from 'node:net'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { ensureOwnerWritable } from './lib/bundle-owner-writable.mjs'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { build } from 'esbuild'
@@ -1720,6 +1721,7 @@ async function buildSidecar(platform) {
     },
   }
   await writeFile(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
+  await ensureOwnerWritable(output)
   return output
 }
 
@@ -1775,6 +1777,10 @@ async function smokeSidecar(platform) {
     if (!await exists(licensePath)) {
       throw new Error(`packaged Sidecar is missing license file: ${licensePath}`)
     }
+  }
+  const shipItLicense = join(output, 'THIRD_PARTY-LICENSES', 'gopls-BSD-3-Clause.txt')
+  if (((await stat(shipItLicense)).mode & 0o222) === 0) {
+    throw new Error('sidecar license files must stay owner-writable so macOS ShipIt can strip quarantine')
   }
   await assertPackagedSymlinksSafe(join(output, 'node_modules'))
   const cuaRuntime = await verifyPackagedCuaRuntime(output)
@@ -2758,6 +2764,7 @@ async function installSidecar(platform, binaryPath) {
   await chmod(join(destination, 'node'), 0o755)
   await chmod(join(destination, 'cua-driver'), 0o755)
   await chmod(join(destination, 'lsp-runtime', 'gopls'), 0o755)
+  await ensureOwnerWritable(destination)
   if (codesignIdentity !== '-') {
     await signMachOFiles(destination, codesignIdentity)
   } else {

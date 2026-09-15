@@ -9,6 +9,8 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { writeReleaseUploadMetadata } from './lib/release-upload-metadata.mjs'
+import { ensureOwnerWritable } from './lib/bundle-owner-writable.mjs'
+import { assertShipItCanClearQuarantine } from './lib/shipit-quarantine-ready.mjs'
 
 const execFileAsync = promisify(execFile)
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -89,6 +91,27 @@ async function digest(file, algorithm, encoding) {
   return hash.digest(encoding)
 }
 
+async function assertOtaZipShipItReady(targetZipPath) {
+  const extractRoot = await mkdtemp(join(tmpdir(), 'milksu-ota-shipit-'))
+  try {
+    await run('/usr/bin/ditto', ['-x', '-k', targetZipPath, extractRoot])
+    const extractedApp = join(extractRoot, 'MilkSU.app')
+    await stat(extractedApp)
+    const license = join(
+      extractedApp,
+      'Contents',
+      'Resources',
+      'milksu-sidecar',
+      'THIRD_PARTY-LICENSES',
+      'gopls-BSD-3-Clause.txt',
+    )
+    await stat(license)
+    await assertShipItCanClearQuarantine(extractedApp, { xattrPaths: [license] })
+  } finally {
+    await rm(extractRoot, { recursive: true, force: true })
+  }
+}
+
 async function verifyDmgInstallLayout(targetDmgPath) {
   const mountPoint = await mkdtemp(join(tmpdir(), 'milksu-dmg-layout-'))
   let attached = false
@@ -149,7 +172,19 @@ await run('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', ap
 await rm(notaryZipPath, { force: true })
 await rm(zipPath, { force: true })
 await rm(metadataPath, { force: true })
+await ensureOwnerWritable(appPath)
+await assertShipItCanClearQuarantine(appPath, {
+  xattrPaths: [join(
+    appPath,
+    'Contents',
+    'Resources',
+    'milksu-sidecar',
+    'THIRD_PARTY-LICENSES',
+    'gopls-BSD-3-Clause.txt',
+  )],
+})
 await run('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath])
+await assertOtaZipShipItReady(zipPath)
 
 await run('/usr/bin/sips', [
   '-s', 'format', 'png',

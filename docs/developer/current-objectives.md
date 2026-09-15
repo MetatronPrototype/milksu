@@ -252,6 +252,7 @@
 - Computer Use 仍要先选窗口。
 - DeepSeek Harness 走 ACP，工具在 harness 进程内执行，MilkSU 只是 ACP 客户端，只能允许或拒绝一次调用，改不了它的工具参数。因此 DSH 会话的 `bash` 仍没有 MilkSU 侧超时上界。要补齐需要 harness 自身的配置项或 ACP 扩展点，不要在客户端复刻第二套工具循环。
 - 准备 writer 过程中按停止时，界面有时同时出现「本轮已停止。」和「Agent 运行失败：本地 Agent 运行异常」。合同只该留前者。
+- macOS 侧栏「安装并重启」会走 Squirrel ShipIt。本机对刚失败的 `MilkSU-macOS-arm64-26.915.1.zip` 解包：29062 个文件里只有 `milksu-sidecar/THIRD_PARTY-LICENSES/gopls-BSD-3-Clause.txt` 为 0444，ShipIt 卸隔离失败后仍拉起旧包。对同一份 ZIP 做 `ensureOwnerWritable` 再 ditto 打回，以及用同一份公证 DMG 走 `prepareMacUpdate`（对照 `/Applications/MilkSU.app` 签名团队），再解包后都能对那份许可证执行 `xattr` 写入并清除。正式 `release-macos` 在打 OTA ZIP 前后都会跑同一道门；未打进下一版安装包前，已装的 26.912.3 仍要用 GitHub DMG 拖进应用程序。
 
 ## 当前产品事实
 

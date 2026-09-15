@@ -2,13 +2,13 @@
 
 const assert = require('node:assert/strict')
 const { createHash } = require('node:crypto')
-const { mkdtemp, rm } = require('node:fs/promises')
+const { mkdtemp, rm, writeFile } = require('node:fs/promises')
 const { tmpdir } = require('node:os')
 const path = require('node:path')
 const { EventEmitter } = require('node:events')
 const { Readable } = require('node:stream')
 const test = require('node:test')
-const { UpdateManager, versionNewer, desktopInstallBlocker } = require('./update-manager.cjs')
+const { UpdateManager, versionNewer, desktopInstallBlocker, installError } = require('./update-manager.cjs')
 
 class FakeUpdater extends EventEmitter {
   constructor() {
@@ -41,7 +41,10 @@ class FakeUpdater extends EventEmitter {
       throw error
     }
     this.emit('download-progress', { percent: 42, transferred: 42, total: 100 })
-    this.emit('update-downloaded', { version: '0.2.0' })
+    const downloadedFile = path.join(tmpdir(), 'milksu-fake-updater-download.bin')
+    await writeFile(downloadedFile, ZIP_BYTES)
+    this.downloadedFile = downloadedFile
+    this.emit('update-downloaded', { version: '0.2.0', downloadedFile })
   }
 
   quitAndInstall(silent, forceRunAfter) {
@@ -128,6 +131,62 @@ test('blocks macOS install from a disk image or unpackaged binary', () => {
     platform: 'win32',
     execPath: 'C:\\Program Files\\MilkSU\\MilkSU.exe',
   }), null)
+})
+
+test('macOS prefers the notarized DMG and prepares it before ShipIt', async () => {
+  const dmg = Buffer.from('notarized-dmg')
+  const dmgSha = createHash('sha256').update(dmg).digest('hex')
+  const prepared = []
+  const userDataPath = await mkdtemp(path.join(tmpdir(), 'milksu-update-'))
+  const manager = new UpdateManager(await managerOptions({
+    userDataPath,
+    prepareMac: async (file, directory, currentApp, version) => {
+      prepared.push({ file, currentApp, version })
+      const zip = path.join(directory, 'MilkSU-arm64.zip')
+      await writeFile(zip, ZIP_BYTES)
+      return zip
+    },
+    fetchImpl: async (url) => {
+      if (String(url).includes('/latest')) {
+        return jsonResponse(200, {
+          release: latestRelease({
+            dmg: {
+              url: 'https://accounts.milksu.org/v1/releases/download/r1/dmg',
+              sha256: dmgSha,
+              size: dmg.length,
+            },
+            zip: {
+              url: 'https://accounts.milksu.org/v1/releases/download/r1/zip',
+              sha256: ZIP_SHA256,
+              size: ZIP_BYTES.length,
+            },
+          }),
+        })
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: Readable.from([dmg]),
+        headers: { 'content-length': String(dmg.length) },
+      }
+    },
+  }))
+  try {
+    assert.equal((await manager.check()).state, 'available')
+    assert.equal((await manager.download()).state, 'downloaded')
+    assert.equal(prepared.length, 1)
+    assert.match(prepared[0].file, /MilkSU-macOS-arm64-0\.2\.0\.dmg$/u)
+    assert.equal(prepared[0].currentApp, '/Applications/MilkSU.app')
+    assert.equal(prepared[0].version, '0.2.0')
+    assert.equal(await manager.install(), true)
+  } finally {
+    await rm(userDataPath, { recursive: true, force: true })
+  }
+})
+
+test('maps ShipIt quarantine failures to a writable-install error', () => {
+  assert.equal(installError(new Error('Permission denied: quarantine')).code, 'install_permission')
+  assert.equal(installError(new Error('other')).code, 'install_failed')
 })
 
 test('compares milkSU calendar versions', () => {
