@@ -117,3 +117,37 @@ describe('destructive assessment', () => {
   })
 })
 
+
+describe('destructive assessment across compound commands', () => {
+  // Daily shapes used to be judged "undetermined", which made every card deny-only.
+  it('finds the delete inside a compound command, after a cd', () => {
+    const assessment = assessDestructiveRequest(
+      'cd /x ; rm -rf build ; echo done',
+      [{ exists: true, fileCount: 12, totalBytes: 4096 }],
+    )
+    expect(assessment.undetermined).toBe(false)
+    expect(assessment.canAllow).toBe(true)
+    expect(assessment.targets.map(target => target.path)).toContain('/x/build')
+  })
+
+  it('looks inside command substitutions', () => {
+    const assessment = assessDestructiveRequest('echo "cleaning $(rm -rf /x/tmp)"')
+    expect(assessment.undetermined).toBe(false)
+    expect(assessment.canAllow).toBe(true)
+    expect(assessment.targets.map(target => target.path)).toContain('/x/tmp')
+  })
+
+  it('ignores commands that delete nothing', () => {
+    const assessment = assessDestructiveRequest('cd /tmp && echo hello && ls -la')
+    expect(assessment.targets).toEqual([])
+    expect(assessment.undetermined).toBe(false)
+    expect(assessment.canAllow).toBe(true)
+  })
+
+  it('still refuses an unknown target and a protected path', () => {
+    expect(assessDestructiveRequest('ls | xargs rm -rf').canAllow).toBe(false)
+    expect(assessDestructiveRequest(
+      `rm -rf ${process.env.HOME}/Library/Application Support/com.milksu.app.beta/runtime-data`,
+    ).canAllow).toBe(false)
+  })
+})

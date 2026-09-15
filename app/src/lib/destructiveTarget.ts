@@ -190,18 +190,32 @@ export function parseDestructiveTargets(command: string, cwd = '/'): Destructive
   if (!text) return []
   const segments = splitTopLevel(text)
   const collected: DestructiveTarget[] = []
+  let currentCwd = cwd
   for (const segment of segments) {
-    collected.push(...parseSingleCommand(segment, cwd))
+    // `cd /x ; rm -rf build` deletes /x/build: track the directory change.
+    const change = /^cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s*$/.exec(segment)
+    if (change) {
+      const raw = change[1] ?? change[2] ?? change[3] ?? ''
+      const next = absolute(raw, currentCwd)
+      if (next) currentCwd = next
+      continue
+    }
+    collected.push(...parseSingleCommand(segment, currentCwd))
     for (const inner of substitutions(segment)) {
-      collected.push(...parseSingleCommand(inner, cwd))
+      collected.push(...parseSingleCommand(inner, currentCwd))
     }
   }
   return collected
 }
 
 function parseSingleCommand(text: string, cwd: string): DestructiveTarget[] {
-  const tokens = tokenize(text)
-  if (!tokens.length) return []
+  // A delete inside `$(…)` or backticks is handled by the caller; the outer text must
+  // not be judged on words that only appear inside that substitution.
+  const stripped = text.replace(/\$\([^()]*\)|`[^`]*`/g, ' ')
+  const tokens = tokenize(stripped)
+  if (!tokens.length) {
+    return text === stripped ? [] : []
+  }
 
   // `… | xargs rm` deletes whatever the upstream command produced: not determinable.
   if (/\|\s*xargs\s+rm/.test(text) || /\bxargs\b[^|]*\brm\b/.test(text)) {
@@ -215,7 +229,7 @@ function parseSingleCommand(text: string, cwd: string): DestructiveTarget[] {
 
   if (tokens[0] === 'rm') {
     const operands = tokens.slice(1).filter(token => !isFlag(token))
-    const recursive = /(^|\s)-[a-z]*r/i.test(text)
+    const recursive = /(^|\s)-[a-z]*r/i.test(stripped)
     if (!operands.length) {
       return [{ raw: text, kind: 'unknown', recursive, reason: '没有可识别的删除目标' }]
     }
@@ -254,7 +268,7 @@ function parseSingleCommand(text: string, cwd: string): DestructiveTarget[] {
     return []
   }
 
-  if (/\b(rm|unlink|shred|rmdir|truncate)\b|\bfind\b[^|]*-delete|\bxargs\b|\bgit\s+clean\b|Remove-Item|del\s/i.test(text)) {
+  if (/\b(rm|unlink|shred|rmdir|truncate)\b|\bfind\b[^|]*-delete|\bxargs\b|\bgit\s+clean\b|Remove-Item|(^|\s)del\s/i.test(stripped)) {
     return [{
       raw: text,
       kind: 'unknown',
