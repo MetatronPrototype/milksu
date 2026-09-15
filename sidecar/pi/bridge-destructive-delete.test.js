@@ -18,6 +18,7 @@ import {
   consumeMatchingDestructiveDeleteCredential,
   issueDestructiveDeleteCredential,
   recursiveDeleteTargets,
+  shellScriptArgument,
   resetDestructiveDeleteCredentials,
 } from "./bridge-destructive-delete.js";
 
@@ -367,4 +368,142 @@ test("quoted, single-quoted and bare delete targets decide alike", async (t) => 
     policy: { workspace },
   });
   assert.ok(guarded?.action, "a quoted root target must still be recognised as destructive");
+});
+
+// The first half of the script guard: recognising which file a command would execute.
+// `bash -e x.sh`, `source x.sh` and `. x.sh` must all resolve to x.sh, while an ordinary
+// command must not be mistaken for a script reference.
+test("guard-script-ref: the named script is recognised", () => {
+  assert.equal(shellScriptArgument(["bash", "/tmp/x.sh"]), "/tmp/x.sh")
+  assert.equal(shellScriptArgument(["sh", "-e", "/tmp/x.sh"]), "/tmp/x.sh")
+  assert.equal(shellScriptArgument(["/bin/bash", "/tmp/x.sh"]), "/tmp/x.sh")
+  assert.equal(shellScriptArgument(["source", "/tmp/x.sh"]), "/tmp/x.sh")
+  assert.equal(shellScriptArgument([".", "/tmp/x.sh"]), "/tmp/x.sh")
+  assert.equal(shellScriptArgument(["python3", "/tmp/x.py"]), "/tmp/x.py")
+
+  // Ordinary commands are not script references.
+  assert.equal(shellScriptArgument(["rm", "-rf", "/tmp/x"]), undefined)
+  assert.equal(shellScriptArgument(["bash", "-c", "rm -rf /tmp/x"]), undefined)
+  assert.equal(shellScriptArgument(["find", "/tmp/x", "-delete"]), undefined)
+  assert.equal(shellScriptArgument([]), undefined)
+})
+
+
+// A delete can hide inside a script the command merely names. The guard reads the file and
+// judges its contents with this same parser - without turning every script into a refusal.
+test("guard-script: a script that removes a tree is caught", async (t) => {
+  // /tmp keeps the path free of spaces: an unquoted path would be split by the shell
+  // word parser, which is a property of the command text rather than of this feature.
+  const workspace = await mkdtemp("/tmp/milksu-script-guard-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const target = join(workspace, "big");
+  await mkdir(target, { recursive: true });
+  await writeFile(join(target, "f1"), "");
+  const script = join(workspace, "wipe.sh");
+  await writeFile(script, `#!/bin/sh\nrm -rf "${target}"\n`);
+
+  // guard-script-1: the delete lives in the named script.
+  assert.deepEqual(recursiveDeleteTargets(`bash ${script}`), [target]);
+  assert.deepEqual(recursiveDeleteTargets(`sh -e ${script}`), [target]);
+  assert.deepEqual(recursiveDeleteTargets(`source ${script}`), [target]);
+
+  // guard-script-2: an ordinary build script that removes nothing recursive is untouched.
+  const build = join(workspace, "build.sh");
+  await writeFile(build, "#!/bin/sh\nnpm run build\nrm -f dist/app.js\n");
+  assert.deepEqual(recursiveDeleteTargets(`bash ${build}`), []);
+
+  // guard-script-3: indirect calls are followed (two levels).
+  const outer = join(workspace, "outer.sh");
+  await writeFile(outer, `#!/bin/sh\nbash ${script}\n`);
+  assert.deepEqual(recursiveDeleteTargets(`bash ${outer}`), [target]);
+
+  // guard-script-4: a missing script is not a refusal trigger.
+  assert.deepEqual(recursiveDeleteTargets(`bash ${join(workspace, "nope.sh")}`), []);
+
+  // A cycle terminates instead of recursing forever.
+  const a = join(workspace, "a.sh");
+  const b = join(workspace, "b.sh");
+  await writeFile(a, `#!/bin/sh\nbash ${b}\n`);
+  await writeFile(b, `#!/bin/sh\nbash ${a}\n`);
+  assert.deepEqual(recursiveDeleteTargets(`bash ${a}`), []);
+});
+
+// The guard must not turn ordinary project work into a refusal: a build script that clears
+// its own cache is not a destructive request.
+test("guard-script-benign: a project-local build script still runs", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-benign-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const script = join(workspace, "build.sh");
+  await writeFile(script, "#!/bin/sh\nnpm run build\nrm -rf node_modules/.cache\nrm -rf dist\n");
+
+  // The targets are still recognised (as written in the script) ...
+  assert.deepEqual(
+    recursiveDeleteTargets(`bash ${script}`).sort(),
+    ["dist", "node_modules/.cache"],
+  )
+  // ... but they stay inside the project, so the gate lets them through.
+  const decision = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `bash ${script}` },
+    policy: { workspace },
+  })
+  assert.notEqual(decision?.action, "block")
+});
+
+// A delete reached through two levels of scripts must still be caught: depth really works.
+test("guard-script-indirect: a two-level indirection is still caught", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-indirect-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const target = join(workspace, "big");
+  await mkdir(target, { recursive: true });
+  for (let index = 0; index < 1200; index += 1) {
+    await writeFile(join(target, `f${index}`), "");
+  }
+  const inner = join(workspace, "inner.sh");
+  const outer = join(workspace, "outer.sh");
+  await writeFile(inner, `#!/bin/sh\nrm -rf "${target}"\n`);
+  await writeFile(outer, `#!/bin/sh\nbash ${inner}\n`);
+
+  assert.deepEqual(recursiveDeleteTargets(`bash ${outer}`), [target]);
+  const decision = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `bash ${outer}` },
+    policy: { workspace },
+  })
+  assert.equal(decision?.action, "approval");
+});
+
+// A script that is not there must not freeze the command.
+test("guard-script-missing: a missing script does not block anything", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-missing-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const missing = join(workspace, "nope.sh");
+  assert.deepEqual(recursiveDeleteTargets(`bash ${missing}`), []);
+  const decision = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `bash ${missing}` },
+    policy: { workspace },
+  })
+  assert.notEqual(decision?.action, "block")
+});
+
+// A -> B -> A must terminate thanks to the visited set.
+test("guard-script-cycle: mutual references converge", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-cycle-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const a = join(workspace, "a.sh");
+  const b = join(workspace, "b.sh");
+  await writeFile(a, `#!/bin/sh\nbash ${b}\n`);
+  await writeFile(b, `#!/bin/sh\nbash ${a}\n`);
+  assert.deepEqual(recursiveDeleteTargets(`bash ${a}`), []);
 });

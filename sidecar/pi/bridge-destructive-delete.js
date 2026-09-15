@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync as readScriptFileSync } from "node:fs";
 import {
   lstat,
   readdir,
@@ -276,9 +277,106 @@ function positionalTargets(words, start, ignoredOptions = new Set()) {
   return targets;
 }
 
-export function recursiveDeleteTargets(command) {
+const scriptDeleteMaxDepth = 3;
+
+/**
+ * Split a command into its top-level statements (newline, `;`, `&&`, `||`) outside quotes.
+ * Each statement is judged on its own: a read-only statement must not hide the delete that
+ * follows it on the next line.
+ */
+export function splitTopLevelStatements(command) {
+  const source = String(command ?? "");
+  const parts = [];
+  let current = "";
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      current += character;
+      if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+      continue;
+    }
+    const isBreak = character === "\n" || character === ";"
+      || (character === "&" && source[index + 1] === "&")
+      || (character === "|" && source[index + 1] === "|");
+    if (isBreak) {
+      if (current.trim()) parts.push(current.trim());
+      current = "";
+      if (character === "&" || character === "|") index += 1;
+      continue;
+    }
+    current += character;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+/**
+ * `bash script.sh`, `sh -e script.sh`, `source file`, `. file`, `python file`: the file the
+ * command would execute. Flags are skipped so `bash -e x.sh` still resolves to x.sh, while
+ * `bash -c "..."` is not a file at all and therefore returns nothing.
+ */
+export function shellScriptArgument(words) {
+  const list = Array.isArray(words) ? words.map(value => String(value)) : [];
+  const head = (list[0] ?? "").split(/[\\/]/).at(-1).toLowerCase();
+  if (head === "source" || head === ".") return list[1];
+  const interpreters = new Set([
+    "sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node",
+  ]);
+  if (!interpreters.has(head)) return undefined;
+  let index = 1;
+  while (index < list.length && list[index].startsWith("-")) {
+    // A combined flag containing `c` carries an inline script, not a file name.
+    if (/c/.test(list[index])) return undefined;
+    index += 1;
+  }
+  return list[index];
+}
+
+// A missing, unreadable or oversized script is not itself a reason to refuse: the command
+// that named it is still judged on its own.
+function scriptText(file, readScript) {
+  try {
+    const content = readScript(file, "utf8");
+    return typeof content === "string" && content.length <= 1_000_000 ? content : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function recursiveDeleteTargets(command, options = {}) {
+  const depth = Number(options.depth ?? 0);
+  const seen = options.seen instanceof Set ? options.seen : new Set();
+  const readScript = options.readScript ?? readScriptFileSync;
+  // Depth and a visited set keep indirect scripts and cycles bounded.
+  if (depth > scriptDeleteMaxDepth) return [];
+  // Strip heredoc bodies first: their text is data, and splitting it into statements would
+  // judge a "rm -rf" that only appears inside the heredoc.
+  const statements = splitTopLevelStatements(stripHeredocBodies(command));
+  if (statements.length > 1) {
+    // Splitting is not a new indirection level, so the depth stays the same.
+    return statements.flatMap(statement => recursiveDeleteTargets(statement, { depth, seen, readScript }));
+  }
   const targets = [];
   for (const words of commandSegments(stripHeredocBodies(command))) {
+    // A delete hides easily in a file the command merely names (`bash /tmp/x.sh`). Read it
+    // and judge its contents through this same parser, so project-local work still passes.
+    const scriptArgument = shellScriptArgument(words);
+    if (scriptArgument && !scriptArgument.startsWith("$")) {
+      const resolved = resolve(scriptArgument);
+      if (!seen.has(resolved)) {
+        const content = scriptText(resolved, readScript);
+        if (content !== undefined) {
+          seen.add(resolved);
+          targets.push(...recursiveDeleteTargets(content, { depth: depth + 1, seen, readScript }));
+        }
+      }
+    }
     const head = (words[0] ?? "").split(/[\\/]/).at(-1).toLowerCase();
     if (readOnlyShellCommands.has(head)) continue;
     // A delete hidden in a shell string (`bash -c "rm -rf x"`) is still a delete.
