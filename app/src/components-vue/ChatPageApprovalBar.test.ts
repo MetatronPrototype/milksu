@@ -43,14 +43,17 @@ function longConversationWithApproval(messageCount: number): Conversation {
   return { id: 'conversation-long', title: 'long', createdAt: 1, messages }
 }
 
-function mountPage(initial: Conversation) {
+function mountPage(
+  initial: Conversation,
+  extra: { engineNotice?: string; engineNoticeRepeat?: number } = {},
+) {
   const active = ref<Conversation>(initial)
   const decisions: unknown[][] = []
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp({
     components: { ChatPage },
-    setup: () => ({ active, running: false, decisions }),
+    setup: () => ({ active, running: false, decisions, extra }),
     template: `<ChatPage
       :conversation="active"
       :settings="null"
@@ -58,6 +61,8 @@ function mountPage(initial: Conversation) {
       :running="running"
       :aborting="false"
       :session-ready="true"
+      :engine-notice="extra.engineNotice"
+      :engine-notice-repeat="extra.engineNoticeRepeat"
       :resumed="false"
       :compacting="false"
       :ctf-session="false"
@@ -184,5 +189,36 @@ describe("ChatPage approval bar gate", () => {
 
     expect(host.querySelector('[data-testid="approval-bar-gate"]')).toBeNull()
     expect(host.querySelector('[data-testid="approval-bar-allow"]')).not.toBeNull()
+  })
+})
+
+describe("ChatPage engine notice", () => {
+  // A refused deletion is a decision with no button, so it must be visible as a status
+  // line above the transcript - and absent when the engine said nothing.
+  it("shows the status line only when the engine reported one", async () => {
+    const quiet = mountPage(longConversationWithApproval(3))
+    await nextTick()
+    expect(quiet.host.querySelector("[data-testid=\"engine-notice\"]")).toBeNull()
+
+    const noticed = mountPage(longConversationWithApproval(3), {
+      engineNotice: "已拦截一条删除命令：目标含变量 —— 未执行。",
+      engineNoticeRepeat: 1,
+    })
+    await nextTick()
+    const line = noticed.host.querySelector("[data-testid=\"engine-notice\"]")
+    expect(line).not.toBeNull()
+    expect(line?.textContent).toContain("已拦截一条删除命令")
+    expect(line?.textContent).toContain("未执行")
+    expect(noticed.host.querySelector("[data-testid=\"engine-notice-repeat\"]")).toBeNull()
+  })
+
+  it("counts a repeated notice instead of adding lines", async () => {
+    const { host } = mountPage(longConversationWithApproval(3), {
+      engineNotice: "已拦截一条删除命令：目标含变量 —— 未执行。",
+      engineNoticeRepeat: 3,
+    })
+    await nextTick()
+    expect(host.querySelectorAll("[data-testid=\"engine-notice\"]").length).toBe(1)
+    expect(host.querySelector("[data-testid=\"engine-notice-repeat\"]")?.textContent).toContain("3")
   })
 })

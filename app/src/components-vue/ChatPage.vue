@@ -185,6 +185,16 @@ const props = defineProps<{
   running: boolean
   aborting: boolean
   abortStalled?: boolean
+  forceStopReady?: boolean
+  queuedGuidanceInterrupted?: boolean
+  /**
+   * A short status line from the engine (idle reclaim, a refused deletion). It is shown
+   * above the transcript and is never part of the messages.
+   */
+  engineNotice?: string
+  engineNoticeRepeat?: number
+  /** Guidance already injected into the running turn (shown, not sendable). */
+  queuedGuidanceInjected?: string[]
   messageQueue?: CodingMessageQueue
   sessionReady: boolean
   resumed: boolean
@@ -2366,6 +2376,16 @@ defineExpose({
       class="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
       @scroll.passive="handleChatScroll"
     >
+      <div
+        v-if="engineNotice"
+        class="mx-auto mb-2 w-[72%] rounded-xl border border-border/70 bg-muted/50 px-3 py-1.5 text-caption text-muted-foreground"
+        data-testid="engine-notice"
+      >
+        {{ engineNotice }}
+        <span v-if="(engineNoticeRepeat ?? 0) > 1" data-testid="engine-notice-repeat">
+          {{ t(`（重复 ${engineNoticeRepeat} 次）`, ` (x${engineNoticeRepeat})`) }}
+        </span>
+      </div>
       <div
         v-if="pendingApprovalMessage"
         class="sticky top-0 z-30 mx-auto mb-2 flex w-[72%] items-center gap-2 rounded-xl border border-primary/40 bg-background/95 px-3 py-2 shadow-sm"

@@ -481,7 +481,10 @@ function createMilkSUWorkflowExtension(sessionRole, getPolicy, getSession, conve
           input: { command: `rm -rf ${JSON.stringify(target)}` },
           policy,
         });
-        if (decision?.action === "block") throw new Error(decision.reason);
+        if (decision?.action === "block") {
+          emit(conversationId, "destructive.blocked", { notice: decision.reason });
+          throw new Error(decision.reason);
+        }
         const approved = await approvalBroker.request({
           conversationId,
           toolName: "destructive-delete",
@@ -598,6 +601,9 @@ function createCodingPermissionExtension(
         policy,
       });
       if (deleteDecision?.action === "block") {
+        // A blocked deletion is a decision the reader must be able to see: the guard never
+        // asks, so without this notice the command simply appears to do nothing.
+        emit(conversationId, "destructive.blocked", { notice: deleteDecision.reason });
         return {
           block: true,
           reason: deleteDecision.reason,
@@ -609,12 +615,14 @@ function createCodingPermissionExtension(
         // cannot show a card at all, so both cases fail closed.
         const justification = destructiveJustification(event.input);
         if (event.toolName === "bg_task" || !justification.ok) {
+          const blockReason = event.toolName === "bg_task"
+            ? "MilkSU refused this deletion: a background task cannot be approved "
+              + "interactively. Run it in the foreground so it can be reviewed."
+            : justification.reason;
+          emit(conversationId, "destructive.blocked", { notice: blockReason });
           return {
             block: true,
-            reason: event.toolName === "bg_task"
-              ? "MilkSU refused this deletion: a background task cannot be approved "
-                + "interactively. Run it in the foreground so it can be reviewed."
-              : justification.reason,
+            reason: blockReason,
           };
         }
         const approved = await approvalBroker.request({
