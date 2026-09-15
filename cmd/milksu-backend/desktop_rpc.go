@@ -298,6 +298,7 @@ func desktopAppMethods(app *App) map[string]desktopAppMethod {
 		"StartCodingComputerUse":               rendererDesktopMethod(app.StartCodingComputerUse),
 		"StopCodingComputerUse":                rendererDesktopMethod(app.StopCodingComputerUse),
 		"SteerMessage":                         rendererDesktopMethod(app.SteerMessage),
+		"InspectDestructiveTarget":             rendererDesktopMethod(app.InspectDestructiveTarget),
 		"RemoveQueuedMessage":                  rendererDesktopMethod(app.RemoveQueuedMessage),
 		"TestAgentModel":                       rendererDesktopMethod(app.TestAgentModel),
 		"GetCodingUsageSnapshot":               rendererDesktopMethod(app.GetCodingUsageSnapshot),
