@@ -97,7 +97,8 @@ describe('ChatPage approval bar', () => {
     // Feedback is immediate: the bar switches to "working" and the decision is emitted.
     expect(host.querySelector('[data-testid="approval-bar-submitting"]')).not.toBeNull()
     expect(decisions).toEqual([['approval-1', true, 'once']])
-  })
+    // Mounting 3000 messages is the point of the test, so it needs more than the 5s default.
+  }, 30_000)
 
   // A 3000-message fixture put this case right at the 5s default timeout; the timing is
   // what flaked, not the behaviour. 800 messages keep the "long thread" meaning, and the

@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+
+
   assessApprovalRequest,
   assessDestructiveRequest,
   parseDestructiveTargets,
   protectedMatch,
 } from './destructiveTarget'
+
+// The renderer is sandboxed and has no `process`, so tests pin a literal home directory.
+const testHome = '/Users/probe'
 
 describe('destructive target parsing', () => {
   // Defect 11: a `find … -delete` used to be reported as the whole workspace root.
@@ -63,9 +68,9 @@ describe('protected rules and user data', () => {
   })
 
   it('protects user data but allows explicit caches', () => {
-    expect(protectedMatch(`${process.env.HOME}/Library/Application Support/com.milksu.app.beta/runtime-data`).protected)
+    expect(protectedMatch(`${testHome}/Library/Application Support/com.milksu.app.beta/runtime-data`).protected)
       .toBe(true)
-    expect(protectedMatch(`${process.env.HOME}/Library/Caches/whatever`).protected).toBe(false)
+    expect(protectedMatch(`${testHome}/Library/Caches/whatever`).protected).toBe(false)
     expect(protectedMatch('/Users/me/Documents/report.pdf').protected).toBe(true)
   })
 })
@@ -93,7 +98,7 @@ describe('destructive assessment', () => {
 
   it('raises risk for protected targets even when they look rebuildable', () => {
     const assessment = assessDestructiveRequest(
-      `rm -rf ${process.env.HOME}/Library/Application Support/com.milksu.app.beta/runtime-data`,
+      `rm -rf ${testHome}/Library/Application Support/com.milksu.app.beta/runtime-data`,
       [{ exists: true, rebuildable: true }],
     )
     expect(assessment.risk).toBe('high')

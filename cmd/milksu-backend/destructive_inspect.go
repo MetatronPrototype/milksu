@@ -16,19 +16,19 @@ import (
 // renderer only displays the result. Status distinguishes the failure modes so a
 // missing path is never reported as "no backup".
 type DestructiveTargetInspection struct {
-	Path           string   `json:"path"`
-	Status         string   `json:"status"`
-	Exists         bool     `json:"exists"`
-	IsDirectory    bool     `json:"isDirectory"`
-	EmptyDirectory bool     `json:"emptyDirectory"`
-	FileCount      int      `json:"fileCount"`
-	TotalBytes     int64    `json:"totalBytes"`
-	Sampled        bool     `json:"sampled"`
-	InGitRepository bool    `json:"inGitRepository"`
-	GitTracked     bool     `json:"gitTracked"`
-	Rebuildable    bool     `json:"rebuildable"`
-	Backups        []string `json:"backups"`
-	Error          string   `json:"error,omitempty"`
+	Path            string   `json:"path"`
+	Status          string   `json:"status"`
+	Exists          bool     `json:"exists"`
+	IsDirectory     bool     `json:"isDirectory"`
+	EmptyDirectory  bool     `json:"emptyDirectory"`
+	FileCount       int      `json:"fileCount"`
+	TotalBytes      int64    `json:"totalBytes"`
+	Sampled         bool     `json:"sampled"`
+	InGitRepository bool     `json:"inGitRepository"`
+	GitTracked      bool     `json:"gitTracked"`
+	Rebuildable     bool     `json:"rebuildable"`
+	Backups         []string `json:"backups"`
+	Error           string   `json:"error,omitempty"`
 }
 
 const (

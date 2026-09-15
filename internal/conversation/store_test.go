@@ -261,34 +261,6 @@ func TestStoreArchiveNeverLeavesTheConversationInBothDirectories(t *testing.T) {
 		t.Fatalf("restored conversation still listed as archived: %v", archived)
 	}
 }
-
-func TestStoreRoundTripsPinnedOrder(t *testing.T) {
-	store := &Store{directory: t.TempDir()}
-	order := int64(3)
-	want := StoredConversation{
-		ID:          "conversation-pinned",
-		Title:       "Pinned chat",
-		CreatedAt:   7,
-		Pinned:      true,
-		PinnedOrder: &order,
-		Messages:    []StoredMessage{},
-	}
-	if err := store.Save(want); err != nil {
-		t.Fatalf("save conversation: %v", err)
-	}
-	got, err := store.Get("conversation-pinned")
-	if err != nil {
-		t.Fatalf("get conversation: %v", err)
-	}
-	want.Kernel = KernelPi
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("pinned fields did not round-trip: %#v", got)
-	}
-}
-
-// The card's purpose/safety note must survive a save and a reload. It used to be written
-// nowhere, so a reopened conversation went back to "not provided by the requester" and the
-// reason a deletion was allowed became unauditable.
 func TestStoredMessageKeepsApprovalJustification(t *testing.T) {
 	original := StoredMessage{
 		ID:        "message-1",

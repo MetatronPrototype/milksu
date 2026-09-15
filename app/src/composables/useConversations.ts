@@ -847,19 +847,6 @@ export function useConversations() {
   const runningIds = ref(new Set<string>())
   const abortingIds = ref(new Set<string>())
   const messageQueues = ref(new Map<string, CodingMessageQueue>())
-  // A pair of conversations must not be able to flood each other (or loop A -> B -> A).
-  const agentDeliveries = new Map<string, number[]>()
-  function allowAgentDelivery(source: string, target: string) {
-    const key = `${source}->${target}`
-    const now = Date.now()
-    const kept = (agentDeliveries.get(key) ?? []).filter(at => now - at < 10_000)
-    if (kept.length >= 5) {
-      agentDeliveries.set(key, kept)
-      return false
-    }
-    agentDeliveries.set(key, [...kept, now])
-    return true
-  }
   // A short-lived engine status line (idle reclaim, blocked deletions and friends). It is
   // deliberately not part of any conversation's messages.
   const engineNotice = ref('')
@@ -879,16 +866,6 @@ export function useConversations() {
     }
     engineNoticeAt.value = now
   }
-  // What pi reported it has injected into the running turn (display only, never the
-  // source of truth for what is still queued).
-  const injectedSteering = ref(new Map<string, string[]>())
-  // Conversations whose turn ended naturally while they were off screen: switching
-  // back to one delivers its queue head. A queue restored from disk is deliberately
-  // NOT in here, so a restart never sends anything on its own.
-  const pendingBackgroundDelivery = ref(new Set<string>())
-  // Queues that came back from disk: they wait for an explicit action and must never
-  // auto-advance, no matter how the turn ends.
-  const restoredQueueIds = ref(new Set<string>())
   const abortStalledIds = ref(new Set<string>())
   const stalledQueueIds = ref(new Set<string>())
   const abortWatchdogs = new Map<string, number>()
@@ -2328,14 +2305,6 @@ export function useConversations() {
               }
             : conversation
         ))
-        if (parkedReclaim) {
-          // Engine housekeeping, not the reader's work: shown as a status line, never as
-          // a message in the transcript (no chunking, folding or search involvement).
-          pushEngineNotice(t(
-            '引擎已回收（空闲），不是你的活被中断。',
-            'The engine was reclaimed while idle - none of your work was interrupted.',
-          ))
-        }
         const nextRunning = new Set(runningIds.value)
         const nextAborting = new Set(abortingIds.value)
         for (const id of affectedSet) {
@@ -2430,24 +2399,6 @@ export function useConversations() {
         pushEngineNotice(localized
           ? t(`已拦截一条删除命令：${localized} —— 未执行。`, `Refused a delete command: ${localized} - nothing ran.`)
           : t('已拦截一条删除命令 —— 未执行。', 'Refused a delete command - nothing ran.'))
-        return
-      }
-      if (type === 'agent.delivery') {
-        // A pi tool in another conversation asked for this delivery. The target travels
-        // with the event, so the visible view plays no part in where it lands.
-        const delivery = event.payload as unknown as {
-          targetConversationId?: string
-          deliveryOrigin?: { conversationId?: string; conversationTitle?: string; agent?: string }
-        }
-        void deliverAgentMessage({
-          targetConversationId: String(delivery.targetConversationId ?? ''),
-          text: String(text ?? ''),
-          origin: {
-            conversationId: String(delivery.deliveryOrigin?.conversationId ?? ''),
-            conversationTitle: String(delivery.deliveryOrigin?.conversationTitle ?? ''),
-            agent: String(delivery.deliveryOrigin?.agent ?? 'Agent'),
-          },
-        })
         return
       }
       if (type === 'session.queue_updated') {
@@ -2810,10 +2761,8 @@ export function useConversations() {
     activeAbortStalled,
     activeMessageQueue,
     activeQueuedGuidanceStalled,
-    activeQueuedGuidanceInterrupted,
   engineNotice,
   engineNoticeRepeat,
-  activeInjectedGuidance,
     selectedKernel,
     selectedModelMode,
     selectedModelProvider,

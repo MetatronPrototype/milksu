@@ -131,11 +131,28 @@ function classify(raw: string, cwd: string): DestructiveTarget {
   return { raw, path, kind: 'directory-tree', recursive: true, reason: '目录及其内容' }
 }
 
+/**
+ * The renderer runs sandboxed (contextIsolation on, nodeIntegration off), so `process` may
+ * not exist here at all. Read it defensively and report "unknown" instead of guessing: a
+ * wrong home directory would show the reader a path that is not the one being deleted.
+ */
+function homeDirectory(): string | undefined {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env
+  const home = env?.HOME ?? env?.USERPROFILE
+  return home ? home.replace(/\/+$/, '') : undefined
+}
+
 function absolute(raw: string, cwd: string): string | undefined {
   if (!raw || raw === '.' || raw === './') return cwd
   if (raw.startsWith('/')) return raw
-  if (raw === '~') return process.env.HOME ?? raw
-  if (raw.startsWith('~/')) return `${process.env.HOME ?? ''}${raw.slice(1)}`
+  if (raw === '~') return homeDirectory() ?? raw
+  if (raw.startsWith('~/')) {
+    // With no home directory the target cannot be pinned down, so it stays undetermined
+    // (the card then refuses to offer "allow") rather than turning `~/x` into `/x`.
+    const home = homeDirectory()
+    return home ? `${home}${raw.slice(1)}` : undefined
+  }
   if (raw.startsWith('-')) return undefined
   return `${cwd.replace(/\/$/, '')}/${raw.replace(/^\.\//, '')}`
 }

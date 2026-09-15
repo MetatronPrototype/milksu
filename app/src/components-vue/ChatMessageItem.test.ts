@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import ChatMessageItem from './ChatMessageItem.vue'
 import type { Message } from '@/types'
 
+// The renderer is sandboxed and has no `process`, so tests pin a literal home directory.
+const testHome = '/Users/probe'
+
+
 const mountedApps: App[] = []
 
 afterEach(() => {
@@ -627,7 +631,7 @@ describe('ChatMessageItem destructive approval brief', () => {
     const { host } = await mountMessage({
       id: 'message-protected',
       role: 'tool',
-      content: `rm -rf ${process.env.HOME}/Library/Application Support/com.milksu.app.beta/runtime-data`,
+      content: `rm -rf ${testHome}/Library/Application Support/com.milksu.app.beta/runtime-data`,
       timestamp: 1,
       toolName: 'bash',
       approvalRequestId: 'approval-protected',
