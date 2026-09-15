@@ -467,6 +467,7 @@ const approvalKicker = computed(() => (
 import { assessDestructiveRequest, type DestructiveAssessment, type DestructiveFacts } from '@/lib/destructiveTarget'
 
 const destructiveAssessment = ref<DestructiveAssessment | null>(null)
+const measuredFacts = ref<DestructiveFacts[]>([])
 const approvalCommand = computed(() => (props.message.content ?? '').trim())
 
 // The requester's own words, or an explicit "not provided" - never an inference.
@@ -481,20 +482,23 @@ const approvalSafety = computed(() => (
 const approvalVerification = computed(() => (
   destructiveAssessment.value ?? assessDestructiveRequest(approvalCommand.value)
 ))
-// The gate is the verification result, but only for commands that actually delete:
-// an MCP or read-only approval must keep its allow button.
+// Only an unknown target or a protected path blocks allowing; "cannot be recovered" is
+// information the reader weighs, not a refusal.
 const approvalIsDestructive = computed(() => (/(^|\s)(rm|find|unlink|shred)\b/.test(approvalCommand.value)
   || /\bxargs\b/.test(approvalCommand.value)
   || approvalVerification.value.targets.some(target => target.kind !== 'unknown')))
 const approvalBlocked = computed(() => (
-  approvalIsDestructive.value
-  && (approvalVerification.value.risk === 'high' || approvalVerification.value.undetermined)
+  approvalIsDestructive.value && !approvalVerification.value.canAllow
 ))
+const approvalMeasurement = computed(() => measuredFacts.value.find(fact => (
+  typeof fact.fileCount === 'number' || typeof fact.inGitRepository === 'boolean'
+)) ?? {})
 
 async function measureApprovalCommand(command: string) {
   const base = assessDestructiveRequest(command)
   if (!command) {
     destructiveAssessment.value = base
+    measuredFacts.value = []
     return
   }
   const facts: DestructiveFacts[] = []
@@ -511,6 +515,7 @@ async function measureApprovalCommand(command: string) {
     }
   }
   destructiveAssessment.value = assessDestructiveRequest(command, facts)
+  measuredFacts.value = facts
 }
 
 watch(
@@ -619,6 +624,25 @@ watch(
               <span class="text-muted-foreground">（{{ target.recursive ? t('递归', 'recursive') : t('不递归', 'not recursive') }}：{{ target.reason }}）</span>
             </li>
           </ul>
+          <p
+            v-if="approvalVerification.irrecoverable"
+            class="font-medium text-destructive"
+            data-testid="approval-irrecoverable"
+          >
+            {{ t('不可恢复：不在 git 中且无备份', 'Not recoverable: not in git and no backup') }}
+          </p>
+          <p v-if="approvalMeasurement.fileCount !== undefined" class="text-muted-foreground">
+            {{ t('规模', 'Size') }}：{{ approvalMeasurement.fileCount }} {{ t('个文件', 'files') }}
+            <span v-if="approvalMeasurement.sampled">（{{ t('仅采样', 'sampled') }}）</span>
+          </p>
+          <p v-if="approvalMeasurement.inGitRepository !== undefined" class="text-muted-foreground">
+            {{ t('git 状态', 'Git') }}：{{ approvalMeasurement.inGitRepository
+              ? (approvalMeasurement.gitTracked ? t('在仓库内且已跟踪', 'tracked in a repository') : t('在仓库内但未跟踪', 'in a repository, untracked'))
+              : t('不在仓库内', 'not in a repository') }}
+          </p>
+          <p v-if="approvalVerification.targets.some(target => target.path)" class="text-muted-foreground">
+            {{ t('备份情况', 'Backups') }}：{{ approvalVerification.irrecoverable ? t('未发现', 'none found') : t('存在可重建来源', 'a rebuild source exists') }}
+          </p>
           <p
             class="font-medium"
             :class="approvalVerification.risk === 'high' ? 'text-destructive' : 'text-foreground'"

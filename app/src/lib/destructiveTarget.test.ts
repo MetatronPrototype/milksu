@@ -85,8 +85,9 @@ describe('destructive assessment', () => {
       'rm -rf /Users/me/work/notes',
       [{ exists: true, inGitRepository: true, gitTracked: false, rebuildable: false }],
     )
-    expect(assessment.risk).toBe('high')
-    expect(assessment.verdict).toContain('无法恢复')
+    expect(assessment.irrecoverable).toBe(true)
+    expect(assessment.canAllow).toBe(true)
+    expect(assessment.risk).toBe('medium')
   })
 
   it('raises risk for protected targets even when they look rebuildable', () => {
@@ -115,3 +116,4 @@ describe('destructive assessment', () => {
     expect(assessment.verdict).toContain('仅采样')
   })
 })
+

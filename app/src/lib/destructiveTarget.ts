@@ -53,6 +53,10 @@ export interface DestructiveAssessment {
   protections: string[]
   /** True when nothing could be determined: never allow by default. */
   undetermined: boolean
+  /** The allow button is gated on this: unknown scope or a protected path. */
+  canAllow: boolean
+  /** Nothing can bring it back (no git tracking, no backup) - shown in red. */
+  irrecoverable: boolean
   /** One-line verdict shown at the bottom of the card. */
   verdict: string
   risk: 'low' | 'medium' | 'high'
@@ -127,11 +131,75 @@ function absolute(raw: string, cwd: string): string | undefined {
 }
 
 /**
+ * Split a command on top-level `;`, `&&`, `||` and newlines, ignoring separators that
+ * sit inside quotes. Daily commands look like `cd x; rm -rf y; echo done`, and the old
+ * parser refused all of them as "undetermined".
+ */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let quote = ''
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (quote) {
+      current += char
+      if (char === quote) quote = ''
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      current += char
+      continue
+    }
+    const pair = text.slice(index, index + 2)
+    if (char === ';' || char === '\n') {
+      parts.push(current)
+      current = ''
+      continue
+    }
+    if (pair === '&&' || pair === '||') {
+      parts.push(current)
+      current = ''
+      index += 1
+      continue
+    }
+    current += char
+  }
+  parts.push(current)
+  return parts.map(part => part.trim()).filter(Boolean)
+}
+
+/** Command substitutions that may hide a delete: `$(…)` and backticks. */
+function substitutions(text: string): string[] {
+  const found: string[] = []
+  const pattern = /\$\(([^()]*)\)|`([^`]*)`/g
+  let match = pattern.exec(text)
+  while (match) {
+    found.push(match[1] ?? match[2] ?? '')
+    match = pattern.exec(text)
+  }
+  return found
+}
+
+/**
  * Work out what a command deletes. Returns an empty list (with an `unknown` target)
  * when the scope cannot be established - callers must treat that as "not allowed".
  */
 export function parseDestructiveTargets(command: string, cwd = '/'): DestructiveTarget[] {
   const text = command.trim()
+  if (!text) return []
+  const segments = splitTopLevel(text)
+  const collected: DestructiveTarget[] = []
+  for (const segment of segments) {
+    collected.push(...parseSingleCommand(segment, cwd))
+    for (const inner of substitutions(segment)) {
+      collected.push(...parseSingleCommand(inner, cwd))
+    }
+  }
+  return collected
+}
+
+function parseSingleCommand(text: string, cwd: string): DestructiveTarget[] {
   const tokens = tokenize(text)
   if (!tokens.length) return []
 
@@ -186,12 +254,16 @@ export function parseDestructiveTargets(command: string, cwd = '/'): Destructive
     return []
   }
 
-  return [{
-    raw: text,
-    kind: 'unknown',
-    recursive: true,
-    reason: '无法从命令本身确定删除目标',
-  }]
+  if (/\b(rm|unlink|shred|rmdir|truncate)\b|\bfind\b[^|]*-delete|\bxargs\b|\bgit\s+clean\b|Remove-Item|del\s/i.test(text)) {
+    return [{
+      raw: text,
+      kind: 'unknown',
+      recursive: true,
+      reason: '无法从命令本身确定删除目标',
+    }]
+  }
+  // Not a delete at all (echo/cd/export/…): nothing to assess.
+  return []
 }
 
 export function protectedMatch(path: string | undefined): ProtectedMatch {
@@ -228,7 +300,9 @@ export function assessDestructiveRequest(
   const targets = parseDestructiveTargets(command, cwd)
   const protections: string[] = []
   let touchesUserDataFlag = false
-  let undetermined = targets.length === 0
+  // "Undetermined" only means we saw a delete whose target we cannot pin down. A
+  // command with no delete at all is not a destructive request and is not gated here.
+  let undetermined = targets.some(target => target.kind === 'unknown')
 
   targets.forEach((target, index) => {
     const match = protectedMatch(target.path)
@@ -243,11 +317,14 @@ export function assessDestructiveRequest(
 
   const untracked = facts.some(fact => fact.inGitRepository && fact.gitTracked === false)
   const rebuildable = facts.some(fact => fact.rebuildable)
+  const irrecoverable = !rebuildable && facts.length > 0
   const missing = facts.some((fact, index) => fact.exists === false && targets[index]?.kind !== 'unknown')
 
+  // Risk is informational: it no longer decides whether the reader may allow. Only an
+  // unknown target or a protected path is refused outright.
   let risk: DestructiveAssessment['risk'] = 'low'
   if (protections.length || touchesUserDataFlag) risk = 'high'
-  else if (untracked && !rebuildable) risk = 'high'
+  else if (untracked && !rebuildable) risk = 'medium'
   else if (undetermined || missing) risk = 'medium'
 
   const parts: string[] = []
@@ -268,6 +345,9 @@ export function assessDestructiveRequest(
     targets,
     protections,
     undetermined,
+    // The allow button is gated on this: unknown scope or a protected path, nothing else.
+    canAllow: !undetermined && protections.length === 0,
+    irrecoverable,
     verdict: `风险：${risk === 'high' ? '高' : risk === 'medium' ? '中' : '低'}（${parts.join('；')}）`,
     risk,
     touchesUserData: touchesUserDataFlag,
