@@ -280,6 +280,66 @@ function parseSingleCommand(text: string, cwd: string): DestructiveTarget[] {
   return []
 }
 
+/**
+ * The card's `content` is written for people ("规范化目标：… 影响：… 原始命令：…"), so parsing it
+ * as a shell command made a clear absolute target look undetermined. Judge the structured
+ * input the tool actually sent instead.
+ */
+function parseApprovalInput(raw?: string): { command: string; paths: string[] } | undefined {
+  const text = String(raw ?? '').trim()
+  if (!text.startsWith('{')) return undefined
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    const command = typeof parsed.command === 'string' ? parsed.command.trim() : ''
+    const paths: string[] = []
+    const targets = Array.isArray(parsed.normalizedTargets) ? parsed.normalizedTargets : []
+    for (const entry of targets) {
+      if (!entry || typeof entry !== 'object') continue
+      const path = (entry as { path?: unknown }).path
+      if (typeof path === 'string' && path.trim()) paths.push(path.trim())
+    }
+    const single = typeof parsed.path === 'string' ? parsed.path.trim() : ''
+    if (single) paths.push(single)
+    if (command || paths.length) return { command, paths }
+  } catch {
+    // Not structured input at all.
+  }
+  return undefined
+}
+
+export interface ApprovalAssessment extends DestructiveAssessment {
+  /** True when the request carried nothing structured to check. */
+  unverified?: boolean
+}
+
+export function assessApprovalRequest(
+  input: { content?: string; approvalInput?: string },
+  facts: DestructiveFacts[] = [],
+): ApprovalAssessment {
+  const structured = parseApprovalInput(input.approvalInput)
+  if (!structured) {
+    // Older or unexpected requests: fall back to the text, but say so.
+    const fallback = assessDestructiveRequest(String(input.content ?? ''), facts)
+    return {
+      ...fallback,
+      unverified: true,
+      verdict: `${fallback.verdict}（无法核验：该请求没有携带结构化输入）`,
+    }
+  }
+  const fromPaths = structured.paths.length
+    ? `rm -rf ${structured.paths.map(path => JSON.stringify(path)).join(' ')}`
+    : ''
+  const first = structured.command
+    ? assessDestructiveRequest(structured.command, facts)
+    : undefined
+  if (first && !first.undetermined && first.targets.length) return first
+  if (fromPaths) {
+    const fromTargets = assessDestructiveRequest(fromPaths, facts)
+    if (!fromTargets.undetermined && fromTargets.targets.length) return fromTargets
+  }
+  return first ?? assessDestructiveRequest(String(input.content ?? ''), facts)
+}
+
 export function protectedMatch(path: string | undefined): ProtectedMatch {
   if (!path) return { protected: false }
   for (const entry of PROTECTED_RULES) {

@@ -45,7 +45,7 @@ import {
 } from 'lucide-vue-next'
 import { invokeCommand, listenEvent } from '@/desktop'
 import { nextChatAutoScrollPinned } from '@/lib/chatAutoScroll'
-import { assessDestructiveRequest } from '@/lib/destructiveTarget'
+import { assessApprovalRequest } from '@/lib/destructiveTarget'
 import { t } from '@/lib/uiLocale'
 import { isGeneratedScratchWorkspace } from '@/lib/codingConversationGroups'
 import AgentPixelLoader from '@/components-vue/AgentPixelLoader.vue'
@@ -288,11 +288,15 @@ const pendingApprovalMessage = computed(() => (
   )) ?? null
 ))
 // The bar must use the same verdict as the card, or the reader can approve from the
-// bar what the card refused. `canAllow` only depends on the command text, so both
-// places compute it from the same function and the same input.
-const approvalAssessed = computed(() => assessDestructiveRequest(pendingApprovalMessage.value?.content ?? ''))
+// bar what the card refused. Both sides now judge the same *structured* input: the card's
+// own text is written for people and parsing it made a clear target look undetermined.
+const approvalAssessed = computed(() => assessApprovalRequest({
+  content: pendingApprovalMessage.value?.content ?? '',
+  approvalInput: pendingApprovalMessage.value?.approvalInput ?? '',
+}))
 const approvalBarIsDestructive = computed(() => {
-  const command = pendingApprovalMessage.value?.content ?? ''
+  const message = pendingApprovalMessage.value
+  const command = `${message?.content ?? ''}\n${message?.approvalInput ?? ''}`
   return /(^|\s)(rm|find|unlink|shred)\b/.test(command)
     || /\bxargs\b/.test(command)
     || approvalAssessed.value.targets.some(target => target.kind !== 'unknown')

@@ -464,7 +464,7 @@ const approvalKicker = computed(() => (
         : t('已失效', 'Expired')
 ))
 // --- destructive approval brief -------------------------------------------
-import { assessDestructiveRequest, type DestructiveAssessment, type DestructiveFacts } from '@/lib/destructiveTarget'
+import { assessApprovalRequest, type DestructiveAssessment, type DestructiveFacts } from '@/lib/destructiveTarget'
 
 const destructiveAssessment = ref<DestructiveAssessment | null>(null)
 const measuredFacts = ref<DestructiveFacts[]>([])
@@ -480,12 +480,16 @@ const approvalSafety = computed(() => (
   || t('发起者未提供', 'Not provided by the requester')
 ))
 const approvalVerification = computed(() => (
-  destructiveAssessment.value ?? assessDestructiveRequest(approvalCommand.value)
+  destructiveAssessment.value ?? assessApprovalRequest({
+    content: props.message.content ?? '',
+    approvalInput: props.message.approvalInput ?? '',
+  })
 ))
 // Only an unknown target or a protected path blocks allowing; "cannot be recovered" is
 // information the reader weighs, not a refusal.
-const approvalIsDestructive = computed(() => (/(^|\s)(rm|find|unlink|shred)\b/.test(approvalCommand.value)
-  || /\bxargs\b/.test(approvalCommand.value)
+const approvalIsDestructive = computed(() => (
+  /(^|\s)(rm|find|unlink|shred)\b/.test(`${approvalCommand.value}\n${props.message.approvalInput ?? ''}`)
+  || /\bxargs\b/.test(`${approvalCommand.value}\n${props.message.approvalInput ?? ''}`)
   || approvalVerification.value.targets.some(target => target.kind !== 'unknown')))
 const approvalBlocked = computed(() => (
   approvalIsDestructive.value && !approvalVerification.value.canAllow
@@ -495,7 +499,10 @@ const approvalMeasurement = computed(() => measuredFacts.value.find(fact => (
 )) ?? {})
 
 async function measureApprovalCommand(command: string) {
-  const base = assessDestructiveRequest(command)
+  const base = assessApprovalRequest({
+    content: command,
+    approvalInput: props.message.approvalInput ?? '',
+  })
   if (!command) {
     destructiveAssessment.value = base
     measuredFacts.value = []
@@ -514,7 +521,10 @@ async function measureApprovalCommand(command: string) {
       facts.push({})
     }
   }
-  destructiveAssessment.value = assessDestructiveRequest(command, facts)
+  destructiveAssessment.value = assessApprovalRequest({
+    content: command,
+    approvalInput: props.message.approvalInput ?? '',
+  }, facts)
   measuredFacts.value = facts
 }
 
