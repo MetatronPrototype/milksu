@@ -151,6 +151,7 @@ import {
 } from "./bridge-steering.js";
 import {
   destructiveDeleteDecision,
+  destructiveJustification,
 } from "./bridge-destructive-delete.js";
 import piWebResearchExtension from "./bridge-web-research.js";
 import currentProviderRuntime from "./current-provider-runtime.cjs";
@@ -563,11 +564,28 @@ function createCodingPermissionExtension(
         };
       }
       if (deleteDecision?.action === "approval") {
+        // A recursive delete must carry the requester's own purpose and safety note;
+        // without it the card would only ever say "not provided". A background task
+        // cannot show a card at all, so both cases fail closed.
+        const justification = destructiveJustification(event.input);
+        if (event.toolName === "bg_task" || !justification.ok) {
+          return {
+            block: true,
+            reason: event.toolName === "bg_task"
+              ? "MilkSU refused this deletion: a background task cannot be approved "
+                + "interactively. Run it in the foreground so it can be reviewed."
+              : justification.reason,
+          };
+        }
         const approved = await approvalBroker.request({
           conversationId,
           toolName: "destructive-delete",
           content: deleteDecision.content,
           input: truncate(deleteDecision.input, 16000),
+          justification: {
+            purpose: justification.purpose,
+            safety: justification.safety,
+          },
         });
         if (!approved) {
           return {

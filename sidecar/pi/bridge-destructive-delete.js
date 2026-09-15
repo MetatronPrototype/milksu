@@ -272,6 +272,26 @@ async function inspectDirectory(root) {
   return { exists: true, entries, bytes, large: false };
 }
 
+/**
+ * A recursive delete must carry the requester's own purpose and safety note. Blank or
+ * whitespace-only text counts as missing, and a missing note never reaches the card.
+ */
+export function destructiveJustification(input) {
+  const record = input && typeof input === "object" ? input : {};
+  const nested = record.justification && typeof record.justification === "object"
+    ? record.justification
+    : {};
+  const purpose = String(nested.purpose ?? record.purpose ?? "").trim();
+  const safety = String(nested.safety ?? record.safety ?? "").trim();
+  return {
+    ok: Boolean(purpose) && Boolean(safety),
+    purpose,
+    safety,
+    reason: "MilkSU refused this recursive delete: it has no reason attached. "
+      + "Use request_destructive_delete and fill in 用途 (purpose) and 安全性 (safety).",
+  };
+}
+
 function commandForTool(toolName, input) {
   if (toolName === "bash") return String(input?.command ?? "");
   if (toolName !== "bg_task") return "";

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   destructiveDeleteDecision,
+  destructiveJustification,
   expandDeleteTarget,
   recursiveDeleteTargets,
 } from "./bridge-destructive-delete.js";
@@ -143,4 +144,63 @@ test("unresolved recursive delete targets are blocked instead of being approved 
   });
   assert.equal(decision.action, "block");
   assert.match(decision.reason, /明确的绝对路径/);
+});
+
+// A background task must be judged exactly like the foreground call; anything that
+// reaches "needs approval" is refused instead, because nobody can approve it.
+test("judges a background task like the foreground command", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "milksu-bg-guard-"));
+  const target = join(directory, "many");
+  await mkdir(target, { recursive: true });
+  for (let index = 0; index < 1100; index += 1) {
+    await writeFile(join(target, `file-${index}.txt`), "x");
+  }
+
+  const foreground = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `rm -rf ${target}` },
+    policy: { workspace: directory },
+  });
+  for (const input of [
+    { action: "spawn", command: `rm -rf ${target}` },
+    { action: "resume", argv: ["rm", "-rf", target] },
+    { action: "restart", commandText: `rm -rf ${target}` },
+  ]) {
+    const background = await destructiveDeleteDecision({
+      toolName: "bg_task",
+      input,
+      policy: { workspace: directory },
+    });
+    assert.deepEqual(
+      background?.action ?? null,
+      foreground?.action ?? null,
+      `bg_task action ${input.action} must match the foreground verdict`,
+    );
+  }
+
+  const harmless = await destructiveDeleteDecision({
+    toolName: "bg_task",
+    input: { action: "spawn", command: "echo hello" },
+    policy: { workspace: directory },
+  });
+  assert.equal(harmless, null);
+});
+
+// A recursive delete must carry the requester's own reason; a bare rm -rf fails closed
+// so the card can never show "the requester did not provide a purpose".
+test("requires a purpose and a safety note for a recursive delete", () => {
+  const missing = destructiveJustification({ command: "rm -rf /x" });
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /request_destructive_delete/);
+
+  assert.equal(destructiveJustification({ justification: { purpose: " ", safety: "x" } }).ok, false);
+  assert.equal(destructiveJustification({ justification: { purpose: "x", safety: "  " } }).ok, false);
+  assert.equal(destructiveJustification({ purpose: "", safety: "" }).ok, false);
+
+  const provided = destructiveJustification({
+    justification: { purpose: "删除旧备份", safety: "程序副本，可重建" },
+  });
+  assert.equal(provided.ok, true);
+  assert.equal(provided.purpose, "删除旧备份");
+  assert.equal(provided.safety, "程序副本，可重建");
 });
