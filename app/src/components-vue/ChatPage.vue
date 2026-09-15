@@ -276,7 +276,7 @@ const scrollArea = ref<HTMLElement | null>(null)
 // A pending approval gets its own sticky bar outside the transcript. The card inside a
 // 3000-message thread could not be clicked while the renderer was busy patching that
 // list, which read as "the buttons do nothing".
-const APPROVAL_CONFIRM_TIMEOUT_MS = 8000
+const APPROVAL_CONFIRM_TIMEOUT_MS = 3000
 const pendingApprovalMessage = computed(() => (
   props.conversation?.messages.find(message => (
     message.approvalState === 'pending'

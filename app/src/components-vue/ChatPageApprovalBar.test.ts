@@ -74,7 +74,7 @@ describe('ChatPage approval bar', () => {
   // The card inside a 3000-message thread could not be clicked; the decision must live
   // in its own light-weight bar that never waits for the transcript to re-render.
   it('shows a clickable approval bar above a 3000-message transcript', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    vi.useRealTimers()
     const { host, decisions } = mountPage(longConversationWithApproval(3000))
     await nextTick()
     await nextTick()
@@ -95,7 +95,7 @@ describe('ChatPage approval bar', () => {
   })
 
   it('rolls the bar back when the engine never confirms the decision', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    vi.useRealTimers()
     const { host } = mountPage(longConversationWithApproval(3000))
     await nextTick()
     await nextTick()
@@ -104,7 +104,7 @@ describe('ChatPage approval bar', () => {
     await nextTick()
     expect(host.querySelector('[data-testid="approval-bar-submitting"]')).not.toBeNull()
 
-    await vi.advanceTimersByTimeAsync(9000)
+    await new Promise(resolve => setTimeout(resolve, 3400))
     await nextTick()
     expect(host.querySelector('[data-testid="approval-bar-submitting"]')).toBeNull()
     expect(host.textContent).toContain('审批未确认')
