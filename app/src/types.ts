@@ -70,6 +70,8 @@ export interface Message {
   approvalInput?: string
   approvalState?: 'pending' | 'approved' | 'denied' | 'expired'
   approvalReason?: string
+  /** The requester's own purpose/safety note for a destructive approval. */
+  approvalJustification?: { purpose?: string; safety?: string }
   approvalGrantable?: boolean
   approvalChoiceId?: string
   attachments?: CodingAttachment[]

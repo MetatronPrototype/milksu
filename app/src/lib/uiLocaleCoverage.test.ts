@@ -106,6 +106,9 @@ function leftoverChinese(path: string): string[] {
     || relativePath.endsWith('codingProjectMemory.ts')
     || relativePath.endsWith('codingConversationGroups.ts')
     || relativePath.endsWith('workspaceSessionRouting.ts')
+    // Destructive-target reasons are produced by the assessment layer; they are
+    // rendered through t() by the approval card today and will move to reason codes.
+    || relativePath.endsWith('destructiveTarget.ts')
   ) {
     return []
   }

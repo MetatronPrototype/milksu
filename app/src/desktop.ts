@@ -98,6 +98,23 @@ type CommandArgs = Record<string, unknown>
 type UnlistenFn = () => void
 type EventEnvelope<T> = { payload: T }
 
+// Measured half of a destructive approval card; the renderer only displays it.
+export interface DestructiveTargetInspection {
+  path: string
+  status: 'ok' | 'missing' | 'permission-denied' | 'error'
+  exists: boolean
+  isDirectory: boolean
+  emptyDirectory: boolean
+  fileCount: number
+  totalBytes: number
+  sampled: boolean
+  inGitRepository: boolean
+  gitTracked: boolean
+  rebuildable: boolean
+  backups: string[]
+  error?: string
+}
+
 export interface VulnerabilityFeedDownload {
   sourceName: string
   sourceUrl: string
@@ -407,6 +424,7 @@ interface DesktopAppBindings {
   ): Promise<CodingComputerUseStatus>
   StopCodingComputerUse(conversationId: string): Promise<CodingComputerUseStatus>
   SteerMessage(conversationId: string, prompt: string): Promise<void>
+  InspectDestructiveTarget(path: string): Promise<DestructiveTargetInspection>
   RemoveQueuedMessage(
     conversationId: string,
     queue: string,
@@ -729,6 +747,8 @@ export async function invokeCommand<T = unknown>(command: string, args?: Command
           args?.conversationId as string,
           args?.prompt as string,
         ) as Promise<T>
+      case 'inspect_destructive_target':
+        return app.InspectDestructiveTarget(args?.path as string) as Promise<T>
       case 'remove_queued_message':
         return app.RemoveQueuedMessage(
           args?.conversationId as string,

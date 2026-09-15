@@ -52,6 +52,8 @@ function createMockConversations() {
     activeId,
     active,
     workspacePath,
+    engineNotice: ref(''),
+    engineNoticeRepeat: ref(0),
     runningConversationIds: computed<string[]>(() => []),
     conversationActionError: ref(''),
     activeRunning: computed(() => false),

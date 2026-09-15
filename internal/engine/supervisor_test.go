@@ -3208,3 +3208,34 @@ func TestCompactSessionRequiresRunningSidecar(t *testing.T) {
 		t.Fatalf("expected sidecar rejection, got %v", err)
 	}
 }
+
+// A refused deletion and a cross-conversation delivery must reach the renderer under the
+// exact names it switches on. The default arm prefixed them with engine.raw., so the
+// "your delete was refused" status line never appeared.
+func TestNormalizeBridgeEventPassesStatusNoticesThrough(t *testing.T) {
+	blocked := normalizeBridgeEvent(bridgeEvent{
+		Type:   "destructive.blocked",
+		ID:     "session-1",
+		Notice: "MilkSU refused this deletion: it has no reason attached",
+	}, KernelPi)
+	if blocked.Type != "destructive.blocked" {
+		t.Fatalf("type = %q, want destructive.blocked", blocked.Type)
+	}
+	if blocked.Notice != "MilkSU refused this deletion: it has no reason attached" {
+		t.Fatalf("notice = %q, want the engine's wording", blocked.Notice)
+	}
+
+	delivery := normalizeBridgeEvent(bridgeEvent{
+		Type: "agent.delivery",
+		ID:   "session-1",
+	}, KernelPi)
+	if delivery.Type != "agent.delivery" {
+		t.Fatalf("type = %q, want agent.delivery", delivery.Type)
+	}
+
+	// Anything unknown keeps the prefixed name, so it is never mistaken for a real event.
+	unknown := normalizeBridgeEvent(bridgeEvent{Type: "something_new", ID: "session-1"}, KernelPi)
+	if unknown.Type != "engine.raw.something_new" {
+		t.Fatalf("type = %q, want engine.raw.something_new", unknown.Type)
+	}
+}

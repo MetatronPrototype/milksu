@@ -45,6 +45,7 @@ import {
 } from 'lucide-vue-next'
 import { invokeCommand, listenEvent } from '@/desktop'
 import { nextChatAutoScrollPinned } from '@/lib/chatAutoScroll'
+import { assessApprovalRequest } from '@/lib/destructiveTarget'
 import { t } from '@/lib/uiLocale'
 import { isGeneratedScratchWorkspace } from '@/lib/codingConversationGroups'
 import AgentPixelLoader from '@/components-vue/AgentPixelLoader.vue'
@@ -142,7 +143,7 @@ import {
   selectedComputerUseTarget as resolveSelectedComputerUseTarget,
 } from '@/lib/codingPolicy'
 import { codingContinuityPresentation } from '@/lib/codingContinuityPresentation'
-import { codingAskToolName, pendingAskMessage } from '@/lib/agentAsk'
+import { codingAskToolName, isAskMessage, pendingAskMessage } from '@/lib/agentAsk'
 import type {
   CTFAgentBudgetStatus,
   CTFAgentRunCheckpoint,
@@ -184,6 +185,16 @@ const props = defineProps<{
   running: boolean
   aborting: boolean
   abortStalled?: boolean
+  forceStopReady?: boolean
+  queuedGuidanceInterrupted?: boolean
+  /**
+   * A short status line from the engine (idle reclaim, a refused deletion). It is shown
+   * above the transcript and is never part of the messages.
+   */
+  engineNotice?: string
+  engineNoticeRepeat?: number
+  /** Guidance already injected into the running turn (shown, not sendable). */
+  queuedGuidanceInjected?: string[]
   messageQueue?: CodingMessageQueue
   sessionReady: boolean
   resumed: boolean
@@ -272,6 +283,67 @@ const composer = ref<{
   focusMessageInput: () => Promise<void>
 } | null>(null)
 const scrollArea = ref<HTMLElement | null>(null)
+
+// A pending approval gets its own sticky bar outside the transcript. The card inside a
+// 3000-message thread could not be clicked while the renderer was busy patching that
+// list, which read as "the buttons do nothing".
+const APPROVAL_CONFIRM_TIMEOUT_MS = 3000
+const pendingApprovalMessage = computed(() => (
+  props.conversation?.messages.find(message => (
+    message.approvalState === 'pending'
+    && Boolean(message.approvalRequestId)
+    // An ask shares the approval channel but is a question, not a permission: showing
+    // Allow/Deny for it would submit an empty answer as if it were a grant.
+    && !isAskMessage(message)
+  )) ?? null
+))
+// The bar must use the same verdict as the card, or the reader can approve from the
+// bar what the card refused. Both sides now judge the same *structured* input: the card's
+// own text is written for people and parsing it made a clear target look undetermined.
+const approvalAssessed = computed(() => assessApprovalRequest({
+  content: pendingApprovalMessage.value?.content ?? '',
+  approvalInput: pendingApprovalMessage.value?.approvalInput ?? '',
+}))
+const approvalBarIsDestructive = computed(() => {
+  const message = pendingApprovalMessage.value
+  const command = `${message?.content ?? ''}\n${message?.approvalInput ?? ''}`
+  return /(^|\s)(rm|find|unlink|shred)\b/.test(command)
+    || /\bxargs\b/.test(command)
+    || approvalAssessed.value.targets.some(target => target.kind !== 'unknown')
+})
+const approvalCanAllow = computed(() => (
+  !approvalBarIsDestructive.value || approvalAssessed.value.canAllow
+))
+const approvalSubmitting = ref(false)
+const approvalError = ref('')
+const approvalSummary = computed(() => {
+  const message = pendingApprovalMessage.value
+  if (!message) return ''
+  return String(message.toolName ?? message.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 80)
+})
+
+// Immediate optimistic feedback; roll back with a message if the engine never confirms.
+function submitApproval(approved: boolean) {
+  const message = pendingApprovalMessage.value
+  if (!message?.approvalRequestId || approvalSubmitting.value) return
+  // Never send an approval the verification refused, whatever the UI shows.
+  if (approved && !approvalCanAllow.value) return
+  approvalSubmitting.value = true
+  approvalError.value = ''
+  emit('respondApproval', message.approvalRequestId, approved, 'once')
+  window.setTimeout(() => {
+    if (!approvalSubmitting.value) return
+    approvalSubmitting.value = false
+    approvalError.value = t('审批未确认，请重试。', 'The decision was not confirmed. Try again.')
+  }, APPROVAL_CONFIRM_TIMEOUT_MS)
+}
+
+watch(
+  () => pendingApprovalMessage.value?.approvalState,
+  state => {
+    if (state && state !== 'pending') approvalSubmitting.value = false
+  },
+)
 const chatAutoScrollPinned = ref(true)
 const lastChatScrollTop = ref(0)
 const workshopState = ref<CTFToolWorkshopState | null>(null)
@@ -2304,6 +2376,63 @@ defineExpose({
       class="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
       @scroll.passive="handleChatScroll"
     >
+      <div
+        v-if="engineNotice"
+        class="mx-auto mb-2 w-[72%] rounded-xl border border-border/70 bg-muted/50 px-3 py-1.5 text-caption text-muted-foreground"
+        data-testid="engine-notice"
+      >
+        {{ engineNotice }}
+        <span v-if="(engineNoticeRepeat ?? 0) > 1" data-testid="engine-notice-repeat">
+          {{ t(`（重复 ${engineNoticeRepeat} 次）`, ` (x${engineNoticeRepeat})`) }}
+        </span>
+      </div>
+      <div
+        v-if="pendingApprovalMessage"
+        class="sticky top-0 z-30 mx-auto mb-2 flex w-[72%] items-center gap-2 rounded-xl border border-primary/40 bg-background/95 px-3 py-2 shadow-sm"
+        data-testid="approval-bar"
+      >
+        <span class="min-w-0 flex-1 truncate text-caption font-medium text-foreground">
+          {{ t('待批准：', 'Waiting for approval: ') }}{{ approvalSummary }}
+        </span>
+        <span
+          v-if="approvalSubmitting"
+          class="shrink-0 text-caption text-muted-foreground"
+          data-testid="approval-bar-submitting"
+        >
+          {{ t('处理中…', 'Working…') }}
+        </span>
+        <span v-else-if="approvalError" class="shrink-0 text-caption text-destructive">
+          {{ approvalError }}
+        </span>
+        <span
+          v-else-if="!approvalCanAllow"
+          class="shrink-0 text-caption font-medium text-destructive"
+          data-testid="approval-bar-gate"
+        >
+          {{ t('核验拒绝：本卡只提供「拒绝」', 'Verification refused: deny only') }}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          :disabled="approvalSubmitting"
+          data-testid="approval-bar-deny"
+          @click="submitApproval(false)"
+        >
+          {{ t('拒绝', 'Deny') }}
+        </Button>
+        <Button
+          v-if="approvalCanAllow"
+          type="button"
+          variant="brand"
+          size="sm"
+          :disabled="approvalSubmitting"
+          data-testid="approval-bar-allow"
+          @click="submitApproval(true)"
+        >
+          {{ t('允许这一次', 'Allow once') }}
+        </Button>
+      </div>
       <div
         v-if="!conversation?.messages.length"
         class="flex min-h-full flex-col items-center justify-center px-8"

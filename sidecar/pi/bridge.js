@@ -6,7 +6,7 @@ import {
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { basename, dirname, join, resolve } from "node:path";
-import { readFile, unlink } from "node:fs/promises";
+import { readFile, rm, unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import {
@@ -150,7 +150,11 @@ import {
   steerSession,
 } from "./bridge-steering.js";
 import {
+  commandForTool,
   destructiveDeleteDecision,
+  destructiveJustification,
+  issueDestructiveDeleteCredential,
+  recursiveDeleteTargets,
 } from "./bridge-destructive-delete.js";
 import piWebResearchExtension from "./bridge-web-research.js";
 import currentProviderRuntime from "./current-provider-runtime.cjs";
@@ -459,6 +463,49 @@ function createMilkSUWorkflowExtension(sessionRole, getPolicy, getSession, conve
       },
     });
     pi.registerTool({
+      name: "request_destructive_delete",
+      label: "MilkSU destructive delete",
+      description: "Ask the user before deleting something recursively. Fill in purpose (why this deletion is needed) and safety (what it is and whether it can be restored). A recursive delete that does not go through this tool is refused, so use it whenever you need to remove a tree.",
+      parameters: Type.Object({
+        path: Type.String({ minLength: 1, maxLength: 4096 }),
+        purpose: Type.String({ minLength: 1, maxLength: 2000 }),
+        safety: Type.String({ minLength: 1, maxLength: 2000 }),
+      }),
+      async execute(_toolCallId, params) {
+        const target = String(params.path ?? "").trim();
+        const purpose = String(params.purpose ?? "").trim();
+        const safety = String(params.safety ?? "").trim();
+        if (!target || !purpose || !safety) {
+          throw new Error("path, purpose and safety are all required");
+        }
+        const policy = await loadSessionPolicy(process.cwd(), "", {});
+        const decision = await destructiveDeleteDecision({
+          toolName: "bash",
+          input: { command: `rm -rf ${JSON.stringify(target)}` },
+          policy,
+        });
+        if (decision?.action === "block") {
+          emit(conversationId, "destructive.blocked", { notice: decision.reason });
+          throw new Error(decision.reason);
+        }
+        const approved = await approvalBroker.request({
+          conversationId,
+          toolName: "destructive-delete",
+          content: decision?.content ?? target,
+          input: truncate(decision?.input ?? target, 16000),
+          justification: { purpose, safety },
+        });
+        if (!approved) {
+          return { content: [{ type: "text", text: "MilkSU user denied this deletion." }] };
+        }
+        await rm(target, { recursive: true, force: true });
+        return {
+          content: [{ type: "text", text: `Deleted ${target}` }],
+          details: { path: target, purpose, safety },
+        };
+      },
+    });
+    pi.registerTool({
       name: "milksu_progress",
       label: "MilkSU progress",
       description: "Publish or update a short execution plan (summary + up to 8 steps) when the task has more than one concrete step. Skip one-shot replies. Keep the in-progress step updated.",
@@ -557,17 +604,39 @@ function createCodingPermissionExtension(
         policy,
       });
       if (deleteDecision?.action === "block") {
+        // A blocked deletion is a decision the reader must be able to see: the guard never
+        // asks, so without this notice the command simply appears to do nothing.
+        emit(conversationId, "destructive.blocked", { notice: deleteDecision.reason });
         return {
           block: true,
           reason: deleteDecision.reason,
         };
       }
       if (deleteDecision?.action === "approval") {
+        // A recursive delete must carry the requester's own purpose and safety note;
+        // without it the card would only ever say "not provided". A background task
+        // cannot show a card at all, so both cases fail closed.
+        const justification = destructiveJustification(event.input);
+        if (event.toolName === "bg_task" || !justification.ok) {
+          const blockReason = event.toolName === "bg_task"
+            ? "MilkSU refused this deletion: a background task cannot be approved "
+              + "interactively. Run it in the foreground so it can be reviewed."
+            : justification.reason;
+          emit(conversationId, "destructive.blocked", { notice: blockReason });
+          return {
+            block: true,
+            reason: blockReason,
+          };
+        }
         const approved = await approvalBroker.request({
           conversationId,
           toolName: "destructive-delete",
           content: deleteDecision.content,
           input: truncate(deleteDecision.input, 16000),
+          justification: {
+            purpose: justification.purpose,
+            safety: justification.safety,
+          },
         });
         if (!approved) {
           return {
@@ -576,6 +645,14 @@ function createCodingPermissionExtension(
           };
         }
         destructiveDeleteApproved = true;
+        // The approval is spent here: it authorises exactly this command against exactly
+        // these targets in this conversation, once. Re-running it needs a new review.
+        const approvedCommand = commandForTool(event.toolName, event.input);
+        issueDestructiveDeleteCredential({
+          command: approvedCommand,
+          conversationId,
+          targets: recursiveDeleteTargets(approvedCommand),
+        });
       }
       if (event.toolName === "mcp") {
         const serverName = selectedMcpServer(policy, event.input);

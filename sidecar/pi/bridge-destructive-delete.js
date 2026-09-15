@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync as readScriptFileSync } from "node:fs";
 import {
   lstat,
   readdir,
@@ -15,6 +17,82 @@ import {
 
 const largeDirectoryEntryLimit = 1000;
 const largeDirectoryByteLimit = 1024 * 1024 * 1024;
+
+// An approval is for one concrete action, not for a class of actions. The credential
+// binds the normalised command, the conversation and the targets together, and it is
+// spent on first use, so re-running "the same" delete needs a fresh review.
+const destructiveCredentialTtlMs = 5 * 60 * 1000;
+const destructiveCredentials = new Map();
+
+function normalizeCommandText(command) {
+  return String(command ?? "").replace(/\s+/g, " ").trim();
+}
+
+export function destructiveCredentialFingerprint(input = {}) {
+  const targets = [...(input.targets ?? [])].map(value => String(value)).sort();
+  return createHash("sha256")
+    .update([
+      normalizeCommandText(input.command),
+      String(input.conversationId ?? ""),
+      targets.join("\u0000"),
+    ].join("\u0001"))
+    .digest("hex");
+}
+
+export function issueDestructiveDeleteCredential(input, now = Date.now()) {
+  const fingerprint = destructiveCredentialFingerprint(input);
+  const token = createHash("sha256")
+    .update(`${fingerprint}:${now}:${Math.random()}:${destructiveCredentials.size}`)
+    .digest("hex");
+  destructiveCredentials.set(token, { fingerprint, issuedAt: now });
+  return token;
+}
+
+// Returns the reason instead of throwing so both callers report the same wording.
+export function consumeDestructiveDeleteCredential(token, input, now = Date.now()) {
+  const key = String(token ?? "");
+  const record = destructiveCredentials.get(key);
+  if (!record) {
+    return {
+      ok: false,
+      reason:
+        "MilkSU refused this deletion: it has no reviewed approval left (an approval is "
+        + "spent once, so run it again to review it again)",
+    };
+  }
+  // Spent on first use, whatever the outcome: a mismatching replay must not keep it alive.
+  destructiveCredentials.delete(key);
+  if (now - record.issuedAt > destructiveCredentialTtlMs) {
+    return { ok: false, reason: "MilkSU refused this deletion: the approval expired" };
+  }
+  if (record.fingerprint !== destructiveCredentialFingerprint(input)) {
+    return {
+      ok: false,
+      reason: "MilkSU refused this deletion: it does not match the command that was approved",
+    };
+  }
+  return { ok: true, reason: "" };
+}
+
+export function resetDestructiveDeleteCredentials() {
+  destructiveCredentials.clear();
+}
+
+// The execution point does not receive a token: it presents the command it is about to
+// run and only passes when a reviewed approval for exactly that command is still unspent.
+export function consumeMatchingDestructiveDeleteCredential(input, now = Date.now()) {
+  const fingerprint = destructiveCredentialFingerprint(input);
+  for (const [token, record] of destructiveCredentials) {
+    if (record.fingerprint !== fingerprint) continue;
+    return consumeDestructiveDeleteCredential(token, input, now);
+  }
+  return {
+    ok: false,
+    reason:
+      "MilkSU refused this deletion: it was never reviewed here, and a background launch "
+      + "cannot be approved interactively. Run it in the foreground so it can be reviewed.",
+  };
+}
 
 function samePath(left, right, platform = process.platform) {
   const normalize = value => (
@@ -134,6 +212,33 @@ function shellWords(command) {
   return words;
 }
 
+// A heredoc body is data, not commands: "cat <<EOF" followed by "rm -rf /" must not be
+// read as a delete. Only the line that opens the heredoc is kept.
+function stripHeredocBodies(command) {
+  const lines = String(command ?? "").split("\n");
+  const kept = [];
+  let pending = null;
+  for (const line of lines) {
+    if (pending) {
+      const candidate = pending.stripTabs ? line.replace(/^\t+/, "") : line;
+      if (candidate.trim() === pending.marker) pending = null;
+      continue;
+    }
+    kept.push(line);
+    const match = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(line);
+    if (match) pending = { marker: match[3], stripTabs: match[1] === "-" };
+  }
+  return kept.join("\n");
+}
+
+// These read, print or search - they never delete a tree. Without this, a pattern like
+// `grep rm -rf .` (or any unquoted search term) looked like an actual recursive delete.
+const readOnlyShellCommands = new Set([
+  "grep", "egrep", "fgrep", "rg", "ag", "ack",
+  "echo", "printf", "cat", "head", "tail", "less", "more", "wc",
+  "which", "whereis", "type",
+]);
+
 function commandSegments(command) {
   const segments = [[]];
   for (const word of shellWords(command)) {
@@ -172,9 +277,124 @@ function positionalTargets(words, start, ignoredOptions = new Set()) {
   return targets;
 }
 
-export function recursiveDeleteTargets(command) {
+const scriptDeleteMaxDepth = 3;
+
+/**
+ * Split a command into its top-level statements (newline, `;`, `&&`, `||`) outside quotes.
+ * Each statement is judged on its own: a read-only statement must not hide the delete that
+ * follows it on the next line.
+ */
+export function splitTopLevelStatements(command) {
+  const source = String(command ?? "");
+  const parts = [];
+  let current = "";
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      current += character;
+      if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+      continue;
+    }
+    const isBreak = character === "\n" || character === ";"
+      || (character === "&" && source[index + 1] === "&")
+      || (character === "|" && source[index + 1] === "|");
+    if (isBreak) {
+      if (current.trim()) parts.push(current.trim());
+      current = "";
+      if (character === "&" || character === "|") index += 1;
+      continue;
+    }
+    current += character;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+/**
+ * `bash script.sh`, `sh -e script.sh`, `source file`, `. file`, `python file`: the file the
+ * command would execute. Flags are skipped so `bash -e x.sh` still resolves to x.sh, while
+ * `bash -c "..."` is not a file at all and therefore returns nothing.
+ */
+export function shellScriptArgument(words) {
+  const list = Array.isArray(words) ? words.map(value => String(value)) : [];
+  const head = (list[0] ?? "").split(/[\\/]/).at(-1).toLowerCase();
+  if (head === "source" || head === ".") return list[1];
+  const interpreters = new Set([
+    "sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node",
+  ]);
+  if (!interpreters.has(head)) return undefined;
+  let index = 1;
+  while (index < list.length && list[index].startsWith("-")) {
+    // A combined flag containing `c` carries an inline script, not a file name.
+    if (/c/.test(list[index])) return undefined;
+    index += 1;
+  }
+  return list[index];
+}
+
+// A missing, unreadable or oversized script is not itself a reason to refuse: the command
+// that named it is still judged on its own.
+function scriptText(file, readScript) {
+  try {
+    const content = readScript(file, "utf8");
+    return typeof content === "string" && content.length <= 1_000_000 ? content : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function recursiveDeleteTargets(command, options = {}) {
+  const depth = Number(options.depth ?? 0);
+  const seen = options.seen instanceof Set ? options.seen : new Set();
+  const readScript = options.readScript ?? readScriptFileSync;
+  // Depth and a visited set keep indirect scripts and cycles bounded.
+  if (depth > scriptDeleteMaxDepth) return [];
+  // Strip heredoc bodies first: their text is data, and splitting it into statements would
+  // judge a "rm -rf" that only appears inside the heredoc.
+  const statements = splitTopLevelStatements(stripHeredocBodies(command));
+  if (statements.length > 1) {
+    // Splitting is not a new indirection level, so the depth stays the same.
+    return statements.flatMap(statement => recursiveDeleteTargets(statement, { depth, seen, readScript }));
+  }
   const targets = [];
-  for (const words of commandSegments(command)) {
+  for (const words of commandSegments(stripHeredocBodies(command))) {
+    // A delete hides easily in a file the command merely names (`bash /tmp/x.sh`). Read it
+    // and judge its contents through this same parser, so project-local work still passes.
+    const scriptArgument = shellScriptArgument(words);
+    if (scriptArgument && !scriptArgument.startsWith("$")) {
+      const resolved = resolve(scriptArgument);
+      if (!seen.has(resolved)) {
+        const content = scriptText(resolved, readScript);
+        if (content !== undefined) {
+          seen.add(resolved);
+          targets.push(...recursiveDeleteTargets(content, { depth: depth + 1, seen, readScript }));
+        }
+      }
+    }
+    const head = (words[0] ?? "").split(/[\\/]/).at(-1).toLowerCase();
+    if (readOnlyShellCommands.has(head)) continue;
+    // A delete hidden in a shell string (`bash -c "rm -rf x"`) is still a delete.
+    if (["sh", "bash", "zsh", "dash", "ksh"].includes(head)) {
+      const commandFlag = words.slice(1).findIndex(value => value === "-c");
+      if (commandFlag >= 0 && words[commandFlag + 2]) {
+        targets.push(...recursiveDeleteTargets(words.slice(commandFlag + 2).join(" ")));
+      }
+      continue;
+    }
+    // `... | xargs rm -rf` takes its targets from stdin, so the target is unknown: treat
+    // it as the working directory instead of letting it pass unseen.
+    if (head === "xargs") {
+      const inner = recursiveDeleteTargets(words.slice(1).join(" "));
+      if (inner.length) targets.push(...inner);
+      else if (words.some(value => /(^|\/)rm$/.test(value))) targets.push(".");
+      continue;
+    }
     const lowered = words.map(value => value.toLowerCase());
     const powershellIndex = lowered.findIndex(value => (
       ["powershell", "powershell.exe", "pwsh", "pwsh.exe"].includes(
@@ -272,13 +492,60 @@ async function inspectDirectory(root) {
   return { exists: true, entries, bytes, large: false };
 }
 
-function commandForTool(toolName, input) {
-  if (toolName === "bash") return String(input?.command ?? "");
+/**
+ * A recursive delete must carry the requester's own purpose and safety note. Blank or
+ * whitespace-only text counts as missing, and a missing note never reaches the card.
+ */
+export function destructiveJustification(input) {
+  const record = input && typeof input === "object" ? input : {};
+  const nested = record.justification && typeof record.justification === "object"
+    ? record.justification
+    : {};
+  const purpose = String(nested.purpose ?? record.purpose ?? "").trim();
+  const safety = String(nested.safety ?? record.safety ?? "").trim();
+  return {
+    ok: Boolean(purpose) && Boolean(safety),
+    purpose,
+    safety,
+    reason: "MilkSU refused this recursive delete: it has no reason attached. "
+      + "Use request_destructive_delete and fill in 用途 (purpose) and 安全性 (safety).",
+  };
+}
+
+export function commandForTool(toolName, input) {
+  const record = input && typeof input === "object" ? input : {};
+  // An argv shape and a command string describe the same execution, so they must be read
+  // the same way for every tool - including shell:false, where only argv exists.
+  const argv = Array.isArray(record.argv)
+    ? record.argv
+    : Array.isArray(record.args)
+      ? record.args
+      : null;
+  if (argv?.length) return argv.map(value => String(value)).join(" ");
+  if (toolName === "bash") return String(record.command ?? "");
   if (toolName !== "bg_task") return "";
-  const action = String(input?.action ?? "").trim();
-  if (!["start", "restart"].includes(action)) return "";
-  if (typeof input?.command === "string") return input.command;
-  return Array.isArray(input?.argv) ? input.argv.join(" ") : "";
+  // Any action that carries a command or an argv executes something; the guard must
+  // judge all of them (spawn/start/restart/resume), not just the ones we remembered.
+  return typeof record.command === "string"
+    ? record.command
+    : typeof record.commandText === "string"
+      ? record.commandText
+      : "";
+}
+
+// A command can create the very tree it deletes (`mkdir -p X; …; rm -rf X`). The target
+// then looks missing or tiny to the pre-flight check, so it must be refused outright.
+function createsItsOwnTarget(command, targets) {
+  const unquote = value => String(value ?? "").replace(/^['"]|['"]$/g, "");
+  for (const match of String(command).matchAll(/mkdir\s+(?:-p\s+)?("[^"]+"|'[^']+'|[^\s;&|]+)/g)) {
+    const created = unquote(match[1]).trim();
+    if (!created) continue;
+    const prefix = created.endsWith("/") ? created : `${created}/`;
+    if (targets.some(target => String(target) === created || String(target).startsWith(prefix))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function destructiveDeleteDecision({
@@ -293,6 +560,14 @@ export async function destructiveDeleteDecision({
   if (!command) return null;
   const rawTargets = recursiveDeleteTargets(command);
   if (!rawTargets.length) return null;
+  if (createsItsOwnTarget(command, rawTargets)) {
+    return {
+      action: "block",
+      reason:
+        "MilkSU refused this deletion: the same command creates the target first, so what "
+        + "it would remove cannot be checked before running it.",
+    };
+  }
 
   const workspace = String(policy?.workspace ?? process.cwd()).trim() || process.cwd();
   const protectedRoots = [

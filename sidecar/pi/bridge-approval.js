@@ -61,7 +61,7 @@ export function createApprovalBroker(emit, createID = randomUUID) {
       });
     },
 
-    request({ conversationId, toolName, content, input, grantKey: requestedGrantKey }) {
+    request({ conversationId, toolName, content, input, justification, grantKey: requestedGrantKey }) {
       const key = grantKey(requestedGrantKey);
       if (hasConversationGrant(conversationId, key)) {
         return Promise.resolve(true);
@@ -79,6 +79,11 @@ export function createApprovalBroker(emit, createID = randomUUID) {
           toolName,
           content,
           input,
+          // The requester's own purpose/safety note must reach the card: without it the
+          // reader is asked to decide on a deletion they know nothing about.
+          ...(justification && (justification.purpose || justification.safety)
+            ? { justification: { purpose: justification.purpose, safety: justification.safety } }
+            : {}),
           ...(key ? { grantable: true } : {}),
         });
       });

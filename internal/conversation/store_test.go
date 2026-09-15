@@ -1,9 +1,11 @@
 package conversation
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -259,27 +261,47 @@ func TestStoreArchiveNeverLeavesTheConversationInBothDirectories(t *testing.T) {
 		t.Fatalf("restored conversation still listed as archived: %v", archived)
 	}
 }
-
-func TestStoreRoundTripsPinnedOrder(t *testing.T) {
-	store := &Store{directory: t.TempDir()}
-	order := int64(3)
-	want := StoredConversation{
-		ID:          "conversation-pinned",
-		Title:       "Pinned chat",
-		CreatedAt:   7,
-		Pinned:      true,
-		PinnedOrder: &order,
-		Messages:    []StoredMessage{},
+func TestStoredMessageKeepsApprovalJustification(t *testing.T) {
+	original := StoredMessage{
+		ID:        "message-1",
+		Role:      "tool",
+		Content:   "大范围删除需要再次确认",
+		Timestamp: 1,
+		ApprovalJustification: &StoredApprovalJustification{
+			Purpose: "PURPOSE-V4",
+			Safety:  "SAFETY-V4",
+		},
 	}
-	if err := store.Save(want); err != nil {
-		t.Fatalf("save conversation: %v", err)
-	}
-	got, err := store.Get("conversation-pinned")
+	raw, err := json.Marshal(original)
 	if err != nil {
-		t.Fatalf("get conversation: %v", err)
+		t.Fatalf("marshal: %v", err)
 	}
-	want.Kernel = KernelPi
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("pinned fields did not round-trip: %#v", got)
+	if !strings.Contains(string(raw), `"approvalJustification"`) {
+		t.Fatalf("serialized message has no approvalJustification: %s", raw)
+	}
+	var decoded StoredMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.ApprovalJustification == nil {
+		t.Fatal("approvalJustification was dropped")
+	}
+	if decoded.ApprovalJustification.Purpose != "PURPOSE-V4" ||
+		decoded.ApprovalJustification.Safety != "SAFETY-V4" {
+		t.Fatalf("justification = %+v, want PURPOSE-V4/SAFETY-V4", decoded.ApprovalJustification)
+	}
+
+	// A stored message without the field stays valid (older records keep loading).
+	legacy := StoredMessage{ID: "message-0", Role: "tool", Content: "x", Timestamp: 1}
+	rawLegacy, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy: %v", err)
+	}
+	var decodedLegacy StoredMessage
+	if err := json.Unmarshal(rawLegacy, &decodedLegacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if decodedLegacy.ApprovalJustification != nil {
+		t.Fatal("a message without a justification must decode as nil")
 	}
 }

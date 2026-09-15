@@ -226,6 +226,8 @@ interface AgentEvent {
   input?: string
   approved?: boolean
   grantable?: boolean
+  /** The requester's own purpose/safety note for a destructive approval. */
+  justification?: { purpose?: string; safety?: string }
   choice?: string
   reason?: string
   goal?: CodingGoalState
@@ -493,6 +495,83 @@ export function normalizeConversation(raw: Record<string, unknown>): Conversatio
       }
     })),
   }
+}
+
+/**
+ * Projects one stored message. Shared by conversations read from disk and by messages
+ * the backend appends while a remote device drives a turn.
+ */
+export function normalizeStoredMessage(message: Record<string, unknown>): Message {
+  const rawApprovalState = String(message.approvalState ?? '')
+  const approvalState = rawApprovalState === 'pending'
+    ? 'expired'
+    : ['approved', 'denied', 'expired'].includes(rawApprovalState)
+      ? rawApprovalState as Message['approvalState']
+      : undefined
+  return {
+    id: String(message.id ?? crypto.randomUUID()),
+    role: message.role as Message['role'],
+    content: String(message.content ?? ''),
+    timestamp: Number(message.timestamp ?? Date.now()),
+    toolName: message.toolName as string | undefined,
+    toolCallId: typeof message.toolCallId === 'string'
+      ? message.toolCallId
+      : undefined,
+    durationMs: Number.isFinite(Number(message.durationMs))
+      && Number(message.durationMs) >= 0
+      ? Math.floor(Number(message.durationMs))
+      : undefined,
+    status: approvalState === 'expired'
+      ? 'done'
+      : (message.status as Message['status']) ?? 'done',
+    approvalRequestId: typeof message.approvalRequestId === 'string'
+      ? message.approvalRequestId
+      : undefined,
+    approvalInput: typeof message.approvalInput === 'string'
+      ? message.approvalInput
+      : undefined,
+    approvalState,
+    approvalGrantable: message.approvalGrantable === true,
+    // Restored from disk: a reloaded card must still show the purpose/safety note the
+    // requester gave, instead of falling back to "not provided by the requester".
+    approvalJustification: message.approvalJustification as
+      | { purpose?: unknown; safety?: unknown }
+      | undefined
+      ? {
+          purpose: typeof (message.approvalJustification as { purpose?: unknown }).purpose === 'string'
+            ? String((message.approvalJustification as { purpose?: unknown }).purpose)
+            : undefined,
+          safety: typeof (message.approvalJustification as { safety?: unknown }).safety === 'string'
+            ? String((message.approvalJustification as { safety?: unknown }).safety)
+            : undefined,
+        }
+      : undefined,
+    approvalChoiceId: typeof message.approvalChoiceId === 'string'
+      ? message.approvalChoiceId
+      : undefined,
+    approvalReason: approvalState === 'expired'
+      ? t('应用或 Agent 已重启，本次审批已失效', 'The app or Agent restarted, so this approval is no longer valid')
+      : typeof message.approvalReason === 'string'
+        ? message.approvalReason
+        : undefined,
+    attachments: normalizeAttachments(message.attachments),
+    thinking: typeof message.thinking === 'string' && message.thinking.trim()
+      ? message.thinking
+      : undefined,
+    thinkingStatus: message.thinkingStatus === 'running' || message.thinkingStatus === 'done'
+      ? message.thinkingStatus
+      : (typeof message.thinking === 'string' && message.thinking.trim() ? 'done' : undefined),
+    thinkingDurationMs: Number.isFinite(Number(message.thinkingDurationMs))
+      && Number(message.thinkingDurationMs) >= 0
+      ? Math.floor(Number(message.thinkingDurationMs))
+      : undefined,
+  }
+}
+
+/** Payload of the backend's `remote-turn-started` desktop event. */
+export interface RemoteTurnStartedPayload {
+  conversationId?: string
+  message?: Record<string, unknown>
 }
 
 /** True when the text looks like MilkSU/Node internals, not a provider reply. */
@@ -768,6 +847,25 @@ export function useConversations() {
   const runningIds = ref(new Set<string>())
   const abortingIds = ref(new Set<string>())
   const messageQueues = ref(new Map<string, CodingMessageQueue>())
+  // A short-lived engine status line (idle reclaim, blocked deletions and friends). It is
+  // deliberately not part of any conversation's messages.
+  const engineNotice = ref('')
+  // How many times the current notice was repeated, so a burst is one line with a count
+  // instead of a screenful of identical lines.
+  const engineNoticeRepeat = ref(0)
+  const engineNoticeAt = ref(0)
+  function pushEngineNotice(text: string) {
+    const notice = String(text ?? '').trim()
+    if (!notice) return
+    const now = Date.now()
+    if (engineNotice.value === notice && now - engineNoticeAt.value < 30_000) {
+      engineNoticeRepeat.value += 1
+    } else {
+      engineNotice.value = notice
+      engineNoticeRepeat.value = 1
+    }
+    engineNoticeAt.value = now
+  }
   const abortStalledIds = ref(new Set<string>())
   const stalledQueueIds = ref(new Set<string>())
   const abortWatchdogs = new Map<string, number>()
@@ -2137,6 +2235,7 @@ export function useConversations() {
         input,
         approved,
         grantable,
+        justification,
         choice,
         reason,
         goal,
@@ -2286,6 +2385,22 @@ export function useConversations() {
         ))
         return
       }
+      if (type === 'destructive.blocked') {
+        // The guard refused a deletion without asking. The reader must see that the command
+        // did nothing and why - as a status line, never as a message in the transcript.
+        const reason = String(
+          (event.payload as unknown as { reason?: string; notice?: string })?.reason
+          ?? (event.payload as unknown as { notice?: string })?.notice
+          ?? '',
+        ).trim()
+        // The engine speaks English for these refusals. Mixing that into a Chinese status
+        // line reads badly, so an untranslated reason is summarised instead of pasted.
+        const localized = /[\u4e00-\u9fff]/.test(reason) ? reason : ''
+        pushEngineNotice(localized
+          ? t(`已拦截一条删除命令：${localized} —— 未执行。`, `Refused a delete command: ${localized} - nothing ran.`)
+          : t('已拦截一条删除命令 —— 未执行。', 'Refused a delete command - nothing ran.'))
+        return
+      }
       if (type === 'session.queue_updated') {
         const previousQueue = messageQueues.value.get(sessionId)
           ?? { steering: [], followUp: [] }
@@ -2398,6 +2513,9 @@ export function useConversations() {
             approvalInput: input,
             approvalState: 'pending',
             approvalGrantable: grantable === true,
+            approvalJustification: justification
+              ? { purpose: justification.purpose, safety: justification.safety }
+              : undefined,
           })
         } else if (type === 'approval.resolved' && requestId) {
           const approvalIndex = messages.findIndex(message => (
@@ -2643,6 +2761,8 @@ export function useConversations() {
     activeAbortStalled,
     activeMessageQueue,
     activeQueuedGuidanceStalled,
+  engineNotice,
+  engineNoticeRepeat,
     selectedKernel,
     selectedModelMode,
     selectedModelProvider,
