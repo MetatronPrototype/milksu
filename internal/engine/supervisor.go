@@ -94,6 +94,14 @@ var (
 	)
 )
 
+// ApprovalJustification is the requester's own purpose/safety note for a destructive
+// action. It travels with the approval request so the card can show what is being deleted
+// and why, instead of "not provided by the requester".
+type ApprovalJustification struct {
+	Purpose string `json:"purpose,omitempty"`
+	Safety  string `json:"safety,omitempty"`
+}
+
 type Event struct {
 	SchemaVersion      int                      `json:"schemaVersion"`
 	Engine             string                   `json:"engine"`
@@ -117,6 +125,7 @@ type Event struct {
 	Reason             string                   `json:"reason,omitempty"`
 	Approved           *bool                    `json:"approved,omitempty"`
 	Grantable          bool                     `json:"grantable,omitempty"`
+	Justification *ApprovalJustification `json:"justification,omitempty"`
 	Choice             string                   `json:"choice,omitempty"`
 	BackgroundTasks    []BackgroundTask         `json:"backgroundTasks,omitempty"`
 	SubagentTasks      []SubagentTask           `json:"subagentTasks,omitempty"`
@@ -325,6 +334,7 @@ type bridgeEvent struct {
 	Reason             string                   `json:"reason"`
 	Approved           *bool                    `json:"approved"`
 	Grantable          bool                     `json:"grantable"`
+	Justification      *ApprovalJustification `json:"justification"`
 	Choice             string                   `json:"choice"`
 	Tasks              []BackgroundTask         `json:"tasks"`
 	SubagentTasks      []SubagentTask           `json:"subagentTasks"`
@@ -3072,6 +3082,7 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		Reason:             raw.Reason,
 		Approved:           raw.Approved,
 		Grantable:          raw.Grantable,
+		Justification:      raw.Justification,
 		Choice:             raw.Choice,
 		BackgroundTasks:    raw.Tasks,
 		SubagentTasks:      raw.SubagentTasks,

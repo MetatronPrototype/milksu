@@ -226,6 +226,8 @@ interface AgentEvent {
   input?: string
   approved?: boolean
   grantable?: boolean
+  /** The requester's own purpose/safety note for a destructive approval. */
+  justification?: { purpose?: string; safety?: string }
   choice?: string
   reason?: string
   goal?: CodingGoalState
@@ -2256,6 +2258,7 @@ export function useConversations() {
         input,
         approved,
         grantable,
+        justification,
         choice,
         reason,
         goal,
@@ -2559,6 +2562,9 @@ export function useConversations() {
             approvalInput: input,
             approvalState: 'pending',
             approvalGrantable: grantable === true,
+            approvalJustification: justification
+              ? { purpose: justification.purpose, safety: justification.safety }
+              : undefined,
           })
         } else if (type === 'approval.resolved' && requestId) {
           const approvalIndex = messages.findIndex(message => (

@@ -251,4 +251,46 @@ describe("evidence: prose and structured input agree on the target", () => {
     expect(fromProse.targets[0]?.path).toBe(structured.targets[0]?.path)
     expect(structured.unverified).toBeUndefined()
   })
+describe('destructive input normalisation', () => {
+  // The approval card assesses the tool input, which is JSON for most tools. Reading that
+  // JSON as a command turned a clear absolute path into "target undetermined".
+  it('reads a JSON tool input as the command it carries', () => {
+    const quoted = '"rm -rf \\"/private/tmp/gate-probe-big\\""'
+    const argv = JSON.stringify({ shell: false, argv: ['rm', '-rf', '/private/tmp/gate-probe-big'] })
+    const delivered = JSON.stringify({
+      path: '/private/tmp/gate-probe-big',
+      purpose: '验收测试',
+      safety: '可重建',
+    })
+    const plain = 'rm -rf /private/tmp/gate-probe-big'
+
+    for (const text of [quoted, argv, delivered, plain]) {
+      const assessment = assessDestructiveRequest(text)
+      expect(assessment.undetermined, text).toBe(false)
+      expect(assessment.targets[0]?.kind, text).not.toBe('unknown')
+      expect(assessment.targets[0]?.path, text).toBe('/private/tmp/gate-probe-big')
+    }
+  })
+
+  // Three quoting forms of the same delete must decide identically.
+  it('treats quoted, single-quoted and bare paths the same', () => {
+    const forms = [
+      'rm -rf "/private/tmp/gate-probe-big"',
+      "rm -rf '/private/tmp/gate-probe-big'",
+      'rm -rf /private/tmp/gate-probe-big',
+    ]
+    const results = forms.map(command => assessDestructiveRequest(command))
+    for (const [index, assessment] of results.entries()) {
+      expect(assessment.undetermined, forms[index]).toBe(false)
+      expect(assessment.targets[0]?.path, forms[index]).toBe('/private/tmp/gate-probe-big')
+    }
+    expect(new Set(results.map(item => item.targets[0]?.kind)).size).toBe(1)
+  })
+
+  // A target that genuinely cannot be pinned down stays deny-only.
+  it('keeps a genuinely undetermined target deny-only', () => {
+    const assessment = assessDestructiveRequest('rm -rf "$(cat /tmp/where)"')
+    expect(assessment.undetermined).toBe(true)
+    expect(assessment.canAllow).toBe(false)
+  })
 })

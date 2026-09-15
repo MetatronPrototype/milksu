@@ -114,6 +114,16 @@ function isFlag(token: string) {
 }
 
 function classify(raw: string, cwd: string): DestructiveTarget {
+  // A variable or a command substitution means the real target is decided at run time.
+  // Treating `/$(cat where)` as a concrete absolute path made a clear delete look safe.
+  if (/\$\(|`|\$\{|\$[A-Za-z_]/.test(raw)) {
+    return {
+      raw,
+      kind: 'unknown',
+      recursive: true,
+      reason: '目标含变量或命令替换，无法确定',
+    }
+  }
   if (raw.includes('*') || raw.includes('?')) {
     return { raw, kind: 'glob', recursive: true, reason: '通配表达式，作用范围由实际匹配决定' }
   }
@@ -366,12 +376,82 @@ function formatBytes(bytes: number): string {
  * Merge the parsed targets with measured facts into what the card shows.
  * `undetermined` is the gate for the "allow" button: no reason, no allow.
  */
+/**
+ * Approval requests carry the tool input, not always a shell command: a `bash` call arrives
+ * as {"command":"rm -rf x"} and the deletion tool as {"path":"/x","purpose":"…"}.
+ * Reading that JSON as if it were a command made a perfectly clear absolute path look
+ * "undetermined", so unwrap it before parsing.
+ */
+export function normalizeAssessmentInput(text: string): string {
+  let value = String(text ?? '').trim()
+  for (let pass = 0; pass < 3; pass += 1) {
+    if (value.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(value) as Record<string, unknown>
+        const command = typeof parsed.command === 'string' ? parsed.command.trim() : ''
+        if (command) {
+          value = command
+          continue
+        }
+        const path = typeof parsed.path === 'string' ? parsed.path.trim() : ''
+        if (path) {
+          value = `rm -rf ${JSON.stringify(path)}`
+          continue
+        }
+        // An argv shape describes the same execution as a command string.
+        const argv = Array.isArray(parsed.argv)
+          ? parsed.argv
+          : Array.isArray(parsed.args)
+            ? parsed.args
+            : null
+        if (argv?.length) {
+          value = argv.map(item => String(item)).join(' ')
+          continue
+        }
+      } catch {
+        // Not JSON after all: treat the text as the command.
+      }
+      break
+    }
+    // A JSON string literal carries the real command with its escaping resolved.
+    if (value.length > 1 && value.startsWith('"') && value.endsWith('"')) {
+      try {
+        const decoded = JSON.parse(value) as unknown
+        if (typeof decoded === 'string' && decoded.trim()) {
+          value = decoded.trim()
+          continue
+        }
+      } catch {
+        // Not a JSON string after all: fall through to plain unwrapping.
+      }
+    }
+    // A command that arrives wrapped in its own quotes is a single shell word: unwrap it,
+    // otherwise `"rm -rf /x"` reads as one token and the target looks undetermined.
+    const quote = value[0]
+    if (value.length > 1 && (quote === '"' || quote === "'") && value.endsWith(quote)) {
+      value = value.slice(1, -1).trim()
+      continue
+    }
+    break
+  }
+  return value
+}
+
 export function assessDestructiveRequest(
   command: string,
   facts: DestructiveFacts[] = [],
   cwd = '/',
 ): DestructiveAssessment {
-  const targets = parseDestructiveTargets(command, cwd)
+  const targets = parseDestructiveTargets(normalizeAssessmentInput(command), cwd)
+    // The parser expands substitutions to judge the outer command; a target that still
+    // contains one cannot be pinned down, whatever shape it arrived in.
+    .map(target => (/\$\(|`|\$\{|\$[A-Za-z_]/.test(String(target.raw ?? ''))
+      ? {
+          ...target,
+          kind: 'unknown' as const,
+          reason: '目标含变量或命令替换，无法确定',
+        }
+      : target))
   const protections: string[] = []
   let touchesUserDataFlag = false
   // "Undetermined" only means we saw a delete whose target we cannot pin down. A
