@@ -1,9 +1,11 @@
 package conversation
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -281,5 +283,53 @@ func TestStoreRoundTripsPinnedOrder(t *testing.T) {
 	want.Kernel = KernelPi
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("pinned fields did not round-trip: %#v", got)
+	}
+}
+
+// The card's purpose/safety note must survive a save and a reload. It used to be written
+// nowhere, so a reopened conversation went back to "not provided by the requester" and the
+// reason a deletion was allowed became unauditable.
+func TestStoredMessageKeepsApprovalJustification(t *testing.T) {
+	original := StoredMessage{
+		ID:        "message-1",
+		Role:      "tool",
+		Content:   "大范围删除需要再次确认",
+		Timestamp: 1,
+		ApprovalJustification: &StoredApprovalJustification{
+			Purpose: "PURPOSE-V4",
+			Safety:  "SAFETY-V4",
+		},
+	}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"approvalJustification"`) {
+		t.Fatalf("serialized message has no approvalJustification: %s", raw)
+	}
+	var decoded StoredMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.ApprovalJustification == nil {
+		t.Fatal("approvalJustification was dropped")
+	}
+	if decoded.ApprovalJustification.Purpose != "PURPOSE-V4" ||
+		decoded.ApprovalJustification.Safety != "SAFETY-V4" {
+		t.Fatalf("justification = %+v, want PURPOSE-V4/SAFETY-V4", decoded.ApprovalJustification)
+	}
+
+	// A stored message without the field stays valid (older records keep loading).
+	legacy := StoredMessage{ID: "message-0", Role: "tool", Content: "x", Timestamp: 1}
+	rawLegacy, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy: %v", err)
+	}
+	var decodedLegacy StoredMessage
+	if err := json.Unmarshal(rawLegacy, &decodedLegacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if decodedLegacy.ApprovalJustification != nil {
+		t.Fatal("a message without a justification must decode as nil")
 	}
 }
