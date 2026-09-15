@@ -6,7 +6,7 @@ import {
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { basename, dirname, join, resolve } from "node:path";
-import { readFile, unlink } from "node:fs/promises";
+import { readFile, rm, unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import {
@@ -456,6 +456,46 @@ function createMilkSUWorkflowExtension(sessionRole, getPolicy, getSession, conve
             text: formatAskSelection(picked),
           }],
           details: { question, selected: picked },
+        };
+      },
+    });
+    pi.registerTool({
+      name: "request_destructive_delete",
+      label: "MilkSU destructive delete",
+      description: "Ask the user before deleting something recursively. Fill in purpose (why this deletion is needed) and safety (what it is and whether it can be restored). A recursive delete that does not go through this tool is refused, so use it whenever you need to remove a tree.",
+      parameters: Type.Object({
+        path: Type.String({ minLength: 1, maxLength: 4096 }),
+        purpose: Type.String({ minLength: 1, maxLength: 2000 }),
+        safety: Type.String({ minLength: 1, maxLength: 2000 }),
+      }),
+      async execute(_toolCallId, params) {
+        const target = String(params.path ?? "").trim();
+        const purpose = String(params.purpose ?? "").trim();
+        const safety = String(params.safety ?? "").trim();
+        if (!target || !purpose || !safety) {
+          throw new Error("path, purpose and safety are all required");
+        }
+        const policy = await loadSessionPolicy(process.cwd(), "", {});
+        const decision = await destructiveDeleteDecision({
+          toolName: "bash",
+          input: { command: `rm -rf ${JSON.stringify(target)}` },
+          policy,
+        });
+        if (decision?.action === "block") throw new Error(decision.reason);
+        const approved = await approvalBroker.request({
+          conversationId,
+          toolName: "destructive-delete",
+          content: decision?.content ?? target,
+          input: truncate(decision?.input ?? target, 16000),
+          justification: { purpose, safety },
+        });
+        if (!approved) {
+          return { content: [{ type: "text", text: "MilkSU user denied this deletion." }] };
+        }
+        await rm(target, { recursive: true, force: true });
+        return {
+          content: [{ type: "text", text: `Deleted ${target}` }],
+          details: { path: target, purpose, safety },
         };
       },
     });
