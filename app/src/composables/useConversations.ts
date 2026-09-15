@@ -234,6 +234,10 @@ interface AgentEvent {
   aborted?: boolean
   steering?: string[]
   followUp?: string[]
+  /** Sessions a deliberately stopped engine instance was serving. */
+  sessions?: string[]
+  /** Workspace of that engine instance, for diagnostics. */
+  workspace?: string
   modelSource?: 'account' | 'personal'
   /** Credential-free model usage projection from Pi (usage.recorded). */
   usage?: {
@@ -2056,7 +2060,6 @@ export function useConversations() {
     disposeEvents = await listenEvent<AgentEvent>('engine-event', event => {
       const {
         sessionId,
-        engine: engineType,
         type,
         text = '',
         toolName,
@@ -2086,16 +2089,18 @@ export function useConversations() {
         usage,
         compaction,
         contextComposition,
+        sessions,
       } = event.payload
       if (!sessionId && (type === 'engine.stopped' || type === 'engine.protocol_error')) {
-        // A session-less engine stop only proves that one engine instance went
-        // away. Scope the cleanup to the conversations that instance served so a
-        // concurrent turn on another engine keeps its running state.
-        const affected = projectEngineStopAffected(
-          conversations.value,
-          runningIds.value,
-          engineType ?? 'pi',
-        )
+        // Scope the stop to the sessions the stopped engine instance actually
+        // served. Without that identity there is nothing safe to notify: a
+        // broadcast marks unrelated sessions as stopped.
+        const affected = Array.isArray(sessions)
+          ? sessions
+              .map(value => String(value ?? '').trim())
+              .filter(value => value && conversations.value.some(item => item.id === value))
+          : []
+        if (!affected.length) return
         const affectedSet = new Set(affected)
         for (const id of affectedSet) activeTurnPolicies.delete(id)
         for (const compactingId of [...continuity.value.compacting]) {

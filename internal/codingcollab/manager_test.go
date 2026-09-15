@@ -706,7 +706,8 @@ func commitFile(t *testing.T, repository, name, content string) string {
 
 func git(t *testing.T, repository string, arguments ...string) string {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", repository}, arguments...)...)
+	// Hermetic: never inherit the machine's commit signing configuration.
+	command := exec.Command("git", append([]string{"-c", "commit.gpgsign=false", "-C", repository}, arguments...)...)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", arguments, err, output)
@@ -721,7 +722,8 @@ type gitResult struct {
 
 func gitAllowFailure(t *testing.T, repository string, arguments ...string) gitResult {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", repository}, arguments...)...)
+	// Hermetic: never inherit the machine's commit signing configuration.
+	command := exec.Command("git", append([]string{"-c", "commit.gpgsign=false", "-C", repository}, arguments...)...)
 	output, err := command.CombinedOutput()
 	return gitResult{success: err == nil, output: strings.TrimSpace(string(output))}
 }
