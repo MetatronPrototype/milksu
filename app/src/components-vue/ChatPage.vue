@@ -142,7 +142,7 @@ import {
   selectedComputerUseTarget as resolveSelectedComputerUseTarget,
 } from '@/lib/codingPolicy'
 import { codingContinuityPresentation } from '@/lib/codingContinuityPresentation'
-import { codingAskToolName, pendingAskMessage } from '@/lib/agentAsk'
+import { codingAskToolName, isAskMessage, pendingAskMessage } from '@/lib/agentAsk'
 import type {
   CTFAgentBudgetStatus,
   CTFAgentRunCheckpoint,
@@ -279,7 +279,11 @@ const scrollArea = ref<HTMLElement | null>(null)
 const APPROVAL_CONFIRM_TIMEOUT_MS = 8000
 const pendingApprovalMessage = computed(() => (
   props.conversation?.messages.find(message => (
-    message.approvalState === 'pending' && Boolean(message.approvalRequestId)
+    message.approvalState === 'pending'
+    && Boolean(message.approvalRequestId)
+    // An ask shares the approval channel but is a question, not a permission: showing
+    // Allow/Deny for it would submit an empty answer as if it were a grant.
+    && !isAskMessage(message)
   )) ?? null
 ))
 const approvalSubmitting = ref(false)

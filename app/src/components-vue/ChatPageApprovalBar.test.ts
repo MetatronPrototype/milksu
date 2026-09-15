@@ -74,7 +74,7 @@ describe('ChatPage approval bar', () => {
   // The card inside a 3000-message thread could not be clicked; the decision must live
   // in its own light-weight bar that never waits for the transcript to re-render.
   it('shows a clickable approval bar above a 3000-message transcript', async () => {
-    vi.useFakeTimers()
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
     const { host, decisions } = mountPage(longConversationWithApproval(3000))
     await nextTick()
     await nextTick()
@@ -95,7 +95,7 @@ describe('ChatPage approval bar', () => {
   })
 
   it('rolls the bar back when the engine never confirms the decision', async () => {
-    vi.useFakeTimers()
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
     const { host } = mountPage(longConversationWithApproval(3000))
     await nextTick()
     await nextTick()
@@ -117,5 +117,42 @@ describe('ChatPage approval bar', () => {
     await nextTick()
     await nextTick()
     expect(host.querySelector('[data-testid="approval-bar"]')).toBeNull()
+  })
+})
+
+describe("ChatPage approval bar and asks", () => {
+  // An ask shares the approval channel but is a question: Allow/Deny would submit an
+  // empty answer as if the user had granted something.
+  it("never shows allow or deny for an ask", async () => {
+    const conversation = longConversationWithApproval(20)
+    conversation.messages.at(-1)!.toolName = "milksu_ask"
+    const { host } = mountPage(conversation)
+    await nextTick()
+    await nextTick()
+
+    expect(host.querySelector('[data-testid="approval-bar"]')).toBeNull()
+  })
+
+  it("keeps an ask out of the bar even when a permission is pending too", async () => {
+    const conversation = longConversationWithApproval(20)
+    const last = conversation.messages.at(-1)!
+    last.toolName = "milksu_ask"
+    conversation.messages.push({
+      id: "approval-2",
+      role: "assistant",
+      content: "rm -rf /Users/me/work/old",
+      timestamp: 99,
+      status: "done",
+      toolName: "bash",
+      approvalRequestId: "approval-2",
+      approvalState: "pending",
+    })
+    const { host } = mountPage(conversation)
+    await nextTick()
+    await nextTick()
+
+    const bar = host.querySelector('[data-testid="approval-bar"]')
+    expect(bar).not.toBeNull()
+    expect(bar?.textContent).toContain("bash")
   })
 })
