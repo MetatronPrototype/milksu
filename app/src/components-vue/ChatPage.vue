@@ -272,6 +272,44 @@ const composer = ref<{
   focusMessageInput: () => Promise<void>
 } | null>(null)
 const scrollArea = ref<HTMLElement | null>(null)
+
+// A pending approval gets its own sticky bar outside the transcript. The card inside a
+// 3000-message thread could not be clicked while the renderer was busy patching that
+// list, which read as "the buttons do nothing".
+const APPROVAL_CONFIRM_TIMEOUT_MS = 8000
+const pendingApprovalMessage = computed(() => (
+  props.conversation?.messages.find(message => (
+    message.approvalState === 'pending' && Boolean(message.approvalRequestId)
+  )) ?? null
+))
+const approvalSubmitting = ref(false)
+const approvalError = ref('')
+const approvalSummary = computed(() => {
+  const message = pendingApprovalMessage.value
+  if (!message) return ''
+  return String(message.toolName ?? message.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 80)
+})
+
+// Immediate optimistic feedback; roll back with a message if the engine never confirms.
+function submitApproval(approved: boolean) {
+  const message = pendingApprovalMessage.value
+  if (!message?.approvalRequestId || approvalSubmitting.value) return
+  approvalSubmitting.value = true
+  approvalError.value = ''
+  emit('respondApproval', message.approvalRequestId, approved, 'once')
+  window.setTimeout(() => {
+    if (!approvalSubmitting.value) return
+    approvalSubmitting.value = false
+    approvalError.value = t('审批未确认，请重试。', 'The decision was not confirmed. Try again.')
+  }, APPROVAL_CONFIRM_TIMEOUT_MS)
+}
+
+watch(
+  () => pendingApprovalMessage.value?.approvalState,
+  state => {
+    if (state && state !== 'pending') approvalSubmitting.value = false
+  },
+)
 const chatAutoScrollPinned = ref(true)
 const lastChatScrollTop = ref(0)
 const workshopState = ref<CTFToolWorkshopState | null>(null)
@@ -2304,6 +2342,45 @@ defineExpose({
       class="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
       @scroll.passive="handleChatScroll"
     >
+      <div
+        v-if="pendingApprovalMessage"
+        class="sticky top-0 z-30 mx-auto mb-2 flex w-[72%] items-center gap-2 rounded-xl border border-primary/40 bg-background/95 px-3 py-2 shadow-sm"
+        data-testid="approval-bar"
+      >
+        <span class="min-w-0 flex-1 truncate text-caption font-medium text-foreground">
+          {{ t('待批准：', 'Waiting for approval: ') }}{{ approvalSummary }}
+        </span>
+        <span
+          v-if="approvalSubmitting"
+          class="shrink-0 text-caption text-muted-foreground"
+          data-testid="approval-bar-submitting"
+        >
+          {{ t('处理中…', 'Working…') }}
+        </span>
+        <span v-else-if="approvalError" class="shrink-0 text-caption text-destructive">
+          {{ approvalError }}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          :disabled="approvalSubmitting"
+          data-testid="approval-bar-deny"
+          @click="submitApproval(false)"
+        >
+          {{ t('拒绝', 'Deny') }}
+        </Button>
+        <Button
+          type="button"
+          variant="brand"
+          size="sm"
+          :disabled="approvalSubmitting"
+          data-testid="approval-bar-allow"
+          @click="submitApproval(true)"
+        >
+          {{ t('允许这一次', 'Allow once') }}
+        </Button>
+      </div>
       <div
         v-if="!conversation?.messages.length"
         class="flex min-h-full flex-col items-center justify-center px-8"
