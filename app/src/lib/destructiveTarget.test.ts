@@ -294,3 +294,30 @@ describe('destructive input normalisation', () => {
     expect(assessment.canAllow).toBe(false)
   })
 })
+
+describe('create-then-delete in one command', () => {
+  // The pre-flight check cannot see a directory that this same command creates: the guard
+  // must refuse instead of judging the (missing) target as harmless.
+  it('refuses a target that the same command creates first', () => {
+    const compound = 'rm -rf /private/tmp/gate-probe-big2; mkdir -p /private/tmp/gate-probe-big2; '
+      + 'for i in $(seq 1 1200); do : > "/private/tmp/gate-probe-big2/f$i"; done; '
+      + 'rm -rf /private/tmp/gate-probe-big2'
+    const assessment = assessDestructiveRequest(compound)
+    expect(assessment.undetermined).toBe(true)
+    expect(assessment.canAllow).toBe(false)
+  })
+
+  it('refuses a directory the command fills with redirection', () => {
+    const assessment = assessDestructiveRequest(
+      'mkdir -p /tmp/fresh && echo hi > /tmp/fresh/file.txt && rm -rf /tmp/fresh',
+    )
+    expect(assessment.undetermined).toBe(true)
+    expect(assessment.canAllow).toBe(false)
+  })
+
+  // A plain delete of a directory the command does not create is unaffected.
+  it('leaves an ordinary recursive delete alone', () => {
+    const assessment = assessDestructiveRequest('rm -rf /private/tmp/gate-probe-big')
+    expect(assessment.undetermined).toBe(false)
+  })
+})

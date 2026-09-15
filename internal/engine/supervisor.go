@@ -125,7 +125,8 @@ type Event struct {
 	Reason             string                   `json:"reason,omitempty"`
 	Approved           *bool                    `json:"approved,omitempty"`
 	Grantable          bool                     `json:"grantable,omitempty"`
-	Justification *ApprovalJustification `json:"justification,omitempty"`
+	Justification      *ApprovalJustification   `json:"justification,omitempty"`
+	Notice             string                   `json:"notice,omitempty"`
 	Choice             string                   `json:"choice,omitempty"`
 	BackgroundTasks    []BackgroundTask         `json:"backgroundTasks,omitempty"`
 	SubagentTasks      []SubagentTask           `json:"subagentTasks,omitempty"`
@@ -334,7 +335,8 @@ type bridgeEvent struct {
 	Reason             string                   `json:"reason"`
 	Approved           *bool                    `json:"approved"`
 	Grantable          bool                     `json:"grantable"`
-	Justification      *ApprovalJustification `json:"justification"`
+	Notice             string                   `json:"notice"`
+	Justification      *ApprovalJustification   `json:"justification"`
 	Choice             string                   `json:"choice"`
 	Tasks              []BackgroundTask         `json:"tasks"`
 	SubagentTasks      []SubagentTask           `json:"subagentTasks"`
@@ -3082,6 +3084,7 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		Reason:             raw.Reason,
 		Approved:           raw.Approved,
 		Grantable:          raw.Grantable,
+		Notice:             raw.Notice,
 		Justification:      raw.Justification,
 		Choice:             raw.Choice,
 		BackgroundTasks:    raw.Tasks,
@@ -3164,6 +3167,10 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		event.Type = "context.composition"
 	case "approval_requested":
 		event.Type = "approval.requested"
+	// Passed through verbatim: the renderer switches on these exact names, while the
+	// default arm would prefix them with engine.raw. and they could never match.
+	case "destructive.blocked", "agent.delivery":
+		event.Type = raw.Type
 	case "approval_resolved":
 		event.Type = "approval.resolved"
 		event.Done = true

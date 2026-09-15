@@ -313,3 +313,31 @@ test("a background launch refuses an unreviewed recursive delete", async () => {
     assert.doesNotMatch(String(error?.message ?? error), /refused this deletion/i)
   }
 })
+
+// A command that creates the tree it deletes must be refused: the pre-flight check would
+// otherwise see a missing target and let a 1200-file deletion through.
+test("a command that creates its own delete target is blocked", async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), "milksu-created-target-"));
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const target = join(workspace, "fresh");
+  const decision = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: {
+      command: `rm -rf ${target}; mkdir -p ${target}; `
+        + `for i in $(seq 1 1200); do : > "${target}/f$i"; done; rm -rf ${target}`,
+    },
+    policy: { workspace },
+  });
+  assert.equal(decision?.action, "block");
+  assert.match(String(decision?.reason ?? ""), /creates the target first/i);
+
+  // A delete of a directory the command does not create is judged normally.
+  const plain = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `rm -rf ${target}` },
+    policy: { workspace },
+  });
+  assert.notEqual(plain?.action, "block");
+});

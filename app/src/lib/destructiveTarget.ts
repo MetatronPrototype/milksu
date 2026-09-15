@@ -437,6 +437,27 @@ export function normalizeAssessmentInput(text: string): string {
   return value
 }
 
+/**
+ * A command may create the very directory it deletes. The pre-flight check then sees a
+ * missing (or tiny) target and waves it through, which is how
+ * `mkdir -p X; …; rm -rf X` deleted 1200 freshly written files.
+ */
+function createdPrefixes(command: string): string[] {
+  const prefixes: string[] = []
+  const unquote = (value: string) => value.replace(/^['"]|['"]$/g, '')
+  for (const match of command.matchAll(/mkdir\s+(?:-p\s+)?("[^"]+"|'[^']+'|[^\s;&|]+)/g)) {
+    const value = unquote(match[1] ?? '').trim()
+    if (value) prefixes.push(value)
+  }
+  for (const match of command.matchAll(/>>?\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g)) {
+    const value = unquote(match[1] ?? '').trim()
+    if (!value || value.startsWith('&')) continue
+    const parent = value.replace(/\/[^/]*$/, '')
+    if (parent) prefixes.push(parent)
+  }
+  return prefixes
+}
+
 export function assessDestructiveRequest(
   command: string,
   facts: DestructiveFacts[] = [],
@@ -452,6 +473,21 @@ export function assessDestructiveRequest(
           reason: '目标含变量或命令替换，无法确定',
         }
       : target))
+    // Creating the target earlier in the same command makes its current state meaningless.
+    .map(target => {
+      const path = String(target.path ?? '')
+      if (!path) return target
+      const created = createdPrefixes(normalizeAssessmentInput(command)).some(prefix => (
+        path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`)
+      ))
+      return created
+        ? {
+            ...target,
+            kind: 'unknown' as const,
+            reason: '同一条命令里先创建了该目标再删除，执行前无法确定其内容',
+          }
+        : target
+    })
   const protections: string[] = []
   let touchesUserDataFlag = false
   // "Undetermined" only means we saw a delete whose target we cannot pin down. A

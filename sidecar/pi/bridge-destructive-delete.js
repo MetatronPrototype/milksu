@@ -435,6 +435,21 @@ export function commandForTool(toolName, input) {
       : "";
 }
 
+// A command can create the very tree it deletes (`mkdir -p X; …; rm -rf X`). The target
+// then looks missing or tiny to the pre-flight check, so it must be refused outright.
+function createsItsOwnTarget(command, targets) {
+  const unquote = value => String(value ?? "").replace(/^['"]|['"]$/g, "");
+  for (const match of String(command).matchAll(/mkdir\s+(?:-p\s+)?("[^"]+"|'[^']+'|[^\s;&|]+)/g)) {
+    const created = unquote(match[1]).trim();
+    if (!created) continue;
+    const prefix = created.endsWith("/") ? created : `${created}/`;
+    if (targets.some(target => String(target) === created || String(target).startsWith(prefix))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export async function destructiveDeleteDecision({
   toolName,
   input,
@@ -447,6 +462,14 @@ export async function destructiveDeleteDecision({
   if (!command) return null;
   const rawTargets = recursiveDeleteTargets(command);
   if (!rawTargets.length) return null;
+  if (createsItsOwnTarget(command, rawTargets)) {
+    return {
+      action: "block",
+      reason:
+        "MilkSU refused this deletion: the same command creates the target first, so what "
+        + "it would remove cannot be checked before running it.",
+    };
+  }
 
   const workspace = String(policy?.workspace ?? process.cwd()).trim() || process.cwd();
   const protectedRoots = [
