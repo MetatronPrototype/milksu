@@ -4,6 +4,7 @@ import test from 'node:test'
 import { EventEmitter } from 'node:events'
 import { CdpSession, GuiDriver, isMilkSUPage, killProcessGroup } from './lib/desktop-gui-driver.mjs'
 import {
+  observedIsolatedBrowserMarker,
   pickComputerUseTarget,
   usedComputerUseTools,
   usedIsolatedBrowserTools,
@@ -69,6 +70,9 @@ test('pickComputerUseTarget only accepts a calculator, then degrades', () => {
   assert.equal(usedComputerUseTools(['screenshot', 'bash']), true)
   assert.equal(usedIsolatedBrowserTools(['mcp__playwright-mcp__browser_navigate']), true)
   assert.equal(usedComputerUseTools(['bash']), false)
+  assert.equal(observedIsolatedBrowserMarker({ fileHasMarker: true, assistantHasMarker: false }), true)
+  assert.equal(observedIsolatedBrowserMarker({ fileHasMarker: false, assistantHasMarker: true }), true)
+  assert.equal(observedIsolatedBrowserMarker({ fileHasMarker: false, assistantHasMarker: false }), false)
 })
 
 test('isMilkSUPage rejects Cursor and accepts the product window', () => {

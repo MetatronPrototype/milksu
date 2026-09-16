@@ -54,3 +54,7 @@ export function usedComputerUseTools(toolNames) {
 export function usedIsolatedBrowserTools(toolNames) {
   return (toolNames ?? []).some(name => BROWSER_TOOL_PATTERN.test(String(name)))
 }
+
+export function observedIsolatedBrowserMarker({ fileHasMarker, assistantHasMarker }) {
+  return Boolean(fileHasMarker || assistantHasMarker)
+}

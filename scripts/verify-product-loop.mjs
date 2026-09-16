@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { redactProcessText } from '../sidecar/dsh/redact.js'
 import { GuiDriver, repositoryRoot } from './lib/desktop-gui-driver.mjs'
 import {
+  observedIsolatedBrowserMarker,
   pickComputerUseTarget,
   usedComputerUseTools,
   usedIsolatedBrowserTools,
@@ -71,6 +72,20 @@ function collectToolNames(events) {
     if (name) names.push(name)
   }
   return [...new Set(names)]
+}
+
+function assistantSummary(events) {
+  const chunks = []
+  for (const event of events ?? []) {
+    const type = String(event?.type ?? event?.Type ?? '')
+    if (type === 'text_delta' || type === 'assistant.delta') {
+      chunks.push(String(event.delta ?? event.text ?? ''))
+    }
+    if (type === 'assistant.completed' || type === 'assistant.settled' || type === 'message_done') {
+      chunks.push(String(event.content ?? event.text ?? ''))
+    }
+  }
+  return redactProcessText(chunks.join(''), 2000)
 }
 
 async function runCommand(command, args, options = {}) {
@@ -417,10 +432,13 @@ async function runDesktopSurface(driver, options) {
       approvalPolicy: 'workspace-auto',
     })
     await driver.ensureCodingBrowser(conversation.id)
+    await driver.navigateCodingBrowser(conversation.id, fixture.url)
     await driver.sendMessage(conversation.id, browserSurfacePrompt(fixture.url), workspace)
     const turn = await driver.waitForTurn(conversation.id, options.taskTimeoutMs)
     const toolNames = collectToolNames(turn.events)
-    const hasMarker = await fileContains(surfacePath, fixture.marker)
+    const fileHasMarker = await fileContains(surfacePath, fixture.marker)
+    const assistantHasMarker = assistantSummary(turn.events).includes(fixture.marker)
+    const hasMarker = observedIsolatedBrowserMarker({ fileHasMarker, assistantHasMarker })
     if (!turn.timeout && usedIsolatedBrowserTools(toolNames) && hasMarker) {
       return {
         result: 'PASS',
