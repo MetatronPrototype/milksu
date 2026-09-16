@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -769,7 +769,10 @@ export function isComputerUseProxyEntrypoint(
   }
   const invokedPath = argv[1] ? resolve(argv[1]) : "";
   if (!invokedPath) return false;
-  return invokedPath.toLowerCase() === fileURLToPath(moduleUrl).toLowerCase();
+  const invokedName = basename(invokedPath.replaceAll("\\", "/")).toLowerCase();
+  // chat-bridge.cjs bundles this file; path equality would start the proxy
+  // without --socket and fail the Linux package smoke with exit code 1.
+  return invokedName === "computer-use-proxy.cjs" || invokedName === "computer-use-proxy.js";
 }
 
 if (isComputerUseProxyEntrypoint()) {

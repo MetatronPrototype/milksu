@@ -93,7 +93,21 @@ test("starts the MCP server from --socket even when argv path casing differs", (
       ["node", "C:\\Program Files\\MilkSU\\computer-use-proxy.cjs"],
       "file:///c:/other/computer-use-proxy.js",
     ),
+    true,
+  );
+  assert.equal(
+    isComputerUseProxyEntrypoint(
+      ["node", "/opt/MilkSU/chat-bridge.cjs"],
+      "file:///opt/MilkSU/chat-bridge.cjs",
+    ),
     false,
+  );
+  assert.equal(
+    isComputerUseProxyEntrypoint(
+      ["node", "/opt/MilkSU/computer-use-proxy.cjs"],
+      "file:///opt/MilkSU/computer-use-proxy.cjs",
+    ),
+    true,
   );
 });
 
