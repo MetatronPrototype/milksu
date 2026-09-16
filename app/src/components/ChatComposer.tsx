@@ -24,6 +24,7 @@ import {
   Activity,
   ArrowRightLeft,
   ArrowUp,
+  AtSign,
   Bot,
   Cable,
   Check,
@@ -33,7 +34,6 @@ import {
   FileDiff,
   FileText,
   FolderOpen,
-  GitBranch,
   Globe2,
   Lightbulb,
   LoaderCircle,
@@ -64,6 +64,10 @@ import AkLoadingMark from '@/components/AkLoadingMark'
 import CodingComposerControls from '@/components/CodingComposerControls'
 import ContextUsageMeter from '@/components/ContextUsageMeter'
 import { invokeCommand } from '@/desktop'
+import { toastError } from '@/lib/appToast'
+import { COMMAND_PANEL_SLASH_EVENT } from '@/lib/commandPanel'
+import ComposerBranchMenu from '@/components/ComposerBranchMenu'
+import { composerAtAttachTrigger } from '@/lib/composerAtAttach'
 import {
   captureComposerSnapshot,
   isComposerHistoryKey,
@@ -327,6 +331,34 @@ const COMPOSER_STYLES = `
   line-height: 1;
 }
 .chat-composer__input .chat-composer__inline-token-remove:hover { background: var(--btn-ghost-hover); color: var(--foreground); }
+.composer-attachment-thumb {
+  position: relative;
+  width: 4.5rem;
+  height: 4.5rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+}
+.composer-attachment-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.composer-attachment-thumb__remove {
+  position: absolute;
+  top: 0.2rem;
+  right: 0.2rem;
+  display: grid;
+  width: 1.25rem;
+  height: 1.25rem;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: var(--popover);
+  color: var(--muted-foreground);
+}
 `
 
 export type ChatComposerHandle = {
@@ -395,6 +427,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   onForgetWorkspace?: (path: string) => void
   onClearWorkspace?: () => void
   onCheckoutBranch?: (branch: string) => void
+  onCreateBranch?: (branch: string) => void
   onCancelQueuedGuidance?: (index: number) => void
   onEditQueuedGuidance?: (index: number) => void
 }>(function ChatComposer(props, ref) {
@@ -425,6 +458,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   const attachmentPreviewDialog = useRef<HTMLDialogElement | null>(null)
   const [attachmentPreview, setAttachmentPreview] = useState<CodingAttachmentPreview | null>(null)
   const [attachmentPreviewLoading, setAttachmentPreviewLoading] = useState(false)
+  const [attachmentThumbs, setAttachmentThumbs] = useState<Record<string, string>>({})
   const [composerHistory, setComposerHistory] = useState<string[]>([])
   const [composerFuture, setComposerFuture] = useState<string[]>([])
   const applyingComposerHistory = useRef(false)
@@ -689,6 +723,14 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     void chooseCodingAttachments()
   }
 
+  function attachmentKey(attachment: CodingAttachment) {
+    return `${attachment.id}:${attachment.name}`
+  }
+
+  function isImageAttachment(attachment: CodingAttachment) {
+    return attachment.mediaType.startsWith('image/')
+  }
+
   async function chooseCodingAttachments() {
     if (running) return
     setAttachmentError('')
@@ -696,8 +738,31 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
       const selected = await invokeCommand<CodingAttachment[]>('choose_coding_attachments')
       mergeCodingAttachments(selected)
     } catch (reason) {
-      setAttachmentError(reason instanceof Error ? reason.message : t('暂时无法添加附件。', 'Attachments cannot be added right now.'))
+      toastError(reason, t('暂时无法添加附件。', 'Attachments cannot be added right now.'))
     }
+  }
+
+  async function attachFromAtMention() {
+    if (running || attachmentImporting) return
+    const now = Date.now()
+    if (now - attachmentChooserStartedAt.current < 500) return
+    attachmentChooserStartedAt.current = now
+    const editor = messageEditor.current
+    const selection = window.getSelection()
+    const textNode = selection?.focusNode
+    const offset = selection?.focusOffset ?? 0
+    if (editor && textNode && textNode.nodeType === Node.TEXT_NODE && editor.contains(textNode)) {
+      const prefix = (textNode.textContent ?? '').slice(0, offset)
+      if (composerAtAttachTrigger(prefix) && offset > 0) {
+        rememberComposerSnapshot()
+        const range = document.createRange()
+        range.setStart(textNode, offset - 1)
+        range.setEnd(textNode, offset)
+        range.deleteContents()
+        setDraft(readComposerText())
+      }
+    }
+    await chooseCodingAttachments()
   }
 
   function mergeCodingAttachments(selected: CodingAttachment[]) {
@@ -756,7 +821,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
       const imported = await invokeCommand<CodingAttachment[]>('import_coding_attachments', { payloads })
       mergeCodingAttachments(imported)
     } catch (reason) {
-      setAttachmentError(reason instanceof Error ? reason.message : t('暂时无法添加附件。', 'Attachments cannot be added right now.'))
+      toastError(reason, t('暂时无法添加附件。', 'Attachments cannot be added right now.'))
     } finally {
       setAttachmentImporting(false)
     }
@@ -772,7 +837,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     try {
       setAttachmentPreview(await invokeCommand<CodingAttachmentPreview>('preview_coding_attachment', { attachment }))
     } catch (reason) {
-      setAttachmentError(reason instanceof Error ? reason.message : t('暂时无法预览附件。', 'This attachment cannot be previewed right now.'))
+      toastError(reason, t('暂时无法预览附件。', 'This attachment cannot be previewed right now.'))
       if (typeof dialog?.close === 'function') dialog.close()
       else dialog?.removeAttribute('open')
     } finally {
@@ -781,8 +846,51 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }
 
   function removeCodingAttachment(attachment: CodingAttachment) {
+    const key = attachmentKey(attachment)
     setPendingAttachments(current => current.filter(value => value.id !== attachment.id || value.name !== attachment.name))
+    setAttachmentThumbs(current => {
+      if (!current[key]) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
   }
+
+  useEffect(() => {
+    let cancelled = false
+    const images = pendingAttachments.filter(isImageAttachment)
+    void Promise.all(images.map(async attachment => {
+      const key = attachmentKey(attachment)
+      try {
+        const preview = await invokeCommand<CodingAttachmentPreview>('preview_coding_attachment', { attachment })
+        if (!cancelled && preview.dataUrl) {
+          setAttachmentThumbs(current => (
+            current[key] === preview.dataUrl ? current : { ...current, [key]: preview.dataUrl as string }
+          ))
+        }
+      } catch {
+        // Leave the image as a name chip until preview is available.
+      }
+    }))
+    return () => {
+      cancelled = true
+    }
+  }, [pendingAttachments])
+
+  useEffect(() => {
+    function onCommandPanelSlash(event: Event) {
+      const id = String((event as CustomEvent<string>).detail ?? '')
+      const command = slashCommandCatalog.find(item => item.id === id)
+      if (!command || slashCommandDisabled(command.id)) return
+      chooseSlashCommand({
+        ...command,
+        description: command.description,
+        disabled: false,
+      })
+    }
+    window.addEventListener(COMMAND_PANEL_SLASH_EVENT, onCommandPanelSlash)
+    return () => window.removeEventListener(COMMAND_PANEL_SLASH_EVENT, onCommandPanelSlash)
+  }, [running, compacting, workspaceReady, kernel, hasUnfinishedGoal, t])
 
   function rememberComposerSnapshot() {
     if (applyingComposerHistory.current || composingRef.current) return
@@ -823,6 +931,10 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     }
     if (!textNode || textNode.nodeType !== Node.TEXT_NODE) return
     const prefix = (textNode.textContent ?? '').slice(0, offset)
+    if (composerAtAttachTrigger(prefix)) {
+      void attachFromAtMention()
+      return
+    }
     const match = prefix.match(/(?:^|\s)\/([\p{L}\p{N}-]*)$/u)
     if (!match) return
     const query = match[1] ?? ''
@@ -1325,18 +1437,34 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
           <form className="chat-composer__island" onSubmit={event => { event.preventDefault(); submit() }}>
             {pendingAttachments.length ? (
               <div className="flex flex-wrap gap-2 px-1 pb-1" aria-label={t('待发送附件', 'Attachments to send')}>
-                {pendingAttachments.map(attachment => (
-                  <span key={`${attachment.id}:${attachment.name}`} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-border bg-muted/60 px-2.5 py-1.5 text-caption" title={`${attachment.mediaType} · ${formatAttachmentSize(attachment.size)}`}>
-                    <button type="button" className="inline-flex min-w-0 items-center gap-2 rounded-lg text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t(`预览 ${attachment.name}`, `Preview ${attachment.name}`)} onClick={() => void previewCodingAttachment(attachment)}>
-                      <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-                      <span className="max-w-52 truncate">{attachment.name}</span>
-                      <span className="shrink-0 text-muted-foreground">{formatAttachmentSize(attachment.size)}</span>
-                    </button>
-                    <button type="button" className="rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t(`移除 ${attachment.name}`, `Remove ${attachment.name}`)} onClick={() => removeCodingAttachment(attachment)}>
-                      <X className="size-3.5" />
-                    </button>
-                  </span>
-                ))}
+                {pendingAttachments.map(attachment => {
+                  const key = attachmentKey(attachment)
+                  const thumb = attachmentThumbs[key]
+                  if (isImageAttachment(attachment) && thumb) {
+                    return (
+                      <span key={key} className="composer-attachment-thumb" title={`${attachment.name} · ${formatAttachmentSize(attachment.size)}`}>
+                        <button type="button" className="block size-full" aria-label={t(`预览 ${attachment.name}`, `Preview ${attachment.name}`)} onClick={() => void previewCodingAttachment(attachment)}>
+                          <img src={thumb} alt={attachment.name} />
+                        </button>
+                        <button type="button" className="composer-attachment-thumb__remove" aria-label={t(`移除 ${attachment.name}`, `Remove ${attachment.name}`)} onClick={() => removeCodingAttachment(attachment)}>
+                          <X className="size-3" />
+                        </button>
+                      </span>
+                    )
+                  }
+                  return (
+                    <span key={key} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-border bg-muted/60 px-2.5 py-1.5 text-caption" title={`${attachment.mediaType} · ${formatAttachmentSize(attachment.size)}`}>
+                      <button type="button" className="inline-flex min-w-0 items-center gap-2 rounded-lg text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t(`预览 ${attachment.name}`, `Preview ${attachment.name}`)} onClick={() => void previewCodingAttachment(attachment)}>
+                        <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                        <span className="max-w-52 truncate">{attachment.name}</span>
+                        <span className="shrink-0 text-muted-foreground">{formatAttachmentSize(attachment.size)}</span>
+                      </button>
+                      <button type="button" className="rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t(`移除 ${attachment.name}`, `Remove ${attachment.name}`)} onClick={() => removeCodingAttachment(attachment)}>
+                        <X className="size-3.5" />
+                      </button>
+                    </span>
+                  )
+                })}
               </div>
             ) : null}
             <div
@@ -1378,6 +1506,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                 thinkingLevels={thinkingLevels}
                 thinkingLevel={thinkingLevel}
                 kernel={kernel ?? 'pi'}
+                contextUsage={contextUsage}
                 onChangeApprovalPolicy={value => props.onChangeApprovalPolicy?.(value)}
                 onChangeModel={value => props.onChangeModel?.(value)}
                 onChangeThinkingLevel={level => props.onChangeThinkingLevel?.(level)}
@@ -1395,6 +1524,10 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                       <DropdownMenuItem className="composer-add-option app-no-drag cursor-pointer" onPointerDown={event => startCodingAttachmentChooser(event.nativeEvent)} onSelect={() => startCodingAttachmentChooser()}>
                         <Paperclip className="size-4 shrink-0" />
                         <span className="min-w-0 flex-1"><span className="block text-label font-medium">{t('本机文件或图片', 'Local files or images')}</span></span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="composer-add-option app-no-drag cursor-pointer" disabled={running} onSelect={() => void attachFromAtMention()}>
+                        <AtSign className="size-4 shrink-0" />
+                        <span className="min-w-0 flex-1"><span className="block text-label font-medium">{t('提及文件', 'Mention a file')}</span></span>
                       </DropdownMenuItem>
                       {!workspaceFixed ? (
                         <DropdownMenuItem className="composer-add-option" onSelect={() => props.onChooseWorkspace?.()}>
@@ -1562,24 +1695,14 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                         </button>
                       ) : null}
                     </div>
-                    {gitRepository && (gitBranches ?? []).length ? (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button type="button" className="chat-composer__chip" disabled={running} aria-label={t(`当前分支：${gitBranch || t('选择分支', 'Choose a branch')}`, `Current branch: ${gitBranch || t('选择分支', 'Choose a branch')}`)} title={gitBranch || t('选择分支', 'Choose a branch')}>
-                            <GitBranch className="size-3.5 shrink-0" />
-                            <span className="chat-composer__chip__label">{gitBranch || t('分支', 'Branch')}</span>
-                            <ChevronDown className="chat-composer__chip__chevron size-3 shrink-0 opacity-60" />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start" sideOffset={8} className="agent-floating min-w-48 p-1">
-                          {(gitBranches ?? []).map(branch => (
-                            <DropdownMenuItem key={branch} className="cursor-pointer" onSelect={() => props.onCheckoutBranch?.(branch)}>
-                              <span className="min-w-0 flex-1 truncate">{branch}</span>
-                              {branch === gitBranch ? <Check className="size-3.5 shrink-0" /> : null}
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                    {gitRepository ? (
+                      <ComposerBranchMenu
+                        branch={gitBranch}
+                        branches={gitBranches ?? []}
+                        disabled={running}
+                        onCheckout={props.onCheckoutBranch}
+                        onCreate={props.onCreateBranch}
+                      />
                     ) : null}
                   </>
                 ) : undefined}

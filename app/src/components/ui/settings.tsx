@@ -14,17 +14,17 @@ function SettingsSection({
   footer?: React.ReactNode
 }) {
   return (
-    <section className={cn('space-y-2.5', className)} {...props}>
+    <section className={cn('space-y-2', className)} {...props}>
       {(title || actions) && (
-        <div className="flex min-h-7 items-center justify-between gap-4 px-2">
-          {title ? <h2 className="text-sm font-medium text-muted-foreground">{title}</h2> : null}
+        <div className="flex min-h-6 items-center justify-between gap-4 px-1">
+          {title ? <h2 className="text-xs font-medium text-muted-foreground">{title}</h2> : null}
           {actions}
         </div>
       )}
-      <div className={cn('overflow-hidden rounded-xl border border-border bg-card', footer && '[&>:nth-last-child(2)]:border-b-0')}>
+      <div className={cn('overflow-hidden rounded-md border border-border bg-card', footer && '[&>:nth-last-child(2)]:border-b-0')}>
         {children}
         {footer ? (
-          <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
+          <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-2">
             {footer}
           </div>
         ) : null}
@@ -53,7 +53,7 @@ function SettingsRow({
 }) {
   const rowStack =
     stack === 'always'
-      ? 'flex-col gap-3'
+      ? 'flex-col items-stretch gap-2'
       : stack === 'sm'
         ? align === 'start'
           ? 'flex-col gap-2 sm:flex-row sm:items-start'
@@ -64,7 +64,7 @@ function SettingsRow({
   return (
     <div
       className={cn(
-        'flex min-h-15 justify-between gap-4 border-border px-4 py-3',
+        'flex min-h-12 justify-between gap-4 border-border px-4 py-2.5',
         divider ? 'border-b last:border-b-0' : 'border-b-0',
         rowStack,
         className,
@@ -72,11 +72,15 @@ function SettingsRow({
       {...props}
     >
       <div className="min-w-0">
-        {label ? <div className="text-sm font-medium">{label}</div> : null}
-        {description ? <p className="mt-0.5 text-sm text-muted-foreground">{description}</p> : null}
+        {label ? <div className="text-[length:var(--text-label)] font-medium leading-[var(--text-label--line-height)]">{label}</div> : null}
+        {description ? <p className="mt-0.5 text-[length:var(--text-caption)] leading-[var(--text-caption--line-height)] text-muted-foreground">{description}</p> : null}
         {children}
       </div>
-      {trailing ? <div className={cn(stack === 'always' && 'w-full')}>{trailing}</div> : null}
+      {trailing ? (
+        <div className={cn('flex shrink-0 items-center justify-end gap-2', stack === 'always' && 'w-full justify-start')}>
+          {trailing}
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -416,6 +416,37 @@ func TestGitActionCheckoutSwitchesLocalBranch(t *testing.T) {
 	}
 }
 
+func TestGitActionCreateBranchMakesAndSwitchesLocalBranch(t *testing.T) {
+	requireGit(t)
+	workspace := initializedGitFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	before, err := Inspect(ctx, workspace)
+	if err != nil || before.Git.Branch == "" {
+		t.Fatalf("inspect fixture branch: %#v %v", before.Git, err)
+	}
+	created, err := ApplyGitAction(ctx, workspace, GitActionCreateBranch, "feature-search", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Snapshot.Git.Branch != "feature-search" {
+		t.Fatalf("create branch = %q, want feature-search", created.Snapshot.Git.Branch)
+	}
+	foundCreated := false
+	for _, name := range created.Snapshot.Git.LocalBranches {
+		if name == "feature-search" {
+			foundCreated = true
+			break
+		}
+	}
+	if !foundCreated {
+		t.Fatalf("local branches missing feature-search: %#v", created.Snapshot.Git.LocalBranches)
+	}
+	if _, err := ApplyGitAction(ctx, workspace, GitActionCreateBranch, "feature-search", ""); err == nil {
+		t.Fatal("expected existing branch to be rejected")
+	}
+}
+
 func TestSplitUnifiedDiffHunksRefusesAddedOrDeletedFiles(t *testing.T) {
 	added := strings.Join([]string{
 		"diff --git a/new.txt b/new.txt",

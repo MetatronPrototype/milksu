@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import AppSidebar from '@/components/AppSidebar'
+import CommandPanel from '@/components/CommandPanel'
 import UpdateInstallDialog from '@/components/UpdateInstallDialog'
+import { Toaster } from '@/components/ui'
 import CodingToolBudgetDialog from '@/components/CodingToolBudgetDialog'
 import { useConversations } from '@/stores/conversationsStore'
 import { useLabJobs } from '@/stores/labJobsStore'
@@ -22,6 +24,11 @@ import {
   settingsReturnSection,
   type CTFWorkspaceSection,
 } from '@/lib/workspaceNavigation'
+import {
+  normalizeSettingsCategory,
+  type NormalizedSettingsCategory,
+  type SettingsCategory,
+} from '@/lib/settingsNavigation'
 import {
   applyLabJobRecord,
   hydrateLabJobsFromBackend,
@@ -48,6 +55,13 @@ import {
   selectCTFResumePoint,
   selectReusableDomainConversationId,
 } from '@/lib/workspaceSessionRouting'
+import { agentRecoveryPrompt } from '@/lib/agentRecovery'
+import { planUpdateRestart, selectUpdateResumeConversation } from '@/lib/updateRestart'
+import {
+  consumeUpdateResumeState,
+  writeUpdateResumeState,
+  type UpdateResumeState,
+} from '@/lib/updateResumeState'
 import { updateStatusMessage } from '@/lib/updateStatus'
 import { withAppSettingsDefaults, type AccountStatus, type AppSettings, type CTFChatAction, type UpdateStatus } from '@/types'
 import type { ModelCatalogSnapshot } from '@/types'
@@ -69,19 +83,12 @@ const VulnPage = lazy(() => import('@/components/VulnPage'))
 const LabPage = lazy(() => import('@/components/LabPage'))
 
 type Section = 'chat' | 'ctf' | 'vuln' | 'lab' | 'profile' | 'settings'
-type SettingsCategory = 'general' | 'coding' | 'skills' | 'mcp' | 'apikeys' | 'browser' | 'cve' | 'lab' | 'chats' | 'security-tools' | 'ctf' | 'eval' | 'plugins'
 type DomainHome = 'ctf' | 'vuln' | 'lab'
 
 const localAccountModeKey = 'milksu.account.continue-local'
 const solidColors: Record<string, string> = {
   paper: '#f4f1e8', graphite: '#252525', black: '#000000', cyan: '#008ccf',
   gold: '#f5c842', gray: '#6b7280',
-}
-
-function normalizeSettingsCategory(value: SettingsCategory): SettingsCategory {
-  if (value === 'security-tools') return 'mcp'
-  if (value === 'coding') return 'skills'
-  return value
 }
 
 function readLocalAccountMode() {
@@ -201,7 +208,7 @@ export default function App() {
   const [domainChatDockOpen, setDomainChatDockOpenState] = useState({ ctf: false, vuln: false, lab: false })
   const [vulnerabilityCodingWorkspacePath, setVulnerabilityCodingWorkspacePath] = useState('')
   const [settingsReturnTarget, setSettingsReturnTarget] = useState<Exclude<Section, 'settings'>>(restoredViewState?.settingsReturnTarget ?? 'ctf')
-  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>(openPluginSettingsOnStartup ? 'plugins' : 'general')
+  const [settingsCategory, setSettingsCategory] = useState<NormalizedSettingsCategory>(openPluginSettingsOnStartup ? 'plugins' : 'general')
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [accountStatus, setAccountStatus] = useState<AccountStatus>({ configured: false, authenticated: false, state: 'unconfigured' })
   const [accountLoaded, setAccountLoaded] = useState(false)
@@ -210,7 +217,12 @@ export default function App() {
   const [continueWithoutAccount, setContinueWithoutAccount] = useState(readLocalAccountMode)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
   const [installUpdatePromptOpen, setInstallUpdatePromptOpen] = useState(false)
+  const [commandPanelOpen, setCommandPanelOpen] = useState(false)
+  const [pendingUpdateResume, setPendingUpdateResume] = useState<UpdateResumeState | null>(null)
   const installingUpdate = useRef(false)
+  const updateRestartDeferred = useRef(false)
+  const applyingUpdate = useRef(false)
+  const confirmingUpdateRestart = useRef(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode)
   const [systemDark, setSystemDark] = useState(false)
   const [pluginTheme, setPluginTheme] = useState<ActivePluginTheme>(() => normalizeActivePluginTheme(null))
@@ -1041,6 +1053,7 @@ export default function App() {
       const next = await invokeCommand<UpdateStatus>('download_update')
       updateStatusRef.current = next
       setUpdateStatus(next)
+      return next
     } catch (reason) {
       console.error('Failed to download update', reason)
       const current = updateStatusRef.current
@@ -1060,6 +1073,7 @@ export default function App() {
       }
       updateStatusRef.current = next
       setUpdateStatus(next)
+      return next
     }
   }
 
@@ -1121,6 +1135,81 @@ export default function App() {
     }
   }
 
+  async function persistAndInstallUpdate() {
+    persistWorkspaceViewState()
+    const runningIds = conversations.runningConversationIds
+    if (runningIds.length) {
+      writeUpdateResumeState({
+        version: 1,
+        conversationIds: runningIds,
+        activeConversationId: conversations.activeId,
+      })
+    }
+    try {
+      await conversations.prepareConversationsForUpdateRestart()
+    } catch (reason) {
+      console.error('Failed to persist conversations before update restart', reason)
+    }
+    await installUpdate()
+  }
+
+  async function requestInstallUpdate() {
+    if (installingUpdate.current) return
+    const next = planUpdateRestart({
+      runningConversationIds: conversations.runningConversationIds,
+      restartDeferred: updateRestartDeferred.current,
+    })
+    if (next === 'stay') return
+    if (next === 'confirm') {
+      setInstallUpdatePromptOpen(true)
+      return
+    }
+    await persistAndInstallUpdate()
+  }
+
+  async function applyUpdate() {
+    if (applyingUpdate.current || installingUpdate.current) return
+    if (updateStatusRef.current?.state === 'downloading') return
+    applyingUpdate.current = true
+    updateRestartDeferred.current = false
+    try {
+      if (updateStatusRef.current?.state !== 'downloaded') {
+        const downloaded = await downloadUpdate()
+        if (downloaded.state !== 'downloaded') return
+      }
+      await requestInstallUpdate()
+    } finally {
+      applyingUpdate.current = false
+    }
+  }
+
+  function confirmInstallUpdate() {
+    confirmingUpdateRestart.current = true
+    updateRestartDeferred.current = false
+    setInstallUpdatePromptOpen(false)
+    void persistAndInstallUpdate()
+  }
+
+  function cancelInstallUpdate() {
+    if (confirmingUpdateRestart.current || installingUpdate.current) return
+    updateRestartDeferred.current = true
+    setInstallUpdatePromptOpen(false)
+  }
+
+  async function resumeAfterUpdateRestart(resume: UpdateResumeState) {
+    const conversationId = selectUpdateResumeConversation(resume)
+    if (!conversationId) return
+    const conversation = conversations.conversations.find(item => item.id === conversationId)
+    if (!conversation) return
+    conversations.activeId = conversationId
+    const lastUserMessage = [...conversation.messages].reverse().find(message => message.role === 'user')
+    await conversations.send(
+      agentRecoveryPrompt(Boolean(conversation.ctfJobId)),
+      t('继续', 'Continue'),
+      lastUserMessage?.attachments,
+    )
+  }
+
   function continueToolBudget() {
     if (!toolBudgetPrompt) return
     void conversations.respondApproval(toolBudgetPrompt.requestId, true, 'once')
@@ -1135,8 +1224,8 @@ export default function App() {
   applyWorkspaceRecordRef.current = applyWorkspaceRecord
   const persistWorkspaceViewStateRef = useRef(persistWorkspaceViewState)
   persistWorkspaceViewStateRef.current = persistWorkspaceViewState
-  const installUpdateRef = useRef(installUpdate)
-  installUpdateRef.current = installUpdate
+  const resumeAfterUpdateRestartRef = useRef(resumeAfterUpdateRestart)
+  resumeAfterUpdateRestartRef.current = resumeAfterUpdateRestart
 
   useLayoutEffect(() => {
     applyCurrentTheme()
@@ -1151,6 +1240,18 @@ export default function App() {
   }, [section, codingConversationDrawerOpen, ctfSection, settingsReturnTarget, conv.activeId])
 
   useEffect(() => {
+    function onCommandPanelShortcut(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
+      if (event.key.toLowerCase() !== 'k') return
+      if (event.isComposing || event.keyCode === 229) return
+      event.preventDefault()
+      setCommandPanelOpen(open => !open)
+    }
+    window.addEventListener('keydown', onCommandPanelShortcut)
+    return () => window.removeEventListener('keydown', onCommandPanelShortcut)
+  }, [])
+
+  useEffect(() => {
     if (section !== 'ctf' && section !== 'vuln' && section !== 'lab') return
     setKeptWorkspacePages(prev => {
       if (prev.has(section)) return prev
@@ -1161,18 +1262,12 @@ export default function App() {
   }, [section])
 
   useEffect(() => {
-    const state = updateStatus?.state
-    const runningCount = conv.runningIds.length
-    if (state !== 'downloaded' || installingUpdate.current) {
-      if (state !== 'downloaded') setInstallUpdatePromptOpen(false)
-      return
-    }
-    if (runningCount > 0) {
-      setInstallUpdatePromptOpen(true)
-      return
-    }
-    void installUpdateRef.current()
-  }, [updateStatus?.state, conv.runningIds.length])
+    if (!pendingUpdateResume) return
+    if (runtimeStatus === 'starting' || runtimeStatus === 'recovering') return
+    const resume = pendingUpdateResume
+    setPendingUpdateResume(null)
+    void resumeAfterUpdateRestartRef.current(resume)
+  }, [pendingUpdateResume, runtimeStatus])
 
   useEffect(() => {
     const mountedAt = performance.now()
@@ -1285,6 +1380,10 @@ export default function App() {
         setUpdateStatus(nextUpdate)
       }
       await conversations.listen()
+      if (!cancelled) {
+        const resume = consumeUpdateResumeState()
+        if (resume) setPendingUpdateResume(resume)
+      }
       startupLog(
         'renderer.firstPaintGateDone',
         `fromMount=${Math.round(performance.now() - mountedAt)}ms state=${accountStatusRef.current.state} provisional=${accountStatusRef.current.provisional === true}`,
@@ -1416,9 +1515,18 @@ export default function App() {
           onAccountLogin={startAccountLogin}
           onAccountLogout={logoutAccount}
           onSettings={() => openSettings('general')}
+          settingsCategory={settingsCategory}
+          onSelectSettingsCategory={category => {
+            setSettingsCategory(category)
+            setSection('settings')
+          }}
+          onCloseSettings={async () => {
+            await loadSettings()
+            setSection(settingsReturnTargetRef.current)
+          }}
           onToggleTheme={toggleThemeMode}
-          onDownloadUpdate={downloadUpdate}
-          onInstallUpdate={installUpdate}
+          onApplyUpdate={applyUpdate}
+          onOpenCommandPanel={() => setCommandPanelOpen(true)}
           onOpenCodingContext={() => setCodingConversationDrawerOpen(true)}
           onCollapseCodingContext={() => setCodingConversationDrawerOpen(false)}
           onSelectConversation={selectSidebarConversation}
@@ -1429,6 +1537,10 @@ export default function App() {
           onSetPinned={conversations.setConversationPinned}
           onMovePinned={conversations.movePinnedConversation}
           onReorderPinned={conversations.reorderPinnedConversation}
+          onForkConversation={async (id: string) => {
+            const nextId = await conversations.forkConversation(id)
+            if (nextId) selectSidebarConversation(nextId)
+          }}
           onNavigateCtf={setCtfSection}
         />
 
@@ -1623,11 +1735,18 @@ export default function App() {
       />
       <UpdateInstallDialog
         open={installUpdatePromptOpen}
-        version={updateStatus?.version}
-        onOpenChange={setInstallUpdatePromptOpen}
-        onConfirm={installUpdate}
-        onLater={() => setInstallUpdatePromptOpen(false)}
+        onOpenChange={open => { if (!open) cancelInstallUpdate() }}
+        onConfirm={confirmInstallUpdate}
+        onCancel={cancelInstallUpdate}
       />
+      <CommandPanel
+        open={commandPanelOpen}
+        conversations={conv.rows}
+        onOpenChange={setCommandPanelOpen}
+        onSelectConversation={selectSidebarConversation}
+        onSelectSettings={category => openSettings(category)}
+      />
+      <Toaster />
     </div>
   )
 }

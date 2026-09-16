@@ -11,17 +11,18 @@ import (
 )
 
 const (
-	GitActionStage       = "stage"
-	GitActionStageAll    = "stage-all"
-	GitActionUnstage     = "unstage"
-	GitActionUnstageAll  = "unstage-all"
-	GitActionDiscardWork = "discard-worktree"
-	GitActionCommit      = "commit"
-	GitActionPush        = "push"
-	GitActionCheckout    = "checkout"
-	GitActionStageHunk   = "stage-hunk"
-	GitActionUnstageHunk = "unstage-hunk"
-	GitActionDiscardHunk = "discard-hunk"
+	GitActionStage        = "stage"
+	GitActionStageAll     = "stage-all"
+	GitActionUnstage      = "unstage"
+	GitActionUnstageAll   = "unstage-all"
+	GitActionDiscardWork  = "discard-worktree"
+	GitActionCommit       = "commit"
+	GitActionPush         = "push"
+	GitActionCheckout     = "checkout"
+	GitActionCreateBranch = "create-branch"
+	GitActionStageHunk    = "stage-hunk"
+	GitActionUnstageHunk  = "unstage-hunk"
+	GitActionDiscardHunk  = "discard-hunk"
 )
 
 const maxCommitMessageBytes = 64 * 1024
@@ -130,6 +131,19 @@ func ApplyGitAction(
 		}
 		if err := runGitMutation(ctx, gitPath, resolved, "switch branch", "switch", "--", branch); err != nil {
 			if err := runGitMutation(ctx, gitPath, resolved, "switch branch", "checkout", branch); err != nil {
+				return GitActionResult{}, err
+			}
+		}
+	case GitActionCreateBranch:
+		branch, branchErr := validateGitBranchName(relativePath)
+		if branchErr != nil {
+			return GitActionResult{}, branchErr
+		}
+		if _, err := runGit(ctx, gitPath, resolved, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+			return GitActionResult{}, fmt.Errorf("Git branch already exists: %s", branch)
+		}
+		if err := runGitMutation(ctx, gitPath, resolved, "create branch", "switch", "-c", branch); err != nil {
+			if err := runGitMutation(ctx, gitPath, resolved, "create branch", "checkout", "-b", branch); err != nil {
 				return GitActionResult{}, err
 			}
 		}
@@ -511,6 +525,11 @@ func gitActionMessage(action string, snapshot Snapshot) string {
 			return "已切换到 " + snapshot.Git.Branch
 		}
 		return "已切换分支"
+	case GitActionCreateBranch:
+		if snapshot.Git.Branch != "" {
+			return "已创建并切换到 " + snapshot.Git.Branch
+		}
+		return "已创建分支"
 	case GitActionStageHunk:
 		return "已暂存所选代码块"
 	case GitActionUnstageHunk:

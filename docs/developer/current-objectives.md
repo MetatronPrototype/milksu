@@ -72,7 +72,7 @@
 | P0 | React + shadcn | 工作树 renderer 已是 React + shadcn（`main.tsx`）。新页和重构只走这条。不再跟 DSH web GUI，不再加 Felinic / Vue SFC。Desktop RPC 与 Go 不动。细节优化看下面「迁移残留」。 |
 | P0 | Pi Runtime 用户验收 | 跨目录读写、CTF/CVE 交接、长输出续跑、重启恢复；无 MilkSU 自建 workspace 策略或旧 session ID。 |
 | P1 | 下一版三端回执 | 新版本号、同一 source commit、三端产物、SHA-256 与平台验收。安装包见 README。 |
-| P1 | OTA / current pointer | 侧栏先检查再下载；安装失败可见；CI 上传后发布 current pointer。 |
+| P1 | OTA / current pointer | 侧栏蓝色「更新」一点即下载并重启；有任务在跑时先确认退出并落盘后续跑；安装失败可见；CI 上传后发布 current pointer。 |
 | P1 | Wide lab recon | `bg_status` 熔断与最多 4 条子 Agent lane 已进包。宽作业用 `recon-authorized-target` Skill，不另造 typed sweep。 |
 | P1 | 安全工具真实任务 | IDA / capa 已有设置与健康检查；用受控样本留回执。不把 HexStrike 做成默认 MCP。 |
 | P1 | Obelisk 学习记录 | 先定义可归因事实，再独立页面；不恢复已删的单会话图谱。 |
@@ -88,13 +88,13 @@ CVE：点进档案复现，Agent 改 `report.md`。实验室：独立入口，�
 
 - Settings / Profile / Eval / Vuln / Lab 本地状态走 `createStore` + `useStore` / `useStoreRuntime`，页面订阅读稳定 snapshot。
 - Dialog / Select / Dropdown / Switch 从 Felinic `v-model` 换成 Radix `open` + `onOpenChange`。点遮罩关闭、Esc、焦点陷阱、Select 受控值可能和旧的不一样。
-- 已访问的 CTF / CVE / Lab 会留在树上用 `display:none` 藏起来（相当于旧 KeepAlive）。对话右栏是 `ContextRail`。`CodingComposerControls` 不再补 `[data-button]::before`。
+- 已访问的 CTF / CVE / Lab 会留在树上用 `display:none` 藏起来（相当于旧 KeepAlive）。对话右栏是 `ContextRail`。`CodingComposerControls` 不再补 `[data-button]::before`。侧栏搜索和 Cmd/Ctrl+K 打开居中命令面板（齐平搜索、全部/会话/设置/命令、最近会话加点/工作区/相对时间）；对话行右侧显示相对活跃时间，悬停钉选/归档、右键菜单，没有三点按钮；钉选分组用图钉，项目文件夹开合换图标。作曲栏模型芯片先出一级菜单（模型 / 推理强度 / 上下文 / 运行时），点开不展开二级，悬停才出二级，二级按窗口限高滚动；Git 芯片是可搜索、限高滚动、可从查询创建分支的 popover；设置页默认/subagent 仍是单个可搜索 popover；图片附件用缩略图，`@` 走现有选文件 RPC；短时失败用 toast，审批/凭据/表单错误仍用 Alert。
 - Vite / 浏览器 demo 没有 `window.milksu`。设置页不再把 `desktop runtime is unavailable` 当成产品错误；完整设置和插件列表要 Electron。
 
 风格（C：shadcn 结构 + Cursor Light / Cursor Dark，彩蛋后加）：
 
 - `index.css` 夜间是页面 `#181818` / 侧栏 `#141414`，浅色是页面 `#fcfcfc` / 侧栏 `#f3f3f3`，页底和侧栏用 70–90% 透明度透出一丝桌面。macOS `under-window` vibrancy，Windows acrylic，Linux 仍不透明。菜单/对话框保持不透明。不要再用 zinc-950 `#09090b` 或纯白 `#ffffff` 当页底。`ak-ui.css` / `beautiful-chrome.css` 已从树上删掉，不要当现行语言加回来。
-- 登录、目录筛选、难度/严重性、连接状态、设置导航已改 Button / Badge / Alert。LIVE/AUTH 彩蛋未加回。
+- 设置页跟 Cursor：设置分类占用原来那一列侧栏，不要再叠第二列导航。内容是一组 `SettingsSection` / `SettingsRow`，右侧控件与行标签同一字号、同一高度。改完即存，不要页脚「保存并验证」。不要再套第二层卡片或评测 workbench。LIVE/AUTH 彩蛋未加回。
 - 产品入口是 `main.tsx`；`@felinic/ui` / Vue 已从 `app/` 生产依赖拿掉。Felinic submodule `packages/ui` 已卸载，不进 renderer。
 
 ## 不要重复打开

@@ -27,6 +27,10 @@ import {
 import { redactProviderCredentials } from '@/lib/redaction'
 import { normalizeSubagentTasks } from '@/lib/subagentRoster'
 import { explainModelServiceError } from '@/lib/tokenFluxError'
+import {
+  assistantForkPoint,
+  cloneConversationForFork,
+} from '@/lib/conversationActions'
 import { t } from '@/lib/uiLocale'
 import {
   conversationKernelLocked,
@@ -1101,7 +1105,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   let disposeEvents: (() => void) | undefined
 
   function persist(conversation: Conversation) {
-    void invokeCommand('save_conversation', { conversation }).catch(console.error)
+    return invokeCommand('save_conversation', { conversation }).catch(console.error)
   }
 
   function sessionContextUsageRecord(sessionId: string): Conversation['lastContextUsage'] {
@@ -1159,6 +1163,23 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       if (conversation) persist(conversation)
     }, 400)
     saveTimers.set(conversationId, timer)
+  }
+
+  async function flushPendingSaves() {
+    const ids = new Set<string>([...saveTimers.keys(), ...s.runningIds])
+    if (s.activeId) ids.add(s.activeId)
+    for (const timer of saveTimers.values()) window.clearTimeout(timer)
+    saveTimers.clear()
+    await Promise.all([...ids].map(async id => {
+      const conversation = s.conversations.find(item => item.id === id)
+      if (!conversation) return
+      await invokeCommand('save_conversation', { conversation })
+    }))
+  }
+
+  async function prepareConversationsForUpdateRestart() {
+    if (s.runningIds.size) settleRunsForRuntimeRecovery()
+    await flushPendingSaves()
   }
 
   async function load() {
@@ -2011,6 +2032,41 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.activeId = sessionId
     persist(forked)
     return true
+  }
+
+  async function forkConversation(id: string) {
+    const conversation = s.conversations.find(item => item.id === id)
+    if (!conversation) return null
+    const point = assistantForkPoint(conversation.messages)
+    let sessionId = ''
+    if (point) {
+      try {
+        sessionId = String(await invokeCommand('fork_conversation', {
+          conversationId: conversation.id,
+          role: 'assistant',
+          occurrence: point.occurrence,
+        })).trim()
+      } catch {
+        sessionId = ''
+      }
+    }
+    // Pi owns session-fork. Without a successful assistant fork point, MilkSU
+    // only clones the product row (same workspace / project / home / kernel).
+    const forkedId = sessionId || crypto.randomUUID()
+    const firstUser = conversation.messages.find(item => item.role === 'user')
+    const forked = cloneConversationForFork(conversation, {
+      id: forkedId,
+      title: sessionId
+        ? fallbackConversationTitle(firstUser?.content ?? conversation.title)
+        : conversation.title,
+      messages: sessionId && point
+        ? conversation.messages.slice(0, point.index + 1)
+        : [],
+    })
+    s.conversations = [forked, ...s.conversations]
+    s.activeId = forkedId
+    persist(forked)
+    return forkedId
   }
 
   async function abort(id: string) {
@@ -2884,6 +2940,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     send,
     editAndResend,
     branchFromAssistant,
+    forkConversation,
     abort,
     settleRunsForRuntimeRecovery,
     compactContext,
@@ -2912,6 +2969,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     startWorkspaceTask,
     stageComposerDraft,
     consumeComposerDraft,
+    flushPendingSaves,
+    prepareConversationsForUpdateRestart,
   }
 }
 

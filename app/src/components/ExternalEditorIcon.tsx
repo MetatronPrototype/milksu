@@ -6,8 +6,10 @@ import {
 
 export default function ExternalEditorIcon({
   editor = 'vscode',
+  decorative = false,
 }: {
   editor?: string
+  decorative?: boolean
 }) {
   const editorId: ExternalEditorId = normalizePreferredExternalEditor(editor)
   const label = externalEditorLabel(editorId)
@@ -15,9 +17,10 @@ export default function ExternalEditorIcon({
   return (
     <span
       className="inline-flex size-4 shrink-0 items-center justify-center"
-      title={label}
-      role="img"
-      aria-label={label}
+      title={decorative ? undefined : label}
+      role={decorative ? undefined : 'img'}
+      aria-hidden={decorative || undefined}
+      aria-label={decorative ? undefined : label}
     >
       {editorId === 'vscode' || editorId === 'vscode-insiders' ? (
         <svg viewBox="0 0 24 24" className="size-4" aria-hidden="true">

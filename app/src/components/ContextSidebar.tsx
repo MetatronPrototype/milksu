@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { isComposingKey } from '@/lib/imeComposition'
 import AgentPixelLoader from '@/components/AgentPixelLoader'
@@ -12,34 +12,40 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
   Input,
 } from '@/components/ui'
+import { menuContentClass, menuItemClass, menuSeparatorClass } from '@/components/ui/menu'
+import { conversationCopyText } from '@/lib/conversationActions'
+import { formatRelativeAge } from '@/lib/relativeAge'
+import { conversationActivityAt } from '@/lib/workspaceSessionRouting'
 import {
   Archive,
-  ArrowDownToLine,
-  CircleAlert,
+  Box,
+  BookMarked,
   Bug,
   ChevronDown,
+  ChevronLeft,
+  Copy,
   Flag,
   FlaskConical,
   Clock,
   Folder,
+  FolderOpen,
+  Gauge,
+  GitFork,
+  Globe2,
   House,
   LogOut,
   SquarePen,
   Moon,
-  MoreVertical,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
   Pin,
   PinOff,
+  Plug,
   Plus,
+  Puzzle,
   ArrowDown,
   ArrowUp,
   Search,
@@ -48,7 +54,6 @@ import {
   SunMoon,
   Trash2,
   UserRound,
-  X,
 } from 'lucide-react'
 import {
   groupWorkspaceConversations,
@@ -60,6 +65,10 @@ import {
   type CTFWorkspaceSection,
   type WorkspaceSection,
 } from '@/lib/workspaceNavigation'
+import {
+  SETTINGS_SIDEBAR_ITEMS,
+  type NormalizedSettingsCategory,
+} from '@/lib/settingsNavigation'
 import type { ThemeMode } from '@/lib/themeMode'
 import {
   COLLAPSED_SIDEBAR_WIDTH,
@@ -70,17 +79,45 @@ import {
   writeSidebarWidth,
 } from '@/lib/sidebarWidth'
 import { useT } from '@/hooks/useUiLocale'
+import { updateControlVisible } from '@/lib/updateRestart'
 import { updateStatusMessage } from '@/lib/updateStatus'
 import type { AccountStatus, BuildTracking, Conversation, UpdateStatus } from '@/types'
 
 const COLLAPSED_WIDTH = COLLAPSED_SIDEBAR_WIDTH
 const PINNED_GROUP_KEY = 'pinned'
+const CONVERSATION_MENU_WIDTH = 176
+const CONVERSATION_MENU_HEIGHT = 320
+
+function conversationMenuPosition(x: number, y: number) {
+  const pad = 8
+  const width = Math.min(CONVERSATION_MENU_WIDTH, window.innerWidth - pad * 2)
+  const height = Math.min(CONVERSATION_MENU_HEIGHT, window.innerHeight - pad * 2)
+  return {
+    position: 'fixed' as const,
+    top: `${Math.min(Math.max(pad, y), window.innerHeight - height - pad)}px`,
+    left: `${Math.min(Math.max(pad, x), window.innerWidth - width - pad)}px`,
+  }
+}
 
 const workspaceNavIcons = {
   chat: House,
   ctf: Flag,
   vuln: Bug,
   lab: FlaskConical,
+} as const
+
+const settingsNavIcons = {
+  general: Settings,
+  apikeys: Box,
+  ctf: Flag,
+  cve: Bug,
+  lab: FlaskConical,
+  skills: BookMarked,
+  mcp: Plug,
+  chats: Archive,
+  browser: Globe2,
+  eval: Gauge,
+  plugins: Puzzle,
 } as const
 
 export default function ContextSidebar({
@@ -93,6 +130,7 @@ export default function ContextSidebar({
   accountStatus,
   themeMode,
   collapsed,
+  settingsCategory,
   updateStatus,
   onNew,
   onCollapse,
@@ -105,14 +143,17 @@ export default function ContextSidebar({
   onSetPinned,
   onMovePinned,
   onReorderPinned,
+  onForkConversation,
   onNavigate,
   onProfile,
   onSettings,
+  onSelectSettingsCategory,
+  onCloseSettings,
   onAccountLogin,
   onAccountLogout,
   onToggleTheme,
-  onDownloadUpdate,
-  onInstallUpdate,
+  onApplyUpdate,
+  onOpenCommandPanel,
 }: {
   activeSection: AppSection
   activeConversationId: string | null
@@ -123,6 +164,7 @@ export default function ContextSidebar({
   accountStatus: AccountStatus
   themeMode: ThemeMode
   collapsed?: boolean
+  settingsCategory?: NormalizedSettingsCategory
   updateStatus?: UpdateStatus | null
   onNew?: () => void
   onCollapse?: () => void
@@ -135,28 +177,35 @@ export default function ContextSidebar({
   onSetPinned?: (id: string, pinned: boolean) => void
   onMovePinned?: (id: string, direction: -1 | 1) => void
   onReorderPinned?: (id: string, beforeId: string) => void
+  onForkConversation?: (id: string) => void
   onNavigateCtf?: (value: CTFWorkspaceSection) => void
   onNavigate?: (value: WorkspaceSection) => void
   onProfile?: () => void
   onSettings?: () => void
+  onSelectSettingsCategory?: (value: NormalizedSettingsCategory) => void
+  onCloseSettings?: () => void
   onAccountLogin?: () => void
   onAccountLogout?: () => void
   onToggleTheme?: () => void
-  onDownloadUpdate?: () => void
-  onInstallUpdate?: () => void
+  onApplyUpdate?: () => void
+  onOpenCommandPanel?: () => void
 }) {
   const t = useT()
   const [unreadConversationIds, setUnreadConversationIds] = useState(() => new Set<string>())
   const [pinnedDragId, setPinnedDragId] = useState('')
   const [pinnedDropTarget, setPinnedDropTarget] = useState('')
   const observedRunningIds = useRef<Set<string> | undefined>(undefined)
-  const [query, setQuery] = useState('')
-  const [searchOpen, setSearchOpen] = useState(false)
   const conversationList = useRef<HTMLDivElement | null>(null)
   const [pendingAction, setPendingAction] = useState<{ conversation: Conversation, action: 'archive' | 'delete' } | null>(null)
   const [pendingActionRunning, setPendingActionRunning] = useState(false)
   const [editingConversationId, setEditingConversationId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
+  const [conversationMenu, setConversationMenu] = useState<{
+    conversation: Conversation
+    showPinnedMove: boolean
+    x: number
+    y: number
+  } | null>(null)
   const renameInput = useRef<HTMLInputElement | null>(null)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const workspaceButton = useRef<HTMLButtonElement | null>(null)
@@ -165,32 +214,26 @@ export default function ContextSidebar({
   const [appVersion, setAppVersion] = useState('')
   const [expandedWidth, setExpandedWidth] = useState(() => readSidebarWidth())
   const [resizing, setResizing] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
 
-  const updateAction = (() => {
-    const state = updateStatus?.state
-    if (state === 'available' || state === 'error') return 'download'
-    if (state === 'downloading') return 'progress'
-    if (state === 'downloaded') return 'install'
-    return ''
-  })()
+  const updateVisible = updateControlVisible(updateStatus?.state)
+  const updateDownloading = updateStatus?.state === 'downloading'
   const updatePercent = Math.max(0, Math.min(100, Number(updateStatus?.percent) || 0))
-  const updateButtonLabel = updateAction === 'progress'
-    ? t(`正在下载 ${updatePercent.toFixed(0)}%`, `Downloading ${updatePercent.toFixed(0)}%`)
-    : updateAction === 'install'
-      ? t('安装并重启', 'Install and restart')
-      : updateStatus?.state === 'error'
-        ? t('重试下载', 'Retry download')
-        : t('下载更新', 'Download update')
+  const updateButtonLabel = updateDownloading
+    ? `${updatePercent.toFixed(0)}%`
+    : t('更新', 'Update')
   const updateButtonTitle = updateStatus?.state === 'error'
     ? updateStatusMessage(updateStatus) || updateButtonLabel
-    : updateButtonLabel
+    : updateDownloading
+      ? t(`正在下载 ${updatePercent.toFixed(0)}%`, `Downloading ${updatePercent.toFixed(0)}%`)
+      : updateButtonLabel
 
   const workspaceHome: WorkspaceSection = (
     activeSection === 'ctf' || activeSection === 'vuln' || activeSection === 'lab'
       ? activeSection
       : 'chat'
   )
-  const codingGroups = groupWorkspaceConversations(conversations, workspaceHome, query)
+  const codingGroups = groupWorkspaceConversations(conversations, workspaceHome)
   const runningConversationIds = new Set(runningIdsProp ?? [])
   const projectGroups = codingGroups.filter(group => !group.temporary)
   const temporaryGroup = codingGroups.find(group => group.temporary) ?? null
@@ -278,6 +321,34 @@ export default function ContextSidebar({
     cancelRename()
   }
 
+  function closeConversationMenu() {
+    setConversationMenu(null)
+  }
+
+  function openConversationMenu(
+    conversation: Conversation,
+    showPinnedMove: boolean,
+    x: number,
+    y: number,
+  ) {
+    setConversationMenu({ conversation, showPinnedMove, x, y })
+  }
+
+  async function copyConversation(conversation: Conversation) {
+    const text = conversationCopyText(conversation)
+    if (!text || !navigator.clipboard?.writeText) return
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // Clipboard is best effort; the menu still closes.
+    }
+  }
+
+  function runConversationMenuAction(action: () => void) {
+    closeConversationMenu()
+    action()
+  }
+
   function toggleWorkspaceMenu() {
     if (collapsed) return
     if (!workspaceOpen && workspaceButton.current) {
@@ -293,8 +364,6 @@ export default function ContextSidebar({
 
   function collapseSidebar() {
     closeWorkspaceMenu()
-    setSearchOpen(false)
-    setQuery('')
     onCollapse?.()
   }
 
@@ -363,6 +432,11 @@ export default function ContextSidebar({
   }, [])
 
   useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
     if (pendingActionRunning && pendingAction && !conversations.some(conversation => conversation.id === pendingAction.conversation.id)) {
       closeConversationAction()
     }
@@ -412,68 +486,87 @@ export default function ContextSidebar({
   useEffect(() => {
     if (collapsed) {
       closeWorkspaceMenu()
-      setSearchOpen(false)
-      setQuery('')
+      closeConversationMenu()
     }
   }, [collapsed])
 
-  function conversationMenu(conversation: Conversation, showPinnedMove: boolean) {
+  useEffect(() => {
+    if (!conversationMenu) return
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target as Node | null
+      if (!target) return
+      const menu = document.querySelector('[data-conversation-menu]')
+      if (menu?.contains(target)) return
+      setConversationMenu(null)
+    }
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') setConversationMenu(null)
+    }
+    function onViewportChange() {
+      setConversationMenu(null)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    window.addEventListener('resize', onViewportChange)
+    conversationList.current?.addEventListener('scroll', onViewportChange)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('resize', onViewportChange)
+      conversationList.current?.removeEventListener('scroll', onViewportChange)
+    }
+  }, [conversationMenu])
+
+  function conversationActionButton(
+    conversation: Conversation,
+    showPinnedMove: boolean,
+    {
+      className,
+      label,
+      title,
+      testId,
+      onClick,
+      children,
+    }: {
+      className?: string
+      label: string
+      title?: string
+      testId?: string
+      onClick: (event: MouseEvent<HTMLButtonElement>) => void
+      children: ReactNode
+    },
+  ) {
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            className="agent-sidebar-item__menu agent-sidebar__copy"
-            aria-label={t('会话操作', 'Chat actions')}
-            onClick={event => event.stopPropagation()}
-          >
-            <MoreVertical className="size-3.5" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" sideOffset={4} className="agent-floating w-40">
-          <DropdownMenuItem
-            aria-label={conversation.pinned ? t('取消钉选', 'Unpin chat') : t('钉选对话', 'Pin chat')}
-            onSelect={() => onSetPinned?.(conversation.id, !conversation.pinned)}
-          >
-            {conversation.pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
-            {conversation.pinned ? t('取消钉选', 'Unpin') : t('钉选', 'Pin')}
-          </DropdownMenuItem>
-          {showPinnedMove && conversation.pinned ? (
-            <>
-              <DropdownMenuItem aria-label={t('钉选上移', 'Move pinned chat up')} onSelect={() => onMovePinned?.(conversation.id, -1)}>
-                <ArrowUp className="size-4" />{t('上移', 'Move up')}
-              </DropdownMenuItem>
-              <DropdownMenuItem aria-label={t('钉选下移', 'Move pinned chat down')} onSelect={() => onMovePinned?.(conversation.id, 1)}>
-                <ArrowDown className="size-4" />{t('下移', 'Move down')}
-              </DropdownMenuItem>
-            </>
-          ) : null}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem aria-label={t('重命名编码任务', 'Rename coding task')} onSelect={() => startRename(conversation)}>
-            <Pencil className="size-4" />{t('重命名', 'Rename')}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem aria-label={t('归档编码任务', 'Archive coding task')} onSelect={() => setPendingAction({ conversation, action: 'archive' })}>
-            <Archive className="size-4" />{t('归档', 'Archive')}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            className="text-destructive focus:text-destructive"
-            aria-label={t('永久删除编码任务', 'Permanently delete coding task')}
-            onSelect={() => setPendingAction({ conversation, action: 'delete' })}
-          >
-            <Trash2 className="size-4" />{t('删除', 'Delete')}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <button
+        type="button"
+        className={`agent-sidebar-item__action agent-sidebar__copy${className ? ` ${className}` : ''}`}
+        aria-label={label}
+        title={title ?? label}
+        data-testid={testId}
+        onClick={event => {
+          event.preventDefault()
+          event.stopPropagation()
+          onClick(event)
+        }}
+        onContextMenu={event => {
+          event.preventDefault()
+          event.stopPropagation()
+          openConversationMenu(conversation, showPinnedMove, event.clientX, event.clientY)
+        }}
+      >
+        {children}
+      </button>
     )
   }
 
   function conversationRow(conversation: Conversation, groupKey?: string) {
     const pinned = groupKey === PINNED_GROUP_KEY
+    const menuOpen = conversationMenu?.conversation.id === conversation.id
+    const age = formatRelativeAge(conversationActivityAt(conversation), now)
     return (
       <div
         key={conversation.id}
-        className={`agent-sidebar-item group mx-2 flex h-9 items-center overflow-hidden rounded-[8px]${activeConversationId === conversation.id ? ' is-current' : ''}${pinnedDropTarget === conversation.id ? ' is-pinned-drop-target' : ''}`}
+        className={`agent-sidebar-item group mx-2 flex h-9 items-center overflow-hidden rounded-[8px]${activeConversationId === conversation.id ? ' is-current' : ''}${pinnedDropTarget === conversation.id ? ' is-pinned-drop-target' : ''}${menuOpen ? ' is-menu-open' : ''}`}
         draggable={pinned}
         data-ui-selected={activeConversationId === conversation.id ? '' : undefined}
         data-active-conversation-row={activeConversationId === conversation.id ? '' : undefined}
@@ -489,6 +582,12 @@ export default function ContextSidebar({
           dropPinnedConversation(conversation.id)
         }}
         onDragEnd={endPinnedDrag}
+        onContextMenu={event => {
+          if (editingConversationId === conversation.id) return
+          event.preventDefault()
+          event.stopPropagation()
+          openConversationMenu(conversation, pinned, event.clientX, event.clientY)
+        }}
       >
         {editingConversationId === conversation.id ? (
           <Input
@@ -523,15 +622,30 @@ export default function ContextSidebar({
               ) : null}
             </span>
             <span className="flex size-5 shrink-0" aria-hidden="true" />
-            <span className="agent-sidebar__copy ml-1.5 truncate text-[14px] font-medium">{conversation.title}</span>
-            {conversation.pinned ? (
-              <Pin className="ml-1 size-3.5 shrink-0 text-primary" aria-label={t('已钉选', 'Pinned')} data-testid="conversation-pinned-mark" />
+            <span className="agent-sidebar__copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium">{conversation.title}</span>
+            {age ? (
+              <span className="agent-sidebar-item__age agent-sidebar__copy" aria-hidden="true">{age}</span>
             ) : null}
           </button>
         )}
         {editingConversationId === conversation.id ? (
           <span className="mr-1 size-8 shrink-0" aria-hidden="true" data-testid="conversation-action-placeholder" />
-        ) : conversationMenu(conversation, pinned)}
+        ) : (
+          <div className="agent-sidebar-item__actions">
+            {conversationActionButton(conversation, pinned, {
+              className: conversation.pinned ? 'is-pinned' : '',
+              label: conversation.pinned ? t('取消置顶', 'Unpin') : t('置顶', 'Pin'),
+              testId: conversation.pinned ? 'conversation-pinned-mark' : undefined,
+              onClick: () => onSetPinned?.(conversation.id, !conversation.pinned),
+              children: <Pin className="size-3.5" />,
+            })}
+            {conversationActionButton(conversation, pinned, {
+              label: t('归档', 'Archive'),
+              onClick: () => setPendingAction({ conversation, action: 'archive' }),
+              children: <Archive className="size-3.5" />,
+            })}
+          </div>
+        )}
       </div>
     )
   }
@@ -558,6 +672,21 @@ export default function ContextSidebar({
       ) : null}
       <div className="agent-sidebar__inner flex min-h-0 shrink-0 flex-col" style={innerStyle}>
         <div className="agent-sidebar__head relative mb-2.5 h-10 shrink-0">
+          {activeSection === 'settings' ? (
+            <button
+              type="button"
+              className="agent-sidebar__workspace app-no-drag absolute inset-x-2 top-1 flex h-8 items-center rounded-[8px] px-2 text-left"
+              aria-label={t('返回', 'Back')}
+              title={t('返回', 'Back')}
+              onClick={onCloseSettings}
+            >
+              <ChevronLeft className="size-4 shrink-0" />
+              <span className="agent-sidebar__copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium">
+                {t('设置', 'Settings')}
+              </span>
+            </button>
+          ) : (
+          <>
           <button
             ref={workspaceButton}
             type="button"
@@ -611,8 +740,35 @@ export default function ContextSidebar({
           >
             <PanelLeftOpen className="size-4" />
           </button>
+          </>
+          )}
         </div>
 
+        {activeSection === 'settings' ? (
+        <nav className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto" aria-label={t('设置分类', 'Settings categories')}>
+          {SETTINGS_SIDEBAR_ITEMS.map(item => {
+            const Icon = settingsNavIcons[item.value]
+            const current = settingsCategory === item.value
+            return (
+              <button
+                key={item.value}
+                type="button"
+                className={`agent-sidebar-row app-no-drag mx-2 flex h-8 items-center rounded-[8px] px-2 text-left${current ? ' is-current' : ''}`}
+                aria-current={current ? 'page' : undefined}
+                onClick={() => onSelectSettingsCategory?.(item.value)}
+              >
+                <span className="flex size-5 shrink-0 items-center justify-center">
+                  <Icon className="size-4" />
+                </span>
+                <span className="agent-sidebar__copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium">
+                  {item.label()}
+                </span>
+              </button>
+            )
+          })}
+        </nav>
+        ) : (
+        <>
         <nav className="flex flex-col gap-px" aria-label={t('工作区', 'Workspaces')}>
           <button
             type="button"
@@ -650,51 +806,17 @@ export default function ContextSidebar({
 
         <div className="agent-sidebar__chats mt-3 min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           <div className="agent-sidebar-search relative mx-2 mb-1 h-8">
-            {!searchOpen ? (
-              <div className="agent-sidebar__copy absolute inset-0 flex items-center gap-1.5 px-2 text-[12.5px] font-medium text-muted-foreground">
-                {t('会话', 'Chats')}
-              </div>
-            ) : null}
-            {!searchOpen ? (
-              <button
-                type="button"
-                className="agent-sidebar__icon absolute right-0 top-0 z-10 flex size-8 items-center justify-center rounded-[8px]"
-                aria-label={t('搜索任务', 'Search tasks')}
-                aria-expanded={false}
-                onClick={() => setSearchOpen(true)}
-              >
-                <Search className="size-3.5" />
-              </button>
-            ) : null}
-            {searchOpen ? (
-              <div className="absolute inset-0 z-20 flex h-8 items-center overflow-hidden rounded-[8px] bg-muted/70">
-                <Search className="ml-2 size-3.5 shrink-0 text-muted-foreground" />
-                <input
-                  value={query}
-                  onChange={event => setQuery(event.target.value)}
-                  className="coding-sidebar-control ml-1.5 min-w-0 flex-1 bg-transparent text-[13px] outline-none"
-                  placeholder={t('搜索任务', 'Search tasks')}
-                  aria-label={t('搜索任务', 'Search tasks')}
-                  onKeyDown={event => {
-                    if (event.key === 'Escape') {
-                      setSearchOpen(false)
-                      setQuery('')
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground"
-                  aria-label={t('关闭搜索', 'Close search')}
-                  onClick={() => {
-                    setSearchOpen(false)
-                    setQuery('')
-                  }}
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-            ) : null}
+            <div className="agent-sidebar__copy absolute inset-0 flex items-center gap-1.5 px-2 text-[12.5px] font-medium text-muted-foreground">
+              {t('会话', 'Chats')}
+            </div>
+            <button
+              type="button"
+              className="agent-sidebar__icon absolute right-0 top-0 z-10 flex size-8 items-center justify-center rounded-[8px]"
+              aria-label={t('搜索任务', 'Search tasks')}
+              onClick={() => onOpenCommandPanel?.()}
+            >
+              <Search className="size-3.5" />
+            </button>
           </div>
 
           <div ref={conversationList} className="coding-conversation-list pb-3" data-plugin-surface="workspace-list">
@@ -710,7 +832,14 @@ export default function ContextSidebar({
                           onClick={event => openSingleConversation(event, group)}
                         >
                           <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
-                            <Folder className="size-4" />
+                            {group.key === PINNED_GROUP_KEY ? (
+                              <Pin className="size-4" />
+                            ) : (
+                              <>
+                                <Folder className="folder-closed size-4" />
+                                <FolderOpen className="folder-open size-4" />
+                              </>
+                            )}
                           </span>
                           <span className="agent-sidebar__copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium">{group.name}</span>
                           {group.path ? (
@@ -767,13 +896,11 @@ export default function ContextSidebar({
                   </details>
                 ) : null}
               </div>
-            ) : query.trim() ? (
-              <p className="agent-sidebar__copy mx-2 px-2 py-2 text-[12.5px] text-muted-foreground">
-                {t('没有匹配的会话', 'No matching chats')}
-              </p>
             ) : null}
           </div>
         </div>
+        </>
+        )}
 
         <div className="agent-sidebar__foot">
           {appVersion ? (
@@ -781,23 +908,17 @@ export default function ContextSidebar({
           ) : (
             <span className="agent-sidebar__copy min-w-0 flex-1" />
           )}
-          {updateAction ? (
+          {updateVisible ? (
             <button
               type="button"
-              className="agent-sidebar__theme agent-sidebar__update app-no-drag"
-              data-testid="sidebar-download-update"
-              disabled={updateAction === 'progress'}
+              className="agent-sidebar__update app-no-drag"
+              data-testid="sidebar-apply-update"
+              disabled={updateDownloading}
               aria-label={updateButtonLabel}
               title={updateButtonTitle}
-              onClick={() => updateAction === 'install' ? onInstallUpdate?.() : onDownloadUpdate?.()}
+              onClick={() => onApplyUpdate?.()}
             >
-              {updateAction === 'progress' ? (
-                <span className="agent-sidebar__update-progress">{updatePercent.toFixed(0)}</span>
-              ) : updateStatus?.state === 'error' ? (
-                <CircleAlert className="size-4" />
-              ) : (
-                <ArrowDownToLine className="size-4" />
-              )}
+              {updateButtonLabel}
             </button>
           ) : null}
           <button
@@ -823,7 +944,7 @@ export default function ContextSidebar({
         </div>
       </div>
 
-      {workspaceOpen && !collapsed
+      {workspaceOpen && !collapsed && activeSection !== 'settings'
         ? createPortal(
           <section
             data-workspace-menu
@@ -888,6 +1009,84 @@ export default function ContextSidebar({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {conversationMenu
+        ? createPortal(
+          <section
+            data-conversation-menu
+            className={`${menuContentClass} conversation-row-menu app-no-drag w-44`}
+            style={conversationMenuPosition(conversationMenu.x, conversationMenu.y)}
+            aria-label={t('会话操作', 'Chat actions')}
+            onContextMenu={event => event.preventDefault()}
+          >
+            <button
+              type="button"
+              className={`${menuItemClass} conversation-row-menu__item`}
+              onClick={() => runConversationMenuAction(() => onSetPinned?.(conversationMenu.conversation.id, !conversationMenu.conversation.pinned))}
+            >
+              {conversationMenu.conversation.pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+              {conversationMenu.conversation.pinned ? t('取消置顶', 'Unpin') : t('置顶', 'Pin')}
+            </button>
+            {conversationMenu.showPinnedMove && conversationMenu.conversation.pinned ? (
+              <>
+                <button
+                  type="button"
+                  className={`${menuItemClass} conversation-row-menu__item`}
+                  onClick={() => runConversationMenuAction(() => onMovePinned?.(conversationMenu.conversation.id, -1))}
+                >
+                  <ArrowUp className="size-4" />{t('上移', 'Move up')}
+                </button>
+                <button
+                  type="button"
+                  className={`${menuItemClass} conversation-row-menu__item`}
+                  onClick={() => runConversationMenuAction(() => onMovePinned?.(conversationMenu.conversation.id, 1))}
+                >
+                  <ArrowDown className="size-4" />{t('下移', 'Move down')}
+                </button>
+              </>
+            ) : null}
+            <div className={menuSeparatorClass} />
+            <button
+              type="button"
+              className={`${menuItemClass} conversation-row-menu__item`}
+              onClick={() => runConversationMenuAction(() => startRename(conversationMenu.conversation))}
+            >
+              <Pencil className="size-4" />{t('重命名', 'Rename')}
+            </button>
+            <button
+              type="button"
+              className={`${menuItemClass} conversation-row-menu__item`}
+              onClick={() => runConversationMenuAction(() => onForkConversation?.(conversationMenu.conversation.id))}
+            >
+              <GitFork className="size-4" />{t('Fork', 'Fork')}
+            </button>
+            <button
+              type="button"
+              className={`${menuItemClass} conversation-row-menu__item`}
+              onClick={() => runConversationMenuAction(() => { void copyConversation(conversationMenu.conversation) })}
+            >
+              <Copy className="size-4" />{t('复制', 'Copy')}
+            </button>
+            <div className={menuSeparatorClass} />
+            <button
+              type="button"
+              className={`${menuItemClass} conversation-row-menu__item`}
+              onClick={() => runConversationMenuAction(() => setPendingAction({ conversation: conversationMenu.conversation, action: 'archive' }))}
+            >
+              <Archive className="size-4" />{t('归档', 'Archive')}
+            </button>
+            <button
+              type="button"
+              className={`${menuItemClass} conversation-row-menu__item text-destructive focus:text-destructive`}
+              onClick={() => runConversationMenuAction(() => setPendingAction({ conversation: conversationMenu.conversation, action: 'delete' }))}
+            >
+              <Trash2 className="size-4" />{t('删除', 'Delete')}
+            </button>
+          </section>,
+          document.body,
+        )
+        : null}
+
       <style>{contextSidebarCss}</style>
     </div>
   )
@@ -928,24 +1127,74 @@ const contextSidebarCss = `
 .agent-sidebar-item .agent-sidebar-row,
 .agent-sidebar-item .agent-sidebar-row:hover,
 .agent-sidebar-item .agent-sidebar-row.is-current,
-.agent-sidebar-item__menu,
-.agent-sidebar-item__menu:hover,
-.agent-sidebar-item__menu:focus-visible,
-.agent-sidebar-item__menu[data-state='open'] { background: transparent; }
-.agent-sidebar-item__menu {
+.agent-sidebar-item__action,
+.agent-sidebar-item__action:hover,
+.agent-sidebar-item__action:focus-visible,
+.agent-sidebar-item__action.is-open { background: transparent; }
+.agent-sidebar-item { position: relative; }
+.agent-sidebar-item__actions {
+  position: absolute;
+  top: 50%;
+  right: 0.125rem;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  align-items: center;
+  transform: translateY(-50%);
+}
+.agent-sidebar-item__age {
+  min-width: 1.75rem;
+  max-width: 2.25rem;
+  flex: none;
+  margin-left: 0.25rem;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+  text-align: right;
+  white-space: nowrap;
+}
+.agent-sidebar-item:hover .agent-sidebar-item__age,
+.agent-sidebar-item:focus-within .agent-sidebar-item__age,
+.agent-sidebar-item.is-menu-open .agent-sidebar-item__age { opacity: 0; }
+.agent-sidebar-item:has(.agent-sidebar-item__action.is-pinned) .agent-sidebar-row {
+  padding-right: 1.75rem;
+}
+.agent-sidebar-item__action {
   display: grid;
-  width: 2rem;
-  height: 2rem;
+  width: 1.75rem;
+  height: 1.75rem;
   flex: none;
   place-items: center;
   border: 0;
+  border-radius: 8px;
   color: inherit;
   cursor: pointer;
   opacity: 0;
 }
-.agent-sidebar-item:hover .agent-sidebar-item__menu,
-.agent-sidebar-item:focus-within .agent-sidebar-item__menu,
-.agent-sidebar-item__menu[data-state='open'] { opacity: 1; }
+.agent-sidebar-item__action:hover,
+.agent-sidebar-item__action:focus-visible,
+.agent-sidebar-item__action.is-open { background: var(--hover-2); }
+.agent-sidebar-item:hover .agent-sidebar-item__action,
+.agent-sidebar-item:focus-within .agent-sidebar-item__action,
+.agent-sidebar-item.is-menu-open .agent-sidebar-item__action,
+.agent-sidebar-item__action.is-pinned,
+.agent-sidebar-item__action.is-open { opacity: 1; }
+.conversation-row-menu {
+  z-index: 60;
+}
+.conversation-row-menu__item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.conversation-row-menu__item:hover,
+.conversation-row-menu__item:focus-visible { background: var(--hover-2); outline: 0; }
 .agent-sidebar-row { color: var(--foreground); }
 .coding-sidebar-control {
   font-size: var(--text-label);
@@ -957,6 +1206,10 @@ const contextSidebarCss = `
 .coding-temporary-group > summary { list-style: none; }
 .coding-project-group > summary::-webkit-details-marker,
 .coding-temporary-group > summary::-webkit-details-marker { display: none; }
+.coding-project-group:not([open]) .folder-open,
+.coding-temporary-group:not([open]) .folder-open { display: none; }
+.coding-project-group[open] .folder-closed,
+.coding-temporary-group[open] .folder-closed { display: none; }
 .coding-project-child { display: flex; align-items: center; }
 .coding-session-status {
   position: absolute;
@@ -1012,8 +1265,25 @@ const contextSidebarCss = `
 }
 .agent-sidebar__theme:hover,
 .agent-sidebar__theme.is-current { background: var(--hover-2); }
+.agent-sidebar__update {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0 0.4rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--update);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.agent-sidebar__update:hover { background: var(--hover-2); }
 .agent-sidebar__update:disabled { cursor: default; opacity: 0.8; }
-.agent-sidebar__update-progress { font-size: 10px; font-variant-numeric: tabular-nums; }
 .agent-sidebar[data-sidebar-collapsed='true'] .agent-sidebar__foot {
   align-self: flex-start;
   width: 52px;

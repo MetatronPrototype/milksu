@@ -154,6 +154,17 @@ export function resolveModelContextWindow(
   return catalogValue
 }
 
+export function formatContextWindowSize(tokens?: number) {
+  const value = Math.floor(Number(tokens) || 0)
+  if (value <= 0) return ''
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000
+    return Number.isInteger(millions) ? `${millions}M` : `${millions.toFixed(1).replace(/\.0$/, '')}M`
+  }
+  if (value >= 1000) return `${Math.round(value / 1000)}K`
+  return String(value)
+}
+
 export function resolveModelMaxTokens(
   id: string | undefined,
   catalogMax?: number,

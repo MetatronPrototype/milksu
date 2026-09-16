@@ -165,6 +165,7 @@ export type CodingGitAction =
   | 'commit'
   | 'push'
   | 'checkout'
+  | 'create-branch'
 
 export type CodingGitHunkAction =
   | 'stage-hunk'

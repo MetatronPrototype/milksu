@@ -128,6 +128,7 @@
   --warning-border: rgb(234 179 8 / 0.28);
   --info: #9c9c9c;
   --info-foreground: #d0d0d0;
+  --update: #5b9fff;
   --info-soft: rgb(161 161 170 / 0.12);
   --info-border: rgb(161 161 170 / 0.28);
   --destructive: #ef4444;
@@ -296,6 +297,7 @@
   --warning-border: rgb(164 103 0 / 0.28);
   --info: #6b6b6b;
   --info-foreground: #525252;
+  --update: #2563eb;
   --info-soft: rgb(107 107 107 / 0.1);
   --info-border: rgb(107 107 107 / 0.24);
   --destructive: #be1744;

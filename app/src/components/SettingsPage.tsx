@@ -2,29 +2,10 @@ import { createStore, useStore, useStoreRuntime } from '@/lib/reactStore'
 import { useEffect, useRef } from 'react'
 import {
   AlertCircle,
-  Archive,
-  ArrowLeft,
-  Box,
-  Bug,
-  BookMarked,
   Check,
-  Copy,
-  Download,
-  FileWarning,
-  Flag,
-  FlaskConical,
-  FolderOpen,
-  Gauge,
-  Globe2,
-  KeyRound,
   LogOut,
-  Plug,
   Plus,
-  Puzzle,
-  RotateCcw,
-  Settings2,
   Trash2,
-  WalletCards,
 } from 'lucide-react'
 import {
   Alert,
@@ -92,6 +73,8 @@ import {
   type PickerServiceGroup,
 } from '@/modelCatalog'
 import { GitHubIcon } from '@/components/GitHubIcon'
+import SearchableModelPicker from '@/components/SearchableModelPicker'
+import type { SearchableModelGroup } from '@/lib/modelPickerSearch'
 import VulnerabilityIntelSettingsPanel from '@/components/VulnerabilityIntelSettingsPanel'
 import SettingsMCPPanel from '@/components/SettingsMCPPanel'
 import EvalSettingsPanel from '@/components/EvalSettingsPanel'
@@ -115,6 +98,7 @@ import {
 } from '@/agentResourceTypes'
 import {
   EXTERNAL_EDITORS,
+  externalEditorLabel,
   normalizePreferredExternalEditor,
 } from '@/lib/externalEditor'
 import ExternalEditorIcon from '@/components/ExternalEditorIcon'
@@ -131,9 +115,13 @@ import {
 import { resolveModelContextWindow } from '@/lib/knownContextWindow'
 import type { ResolvedThemeMode } from '@/lib/themeMode'
 import { useT } from '@/hooks/useUiLocale'
+import {
+  normalizeSettingsCategory,
+  settingsCategoryLabel,
+  type NormalizedSettingsCategory,
+  type SettingsCategory,
+} from '@/lib/settingsNavigation'
 
-type SettingsCategory = 'general' | 'apikeys' | 'ctf' | 'cve' | 'lab' | 'coding' | 'skills' | 'mcp' | 'chats' | 'browser' | 'security-tools' | 'eval' | 'plugins'
-type NormalizedSettingsCategory = Exclude<SettingsCategory, 'security-tools' | 'coding'>
 type SettingsNotice = { tone: 'ok' | 'error'; text: string }
 type PendingCustomRelay = { id: string; config: ProviderConfig }
 
@@ -178,12 +166,6 @@ type SettingsState = {
   debugModeOn: boolean
 }
 
-function normalizeSettingsCategory(value: SettingsCategory): NormalizedSettingsCategory {
-  if (value === 'security-tools') return 'mcp'
-  if (value === 'coding') return 'skills'
-  return value
-}
-
 type CodingToolSkillSnapshot = {
   name: string
   status: 'found' | 'missing' | 'needs_setup' | 'configuring' | 'failed'
@@ -213,7 +195,6 @@ export default function SettingsPage({
   accountStatus,
   vulnerabilityDashboard,
   resolvedTheme,
-  onClose,
   onSettingsChange,
   onAccountLogin,
   onAccountLogout,
@@ -310,6 +291,15 @@ export default function SettingsPage({
   const defaultModelAvailable = store.defaultModelAvailable()
   const availableModelCount = store.availableModelCount()
   const defaultModelLabel = store.defaultModelLabel()
+  const searchablePickerGroups: SearchableModelGroup[] = availablePickerGroups.map(group => ({
+    key: group.key,
+    label: group.label,
+    models: group.models.map(model => ({
+      value: encodePickerSelection(group.providerId, model, group.source),
+      label: store.availablePickerModelLabel(group, model),
+      model,
+    })),
+  }))
   const thinkingModelID = store.thinkingModelID()
   const thinkingModelLabel = store.thinkingModelLabel()
   const thinkingOverride = store.thinkingOverride()
@@ -333,56 +323,17 @@ export default function SettingsPage({
   const browserBridgeConnected = store.browserBridgeConnected()
   const browserPairingReady = store.browserPairingReady()
   const browserExtensionReady = store.browserExtensionReady()
-  const settingsCategories = store.settingsCategories()
   const dashboard = vulnerabilityDashboard
-
-  const categoryIcons = {
-    general: Settings2,
-    apikeys: Box,
-    ctf: Flag,
-    cve: Bug,
-    lab: FlaskConical,
-    skills: BookMarked,
-    mcp: Plug,
-    chats: Archive,
-    browser: Globe2,
-    eval: Gauge,
-    plugins: Puzzle,
-  } as const
 
   return (
     <main className="settings-page flex min-w-0 flex-1 flex-col bg-background">
-      <header className="app-drag settings-page-header shell-window-control-safe-x flex h-14 shrink-0 items-center border-b border-border bg-background pl-5 text-foreground">
-        <Button variant="ghost" size="icon-sm" className="app-no-drag mr-3" aria-label={t('返回', 'Back')} onClick={onClose}>
-          <ArrowLeft className="size-4" />
-        </Button>
+      <header className="app-drag settings-page-header shell-window-control-safe-x flex h-14 shrink-0 items-center border-b border-border bg-background px-5 text-foreground">
         <p className="text-lg font-semibold tracking-[-0.02em]">
-          {settingsCategories.find(item => item.value === category)?.label}
+          {settingsCategoryLabel(category)}
         </p>
       </header>
 
       <div className="settings-layout flex min-h-0 flex-1">
-        <nav className="settings-nav settings-nav-surface app-no-drag w-56 shrink-0 border-r px-3 py-5" aria-label={t('设置分类', 'Settings categories')} data-plugin-surface="workspace-list">
-          <div className="grid gap-0.5">
-              {settingsCategories.map(item => {
-                const Icon = categoryIcons[item.value]
-                return (
-                  <button
-                    key={item.value}
-                    type="button"
-                    className={`settings-nav-item${category === item.value ? ' active' : ''}`}
-                    aria-selected={category === item.value}
-                    aria-current={category === item.value ? 'page' : undefined}
-                    onClick={() => store.selectCategory(item.value)}
-                  >
-                    <Icon className="mr-3 size-4 shrink-0" />
-                    <span>{item.label}</span>
-                  </button>
-                )
-              })}
-          </div>
-        </nav>
-
         <div className="page-scroll min-w-0 flex-1">
           <div className="page-column page-stack" data-plugin-surface="workspace-list">
             {notice ? (
@@ -425,6 +376,7 @@ export default function SettingsPage({
                     label={t('界面语言', 'Interface language')}
                     trailing={(
                       <NativeSelect
+                        className="settings-control"
                         value={working.locale ?? 'zh'}
                         aria-label={t('界面语言', 'Interface language')}
                         onChange={event => void store.changeLocale(event.target.value)}
@@ -440,23 +392,32 @@ export default function SettingsPage({
                     label={t('打开文件', 'Open files')}
                     divider={false}
                     trailing={(
-                      <div className="flex items-center gap-2">
-                        <ExternalEditorIcon editor={working.preferred_external_editor} />
-                        <NativeSelect
-                          value={normalizePreferredExternalEditor(working.preferred_external_editor)}
-                          aria-label={t('打开文件的编辑器', 'Editor for opening files')}
-                          onChange={event => {
-                            store.patchWorking(value => { value.preferred_external_editor = String(event.target.value) })
-                            void store.save()
-                          }}
-                        >
+                      <Select
+                        value={normalizePreferredExternalEditor(working.preferred_external_editor)}
+                        onValueChange={value => {
+                          store.patchWorking(next => { next.preferred_external_editor = value })
+                          void store.save()
+                        }}
+                      >
+                        <SelectTrigger className="settings-control" aria-label={t('打开文件的编辑器', 'Editor for opening files')}>
+                          <SelectValue>
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              <ExternalEditorIcon editor={working.preferred_external_editor} decorative />
+                              <span className="min-w-0 truncate">{externalEditorLabel(working.preferred_external_editor)}</span>
+                            </span>
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
                           {EXTERNAL_EDITORS.map(editor => (
-                            <NativeSelectOption key={editor.id} value={editor.id}>
-                              {editor.label}
-                            </NativeSelectOption>
+                            <SelectItem key={editor.id} value={editor.id}>
+                              <span className="inline-flex min-w-0 items-center gap-2">
+                                <ExternalEditorIcon editor={editor.id} decorative />
+                                <span className="min-w-0 truncate">{editor.label}</span>
+                              </span>
+                            </SelectItem>
                           ))}
-                        </NativeSelect>
-                      </div>
+                        </SelectContent>
+                      </Select>
                     )}
                   />
                 </SettingsSection>
@@ -470,90 +431,80 @@ export default function SettingsPage({
                 </SettingsSection>
                 <SettingsSection title={t('本地数据', 'Local data')}>
                   <SettingsRow
-                    stack="always"
-                    label={t('数据与备份', 'Data and backups')}
+                    label={t('数据目录', 'Data folder')}
                     description={localDataLoading
-                      ? t('正在统计本地数据', 'Counting local data')
+                      ? t('正在统计', 'Counting')
                       : localData
                         ? t(`${localData.fileCount} 个文件 · ${store.formatBytes(localData.bytes)}`, `${localData.fileCount} files · ${store.formatBytes(localData.bytes)}`)
                         : ''}
-                  >
-                    {localData?.directory ? (
-                      <p className="mb-3 truncate font-mono text-caption text-muted-foreground" title={localData.directory}>
-                        {localData.directory}
-                      </p>
-                    ) : null}
-                    <div className="flex flex-wrap gap-2">
+                    trailing={(
                       <Button variant="outline" size="sm" onClick={() => void store.revealLocalData()}>
-                        <FolderOpen className="size-3.5" />
-                        {t('打开数据目录', 'Open data folder')}
+                        {t('打开', 'Open')}
                       </Button>
-                      <Button variant="outline" size="sm" disabled={backupExporting} onClick={() => void store.exportLocalDataBackup()}>
-                        <Download className="size-3.5" />
-                        {t('导出安全备份', 'Export a safe backup')}
-                      </Button>
-                      <Button variant="outline" size="sm" disabled={restoreScheduling} onClick={() => void store.scheduleLocalDataRestore()}>
-                        <RotateCcw className="size-3.5" />
-                        {t('从备份恢复', 'Restore from backup')}
-                      </Button>
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('备份', 'Backup')}
+                    description={t('导出或恢复本地数据，不含 Provider Key。', 'Export or restore local data. Provider keys are not included.')}
+                    trailing={(
+                      <>
+                        <Button variant="outline" size="sm" disabled={backupExporting} onClick={() => void store.exportLocalDataBackup()}>
+                          {t('导出', 'Export')}
+                        </Button>
+                        <Button variant="outline" size="sm" disabled={restoreScheduling} onClick={() => void store.scheduleLocalDataRestore()}>
+                          {t('恢复', 'Restore')}
+                        </Button>
+                      </>
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('诊断', 'Diagnostics')}
+                    description={t('给排障用的日志包。', 'A log bundle for troubleshooting.')}
+                    divider={Boolean(localData?.databases?.some(database => database.state !== 'compatible'))}
+                    trailing={(
                       <Button variant="outline" size="sm" disabled={diagnosticExporting} onClick={() => void store.exportLocalDiagnostics()}>
-                        <FileWarning className="size-3.5" />
-                        {t('导出诊断包', 'Export diagnostics')}
+                        {t('导出', 'Export')}
                       </Button>
-                    </div>
-                  </SettingsRow>
-                  {localData?.databases?.length ? (
-                    <SettingsRow stack="always" label={t('数据库兼容性', 'Database compatibility')}>
-                      <ul className="flex min-w-0 flex-col gap-3">
-                        {localData.databases.map(database => (
-                          <li key={database.relativePath} className="min-w-0 rounded-lg border border-border bg-muted/30 p-3">
-                            <div className="flex min-w-0 flex-col items-start gap-y-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2">
-                              <span className="min-w-0 text-control font-medium">{database.logicalName}</span>
-                              <Badge variant={databaseStateVariants[database.state]} className="min-w-0">
-                                {databaseStateLabels[database.state]}
-                              </Badge>
-                              {store.databaseVersionText(database) ? (
-                                <span className="min-w-0 text-caption text-muted-foreground">
-                                  {store.databaseVersionText(database)}
-                                </span>
-                              ) : null}
-                            </div>
-                            <p className="mt-0.5 break-all font-mono text-caption text-muted-foreground" title={database.relativePath}>
-                              {database.relativePath}
-                            </p>
-                            {database.error ? <p className="break-words text-caption text-destructive">{database.error}</p> : null}
-                          </li>
-                        ))}
-                      </ul>
-                    </SettingsRow>
-                  ) : null}
+                    )}
+                  />
+                  {(localData?.databases ?? []).filter(database => database.state !== 'compatible').map((database, index, list) => (
+                    <SettingsRow
+                      key={database.relativePath}
+                      label={database.logicalName}
+                      description={database.error || store.databaseVersionText(database)}
+                      divider={index < list.length - 1}
+                      trailing={(
+                        <Badge variant={databaseStateVariants[database.state]}>
+                          {databaseStateLabels[database.state]}
+                        </Badge>
+                      )}
+                    />
+                  ))}
                 </SettingsSection>
 
-                <SettingsSection title={t('构建追踪', 'Build tracking')} className="border-t border-border pt-6">
-                  <SettingsRow stack="always" label={t('可复制构建追踪', 'Copyable build tracking')}>
-                    {buildTracking ? (
-                      <div
-                        className="rounded-xl border border-border bg-muted/30 p-3 font-mono text-caption leading-5 text-foreground"
-                        aria-label={t('构建追踪', 'Build tracking')}
+                <SettingsSection title={t('构建', 'Build')}>
+                  <SettingsRow
+                    label={t('构建追踪', 'Build tracking')}
+                    description={buildTracking
+                      ? `${buildTracking.gitBranch || '—'} · ${(buildTracking.gitCommit || '').slice(0, 7) || '—'} · ${
+                        buildTracking.development ? 'development'
+                          : buildTracking.missing ? t('缺失', 'missing')
+                            : buildTracking.dirty ? 'dirty'
+                              : 'clean'
+                      }`
+                      : t('未能读取构建追踪。', 'Could not read build tracking.')}
+                    trailing={(
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!buildTracking || buildTrackingCopying}
                         data-testid="build-tracking"
+                        onClick={() => void store.copyBuildTracking()}
                       >
-                        <pre className="whitespace-pre-wrap break-all">{store.formatBuildTrackingText(buildTracking)}</pre>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <Button variant="outline" size="sm" disabled={buildTrackingCopying} onClick={() => void store.copyBuildTracking()}>
-                            <Copy className="size-3.5" />
-                            {t('复制完整追踪', 'Copy full tracking')}
-                          </Button>
-                          {buildTracking.channel === 'beta' && !buildTracking.development ? <Badge variant="secondary">BETA</Badge> : null}
-                          {buildTracking.development ? <Badge variant="outline">development/unpackaged</Badge>
-                            : buildTracking.missing ? <Badge variant="destructive">{t('sealed provenance 缺失', 'sealed provenance missing')}</Badge>
-                              : buildTracking.dirty ? <Badge variant="outline">dirty</Badge>
-                                : <Badge variant="outline">clean</Badge>}
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="text-caption text-muted-foreground">{t('未能读取构建追踪。', 'Could not read build tracking.')}</p>
+                        {t('复制', 'Copy')}
+                      </Button>
                     )}
-                  </SettingsRow>
+                  />
                   <SettingsRow
                     label={t('调试模式', 'Debug mode')}
                     divider={false}
@@ -628,15 +579,10 @@ export default function SettingsPage({
                 {editingBuiltinSkill ? (
                   <SettingsSection
                     title={t('编辑内置 Skill', 'Edit built-in Skill')}
-                    footer={(
-                      <div className="flex items-center justify-end gap-2">
-                        <Button type="button" variant="outline" size="sm" disabled={userSkillBusy} onClick={() => store.closeBuiltinSkillEditor()}>
-                          {t('取消', 'Cancel')}
-                        </Button>
-                        <Button type="button" size="sm" disabled={userSkillBusy} onClick={() => void store.saveBuiltinSkill()}>
-                          {t('保存', 'Save')}
-                        </Button>
-                      </div>
+                    actions={(
+                      <Button type="button" variant="ghost" size="sm" disabled={userSkillBusy} onClick={() => store.closeBuiltinSkillEditor()}>
+                        {t('关闭', 'Close')}
+                      </Button>
                     )}
                   >
                     <SettingsRow
@@ -646,6 +592,7 @@ export default function SettingsPage({
                         <Textarea
                           value={builtinSkillDocument}
                           onChange={event => { store.setBuiltinSkillDocument(event.target.value) }}
+                          onBlur={() => void store.saveBuiltinSkill()}
                           className="w-[28rem] max-w-full min-h-48"
                           disabled={userSkillBusy}
                           aria-label={t('Skill 文档', 'Skill document')}
@@ -833,86 +780,53 @@ export default function SettingsPage({
                       ? t('当前默认模型不可用', 'The current default model is unavailable')
                       : ''}
                     trailing={(
-                      <Select value={defaultModelKey} onValueChange={value => { store.setDefaultModelKey(value) }}>
-                        <SelectTrigger id="default-model" className="w-72 max-w-full" aria-label={t('默认模型', 'Default model')}>
-                          <SelectValue>
-                            <span className="inline-flex min-w-0 items-center gap-2">
-                              <ModelVendorIcon model={working?.active_model ?? ''} label={defaultModelLabel} />
-                              <span className="min-w-0 truncate">{defaultModelLabel}</span>
-                            </span>
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent className="min-w-96">
-                          {!defaultModelAvailable && defaultModelKey ? (
-                            <SelectGroup>
-                              <SelectLabel>{t('当前选择', 'Current selection')}</SelectLabel>
-                              <SelectItem value={defaultModelKey} disabled>
-                                <span className="inline-flex min-w-0 items-center gap-2">
-                                  <ModelVendorIcon model={working?.active_model ?? ''} label={defaultModelLabel} />
-                                  <span className="min-w-0 truncate">{t(`${defaultModelLabel}（当前不可用）`, `${defaultModelLabel} (unavailable)`)}</span>
-                                </span>
-                              </SelectItem>
-                            </SelectGroup>
-                          ) : null}
-                          {!defaultModelAvailable && availablePickerGroups.length ? <SelectSeparator /> : null}
-                          {availablePickerGroups.map((group, groupIndex) => (
-                            <SelectGroup key={group.key}>
-                              {groupIndex > 0 || (!defaultModelAvailable && defaultModelKey) ? <SelectSeparator /> : null}
-                              <SelectLabel>{group.label}</SelectLabel>
-                              {group.models.map(model => (
-                                <SelectItem key={`${group.key}:${model}`} value={encodePickerSelection(group.providerId, model, group.source)}>
-                                  <span className="inline-flex min-w-0 items-center gap-2">
-                                    <ModelVendorIcon model={model} label={store.availablePickerModelLabel(group, model)} />
-                                    <span className="min-w-0 truncate">{store.availablePickerModelLabel(group, model)}</span>
-                                  </span>
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <SearchableModelPicker
+                        value={defaultModelKey}
+                        triggerClassName="settings-control h-7 px-2"
+                        ariaLabel={t('默认模型', 'Default model')}
+                        align="end"
+                        trigger={(
+                          <span className="inline-flex min-w-0 items-center gap-2">
+                            <ModelVendorIcon model={working?.active_model ?? ''} label={defaultModelLabel} />
+                            <span className="min-w-0 truncate">{defaultModelLabel}</span>
+                          </span>
+                        )}
+                        leading={!defaultModelAvailable && defaultModelKey ? [{
+                          value: defaultModelKey,
+                          label: t(`${defaultModelLabel}（当前不可用）`, `${defaultModelLabel} (unavailable)`),
+                          model: working?.active_model ?? '',
+                          disabled: true,
+                        }] : undefined}
+                        groups={searchablePickerGroups}
+                        onChange={value => store.setDefaultModelKey(value)}
+                      />
                     )}
                   />
                   <SettingsRow
                     label={t('subagent', 'subagent')}
                     divider={false}
                     trailing={(
-                      <Select value={workerModelKey} onValueChange={value => { store.setWorkerModelKey(value) }}>
-                        <SelectTrigger id="worker-model" className="w-72 max-w-full" aria-label={t('subagent', 'subagent')}>
-                          <SelectValue>
-                            <span className="min-w-0 truncate">{workerModelLabel}</span>
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent className="min-w-96">
-                          <SelectGroup>
-                            <SelectItem value={WORKER_MODEL_INHERIT}>
-                              {t('跟随当前对话', 'Follow current conversation')}
-                            </SelectItem>
-                          </SelectGroup>
-                          {availablePickerGroups.length ? <SelectSeparator /> : null}
-                          {availablePickerGroups.map((group, groupIndex) => (
-                            <SelectGroup key={group.key}>
-                              {groupIndex > 0 ? <SelectSeparator /> : null}
-                              <SelectLabel>{group.label}</SelectLabel>
-                              {group.models.map(model => (
-                                <SelectItem key={`${group.key}:${model}`} value={encodePickerSelection(group.providerId, model, group.source)}>
-                                  <span className="inline-flex min-w-0 items-center gap-2">
-                                    <ModelVendorIcon model={model} label={store.availablePickerModelLabel(group, model)} />
-                                    <span className="min-w-0 truncate">{store.availablePickerModelLabel(group, model)}</span>
-                                  </span>
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <SearchableModelPicker
+                        value={workerModelKey}
+                        triggerClassName="settings-control h-7 px-2"
+                        ariaLabel={t('subagent', 'subagent')}
+                        align="end"
+                        trigger={<span className="min-w-0 truncate">{workerModelLabel}</span>}
+                        leading={[{
+                          value: WORKER_MODEL_INHERIT,
+                          label: t('跟随当前对话', 'Follow current conversation'),
+                          model: '',
+                        }]}
+                        groups={searchablePickerGroups}
+                        onChange={value => store.setWorkerModelKey(value)}
+                      />
                     )}
                   />
                 </SettingsSection>
 
-                <section>
-                  <div className="flex items-center justify-between gap-4">
-                    <h2 className="text-title font-semibold">{t('模型服务', 'Model services')}</h2>
+                <SettingsSection
+                  title={t('模型服务', 'Model services')}
+                  actions={(
                     <Button
                       variant="outline"
                       size="icon-sm"
@@ -922,108 +836,80 @@ export default function SettingsPage({
                     >
                       <Plus className="size-4" />
                     </Button>
-                  </div>
-
-                  <div className="model-service-list mt-4 overflow-hidden rounded-lg border border-border bg-card">
-                    {modelServiceRows.map(row => (
-                      <article
-                        key={row.key}
-                        className="model-service-row grid min-h-20 grid-cols-[48px_minmax(170px,1fr)_minmax(180px,1.1fr)_90px_auto_auto] items-center gap-4 border-b border-border px-4 py-3 last:border-b-0"
-                      >
-                        <span className="model-service-icon grid size-11 place-items-center rounded-lg border border-border bg-muted/40 text-foreground">
-                          {row.source === 'account' ? <WalletCards className="size-5" /> : row.provider.kind === 'relay' ? <Box className="size-5" /> : <KeyRound className="size-5" />}
-                        </span>
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">
-                            {row.source === 'account' ? t('MilkSU 账户', 'MilkSU account') : store.providerServiceName(row.provider)}
-                          </p>
-                          {row.source === 'account' ? (
-                            <p className="mt-0.5 text-caption text-muted-foreground">{t('登录后由管理员分配的 TokenFlux 配额', 'TokenFlux quota assigned by an admin after sign-in')}</p>
-                          ) : row.provider.id === 'tokenflux' ? (
-                            <p className="mt-0.5 text-caption text-muted-foreground">{t('你自己的 TokenFlux API Key', 'Your own TokenFlux API key')}</p>
-                          ) : null}
-                        </div>
-                        <p
-                          className="truncate text-caption text-muted-foreground"
-                          title={row.source === 'account' ? store.accountModelsText() : store.providerModelsText(row.provider)}
-                        >
-                          {row.source === 'account' ? store.accountModelsText() : store.providerModelsText(row.provider)}
-                        </p>
-                        <span className="text-caption font-medium text-muted-foreground">{store.serviceStatus(row)}</span>
-                        <div className="flex items-center justify-end gap-2 whitespace-nowrap text-caption">
+                  )}
+                >
+                  {modelServiceRows.map((row, index) => (
+                    <SettingsRow
+                      key={row.key}
+                      label={row.source === 'account' ? t('MilkSU 账户', 'MilkSU account') : store.providerServiceName(row.provider)}
+                      description={row.source === 'account'
+                        ? t('登录后由管理员分配的 TokenFlux 配额', 'TokenFlux quota assigned by an admin after sign-in')
+                        : row.provider.id === 'tokenflux'
+                          ? t('你自己的 TokenFlux API Key', 'Your own TokenFlux API key')
+                          : store.providerModelsText(row.provider)}
+                      divider={index < modelServiceRows.length - 1}
+                      trailing={(
+                        <>
+                          <span className="text-xs text-muted-foreground">{store.serviceStatus(row)}</span>
                           {row.source === 'personal' ? (
                             <>
-                              <button type="button" className="text-link hover:underline" onClick={() => store.openProviderEditor(row.provider.id)}>
+                              <Button variant="ghost" size="sm" onClick={() => store.openProviderEditor(row.provider.id)}>
                                 {t('编辑', 'Edit')}
-                              </button>
-                              <span className="text-muted-foreground">/</span>
-                              <button type="button" className="text-destructive hover:underline" onClick={() => store.removeModelService(row.provider.id)}>
+                              </Button>
+                              <Button variant="ghost" size="sm" className="text-destructive" onClick={() => store.removeModelService(row.provider.id)}>
                                 {t('删除', 'Delete')}
-                              </button>
+                              </Button>
                             </>
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
-                        </div>
-                        <Switch
-                          checked={row.source === 'account' ? Boolean(accountRoute?.enabled) : Boolean(store.providerConfig(row.provider.id)?.enabled)}
-                          aria-label={t(`启用${row.source === 'account' ? t('MilkSU 账户', 'MilkSU account') : store.providerServiceName(row.provider)}`, `Enable ${row.source === 'account' ? t('MilkSU 账户', 'MilkSU account') : store.providerServiceName(row.provider)}`)}
-                          onCheckedChange={value => store.setModelServiceEnabled(row, Boolean(value))}
-                        />
-                      </article>
-                    ))}
-                  </div>
-                </section>
+                          ) : null}
+                          <Switch
+                            checked={row.source === 'account' ? Boolean(accountRoute?.enabled) : Boolean(store.providerConfig(row.provider.id)?.enabled)}
+                            aria-label={t(`启用${row.source === 'account' ? t('MilkSU 账户', 'MilkSU account') : store.providerServiceName(row.provider)}`, `Enable ${row.source === 'account' ? t('MilkSU 账户', 'MilkSU account') : store.providerServiceName(row.provider)}`)}
+                            onCheckedChange={value => store.setModelServiceEnabled(row, Boolean(value))}
+                          />
+                        </>
+                      )}
+                    />
+                  ))}
+                </SettingsSection>
 
                 <SettingsSection title={t('模型能力', 'Model capabilities')}>
-                  <div className="rounded-lg border border-border bg-muted/30 p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium">{t('思考层级', 'Thinking levels')}</p>
-                        <p className="mt-1 text-caption text-muted-foreground">
-                          {t('GPT 与 Claude Opus、Sonnet、Fable 使用内置预设；其他模型需要手动启用并选择实际支持的档位', 'GPT and Claude Opus, Sonnet, and Fable use built-in presets. Other models need thinking enabled by hand, with the levels they actually support.')}
-                        </p>
-                      </div>
-                      <Badge variant="outline">
-                        {thinkingProfile.source === 'preset'
-                          ? t('内置预设', 'Built-in preset')
-                          : thinkingProfile.source === 'manual'
-                            ? t('手动配置', 'Custom')
-                            : t('未启用', 'Off')}
-                      </Badge>
-                    </div>
-
-                    <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                      <Select value={thinkingModelKey} onValueChange={value => { store.setThinkingModelKey(value) }}>
-                        <SelectTrigger className="w-full" aria-label={t('配置思考层级的模型', 'Model for thinking levels')}>
-                          <SelectValue>
-                            <span className="inline-flex min-w-0 items-center gap-2">
-                              <ModelVendorIcon model={thinkingModelID} label={thinkingModelLabel} />
-                              <span className="min-w-0 truncate">{thinkingModelLabel}</span>
-                            </span>
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent className="min-w-96">
-                          {availablePickerGroups.map((group, groupIndex) => (
-                            <SelectGroup key={`thinking:${group.key}`}>
-                              {groupIndex > 0 ? <SelectSeparator /> : null}
-                              <SelectLabel>{group.label}</SelectLabel>
-                              {group.models.map(model => (
-                                <SelectItem key={`thinking:${group.key}:${model}`} value={encodePickerSelection(group.providerId, model, group.source)}>
-                                  <span className="inline-flex min-w-0 items-center gap-2">
-                                    <ModelVendorIcon model={model} label={store.availablePickerModelLabel(group, model)} />
-                                    <span className="min-w-0 truncate">{store.availablePickerModelLabel(group, model)}</span>
-                                  </span>
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          ))}
-                        </SelectContent>
-                      </Select>
-
-                      <div className="flex items-center justify-end gap-3">
+                  <SettingsRow
+                    label={t('思考层级', 'Thinking levels')}
+                    description={thinkingProfile.source === 'preset'
+                      ? t('使用内置预设', 'Uses the built-in preset')
+                      : thinkingProfile.source === 'manual'
+                        ? t('手动配置', 'Custom')
+                        : t('未启用', 'Off')}
+                    trailing={(
+                      <>
+                        <Select value={thinkingModelKey} onValueChange={value => { store.setThinkingModelKey(value) }}>
+                          <SelectTrigger className="settings-control" aria-label={t('配置思考层级的模型', 'Model for thinking levels')}>
+                            <SelectValue>
+                              <span className="inline-flex min-w-0 items-center gap-2">
+                                <ModelVendorIcon model={thinkingModelID} label={thinkingModelLabel} />
+                                <span className="min-w-0 truncate">{thinkingModelLabel}</span>
+                              </span>
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent className="min-w-96">
+                            {availablePickerGroups.map((group, groupIndex) => (
+                              <SelectGroup key={`thinking:${group.key}`}>
+                                {groupIndex > 0 ? <SelectSeparator /> : null}
+                                <SelectLabel>{group.label}</SelectLabel>
+                                {group.models.map(model => (
+                                  <SelectItem key={`thinking:${group.key}:${model}`} value={encodePickerSelection(group.providerId, model, group.source)}>
+                                    <span className="inline-flex min-w-0 items-center gap-2">
+                                      <ModelVendorIcon model={model} label={store.availablePickerModelLabel(group, model)} />
+                                      <span className="min-w-0 truncate">{store.availablePickerModelLabel(group, model)}</span>
+                                    </span>
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         {thinkingOverride ? (
-                          <button type="button" className="text-caption text-link hover:underline" onClick={() => store.resetModelThinkingOverride()}>
+                          <button type="button" className="text-xs text-link hover:underline" onClick={() => store.resetModelThinkingOverride()}>
                             {t('恢复预设', 'Restore preset')}
                           </button>
                         ) : null}
@@ -1033,29 +919,30 @@ export default function SettingsPage({
                           aria-label={t('启用模型思考层级', 'Enable model thinking levels')}
                           onCheckedChange={value => store.setModelThinkingEnabled(Boolean(value))}
                         />
-                      </div>
-                    </div>
-
-                    {thinkingProfile.enabled ? (
-                      <div className="mt-4 border-t border-border pt-4">
-                        <p className="text-label font-medium text-muted-foreground">{t('支持档位', 'Supported levels')}</p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {MODEL_THINKING_LEVELS.map(level => (
-                            <button
-                              key={level}
-                              type="button"
-                              className={`inline-flex min-h-8 items-center gap-1.5 rounded-md border px-2.5 text-caption transition-colors ${thinkingProfile.levels.includes(level) ? 'border-primary bg-primary/10 text-foreground' : 'border-border text-muted-foreground hover:bg-muted/50'}`}
-                              aria-pressed={thinkingProfile.levels.includes(level)}
-                              onClick={() => store.toggleModelThinkingLevel(level)}
-                            >
-                              {thinkingProfile.levels.includes(level) ? <Check className="size-3.5" /> : null}
-                              {MODEL_THINKING_LEVEL_LABELS[level]}
-                            </button>
-                          ))}
-                        </div>
-                        <label className="mt-4 flex items-center justify-between gap-4 text-caption">
-                          <span className="text-muted-foreground">{t('默认档位', 'Default level')}</span>
+                      </>
+                    )}
+                  />
+                  {thinkingProfile.enabled ? (
+                    <SettingsRow
+                      label={t('支持档位', 'Supported levels')}
+                      trailing={(
+                        <>
+                          <div className="flex flex-wrap justify-end gap-1.5">
+                            {MODEL_THINKING_LEVELS.map(level => (
+                              <button
+                                key={level}
+                                type="button"
+                                className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[length:var(--text-label)] transition-colors ${thinkingProfile.levels.includes(level) ? 'border-primary bg-primary/10 text-foreground' : 'border-border text-muted-foreground hover:bg-muted/50'}`}
+                                aria-pressed={thinkingProfile.levels.includes(level)}
+                                onClick={() => store.toggleModelThinkingLevel(level)}
+                              >
+                                {thinkingProfile.levels.includes(level) ? <Check className="size-3" /> : null}
+                                {MODEL_THINKING_LEVEL_LABELS[level]}
+                              </button>
+                            ))}
+                          </div>
                           <NativeSelect
+                            className="settings-control w-28"
                             value={thinkingProfile.defaultLevel}
                             aria-label={t('默认思考层级', 'Default thinking level')}
                             onChange={event => store.setModelThinkingDefault(event.target.value)}
@@ -1066,71 +953,62 @@ export default function SettingsPage({
                               </NativeSelectOption>
                             ))}
                           </NativeSelect>
-                        </label>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="mt-4 rounded-lg border border-border bg-muted/30 p-4">
-                    <div className="min-w-0">
-                      <p className="font-medium">{t('上下文窗口', 'Context window')}</p>
-                      <p className="mt-1 text-caption text-muted-foreground">
-                        {t('目录或型号族会自动填充；中转站或不准的窗口可在这里覆盖', 'Catalog and model-family presets fill this automatically. Override it for relays or a wrong window.')}
-                      </p>
-                    </div>
-                    <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                      <Select value={windowModelKey} onValueChange={value => { store.setWindowModelKey(value) }}>
-                        <SelectTrigger className="w-full" aria-label={t('配置上下文窗口的模型', 'Model for context window')}>
-                          <SelectValue>
-                            <span className="inline-flex min-w-0 items-center gap-2">
-                              <ModelVendorIcon model={windowModelID} label={windowModelLabel} />
-                              <span className="min-w-0 truncate">{windowModelLabel}</span>
-                            </span>
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent className="min-w-96">
-                          {availablePickerGroups.map((group, groupIndex) => (
-                            <SelectGroup key={`window:${group.key}`}>
-                              {groupIndex > 0 ? <SelectSeparator /> : null}
-                              <SelectLabel>{group.label}</SelectLabel>
-                              {group.models.map(model => (
-                                <SelectItem key={`window:${group.key}:${model}`} value={encodePickerSelection(group.providerId, model, group.source)}>
-                                  <span className="inline-flex min-w-0 items-center gap-2">
-                                    <ModelVendorIcon model={model} label={store.availablePickerModelLabel(group, model)} />
-                                    <span className="min-w-0 truncate">{store.availablePickerModelLabel(group, model)}</span>
-                                  </span>
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <div className="flex items-center justify-end gap-3">
+                        </>
+                      )}
+                    />
+                  ) : null}
+                  <SettingsRow
+                    label={t('上下文窗口', 'Context window')}
+                    description={t('目录会自动填充，中转站可覆盖。', 'Filled from the catalog. Override it for relays.')}
+                    divider={false}
+                    trailing={(
+                      <>
+                        <Select value={windowModelKey} onValueChange={value => { store.setWindowModelKey(value) }}>
+                          <SelectTrigger className="settings-control" aria-label={t('配置上下文窗口的模型', 'Model for context window')}>
+                            <SelectValue>
+                              <span className="inline-flex min-w-0 items-center gap-2">
+                                <ModelVendorIcon model={windowModelID} label={windowModelLabel} />
+                                <span className="min-w-0 truncate">{windowModelLabel}</span>
+                              </span>
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent className="min-w-96">
+                            {availablePickerGroups.map((group, groupIndex) => (
+                              <SelectGroup key={`window:${group.key}`}>
+                                {groupIndex > 0 ? <SelectSeparator /> : null}
+                                <SelectLabel>{group.label}</SelectLabel>
+                                {group.models.map(model => (
+                                  <SelectItem key={`window:${group.key}:${model}`} value={encodePickerSelection(group.providerId, model, group.source)}>
+                                    <span className="inline-flex min-w-0 items-center gap-2">
+                                      <ModelVendorIcon model={model} label={store.availablePickerModelLabel(group, model)} />
+                                      <span className="min-w-0 truncate">{store.availablePickerModelLabel(group, model)}</span>
+                                    </span>
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         {windowOverride ? (
-                          <button type="button" className="text-caption text-link hover:underline" onClick={() => store.resetModelContextWindowOverride()}>
+                          <button type="button" className="text-xs text-link hover:underline" onClick={() => store.resetModelContextWindowOverride()}>
                             {t('恢复自动', 'Restore automatic')}
                           </button>
                         ) : null}
                         <Input
                           type="number"
-                          className="w-36"
+                          className="settings-control w-28"
                           value={effectiveWindow || ''}
                           min={1024}
                           max={10000000}
                           disabled={!windowModelID}
                           aria-label={t('上下文窗口 token 数', 'Context window tokens')}
                           onChange={event => store.setModelContextWindowOverride(event.target.value)}
+                          onBlur={() => void store.save()}
                         />
-                      </div>
-                    </div>
-                  </div>
+                      </>
+                    )}
+                  />
                 </SettingsSection>
-
-                <div className="mt-6 flex justify-end">
-                  <Button disabled={saving || verifying} onClick={() => void store.save()}>
-                    {verifying ? t('正在验证', 'Verifying') : t('保存并验证', 'Save and verify')}
-                  </Button>
-                </div>
 
                 <Dialog open={providerEditorOpen} onOpenChange={open => { store.setProviderEditorOpen(open) }}>
                   <DialogContent className="provider-editor-dialog sm:max-w-xl">
@@ -1149,6 +1027,7 @@ export default function SettingsPage({
                             placeholder={editingProviderInfo.defaultBaseUrl || 'https://example.com/v1'}
                             aria-label={t('API 端点', 'API endpoint')}
                               onChange={event => { store.patchEditingProvider(config => { config.base_url = event.target.value.trim() }) }}
+                              onBlur={() => void store.save()}
                           />
                         </label>
                         {editingProvider.custom ? (
@@ -1160,6 +1039,7 @@ export default function SettingsPage({
                               placeholder={t('例如：我的中转站', 'e.g. My relay')}
                               aria-label={t('中转站名称', 'Relay name')}
                               onChange={event => { store.patchEditingProvider(config => { config.name = event.target.value }) }}
+                              onBlur={() => void store.save()}
                             />
                           </label>
                         ) : (
@@ -1181,7 +1061,7 @@ export default function SettingsPage({
                                   onChange={event => { store.setCustomModelInput(event.target.value) }}
                                   onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); store.addCustomRelayModel() } }}
                                 />
-                                <Button variant="outline" onClick={() => store.addCustomRelayModel()}>{t('添加', 'Add')}</Button>
+                                <Button variant="outline" size="sm" onClick={() => store.addCustomRelayModel()}>{t('添加', 'Add')}</Button>
                               </div>
                               {editingProvider.models?.length ? (
                                 <div className="mt-2 flex flex-wrap gap-2">
@@ -1212,6 +1092,7 @@ export default function SettingsPage({
                                 if (event.target.value) config.session_only = false
                               })
                             }}
+                            onBlur={() => void store.save()}
                           />
                         </label>
                         {!editingProvider.custom ? (
@@ -1253,8 +1134,9 @@ export default function SettingsPage({
                       </div>
                     ) : null}
                     <DialogFooter>
-                      <Button variant="outline" disabled={saving || verifying} onClick={() => void store.saveProviderEditor(false)}>{t('测试连接', 'Test connection')}</Button>
-                      <Button disabled={saving || verifying} onClick={() => void store.saveProviderEditor(true)}>{t('保存', 'Save')}</Button>
+                      <Button variant="outline" size="sm" disabled={saving || verifying} onClick={() => void store.saveProviderEditor(false)}>
+                        {verifying ? t('正在测试', 'Testing') : t('测试连接', 'Test connection')}
+                      </Button>
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
@@ -1263,27 +1145,28 @@ export default function SettingsPage({
               <>
                 <SettingsSection title="NSSCTF Agent Arena">
                   <SettingsRow
-                    stack="always"
                     label="Arena Token"
-                    description={working.nssctf_arena?.session_only ? t('本地数据库写入失败；当前仅在本次运行可用', 'Could not write the local database; this value is only available in the current session.') : ''}
-                  >
-                    <Input
-                      value={working.nssctf_arena?.token ?? ''}
-                      type="password"
-                      autoComplete="off"
-                      placeholder="NSSCTF Agent Token"
-                      onChange={event => {
-                        store.patchWorking(value => {
-                          value.nssctf_arena = {
-                            token: event.target.value,
-                            has_token: value.nssctf_arena?.has_token ?? false,
-                            session_only: event.target.value ? false : value.nssctf_arena?.session_only,
-                          }
-                        })
-                      }}
-                      onBlur={() => void store.save()}
-                    />
-                  </SettingsRow>
+                    description={working.nssctf_arena?.session_only ? t('仅本次运行可用', 'Only available in this run') : ''}
+                    trailing={(
+                      <Input
+                        className="settings-control"
+                        value={working.nssctf_arena?.token ?? ''}
+                        type="password"
+                        autoComplete="off"
+                        placeholder="Token"
+                        onChange={event => {
+                          store.patchWorking(value => {
+                            value.nssctf_arena = {
+                              token: event.target.value,
+                              has_token: value.nssctf_arena?.has_token ?? false,
+                              session_only: event.target.value ? false : value.nssctf_arena?.session_only,
+                            }
+                          })
+                        }}
+                        onBlur={() => void store.save()}
+                      />
+                    )}
+                  />
                 </SettingsSection>
                 <SettingsSection title={t('题目浏览器扩展', 'Challenge browser extension')}>
                   <SettingsRow
@@ -1576,6 +1459,7 @@ function createSettingsStore(
         working.model_routing = { ...working.model_routing, source_order: ['personal', 'account'] }
       }
     })
+    persist()
   }
 
   const defaultModelAvailable = () => {
@@ -1721,6 +1605,7 @@ function createSettingsStore(
       else delete windows[providerId]
       working.model_context_windows = Object.keys(windows).length ? windows : undefined
     })
+    persist()
   }
 
   function setThinkingOverride(config: ModelThinkingConfig) {
@@ -1736,6 +1621,7 @@ function createSettingsStore(
         },
       }
     })
+    persist()
   }
 
   function thinkingConfigForEdit(): ModelThinkingConfig {
@@ -1792,6 +1678,7 @@ function createSettingsStore(
       else delete modelThinking[providerId]
       working.model_thinking = Object.keys(modelThinking).length ? modelThinking : undefined
     })
+    persist()
   }
 
   function alignDefaultModelToEnabledServices() {
@@ -2240,6 +2127,7 @@ function createSettingsStore(
       }
     })
     store.setState({ customModelInput: '' })
+    persist()
   }
 
   function removeCustomRelayModel(model: string) {
@@ -2276,6 +2164,7 @@ function createSettingsStore(
         working.active_model = models[0] ?? ''
       }
     })
+    persist()
   }
 
   function ensureAccountRoute() {
@@ -2340,6 +2229,7 @@ function createSettingsStore(
 
   function setProviderEditorOpen(value: boolean) {
     if (!value) {
+      if (!s.pendingCustomRelay) persist()
       store.setState({
         pendingCustomRelay: null,
         editingProviderID: null,
@@ -2444,6 +2334,7 @@ function createSettingsStore(
       working.active_provider = editingID
       working.active_model = value
     })
+    persist()
   }
 
   function setModelServiceEnabled(row: ModelServiceRow, enabled: boolean) {
@@ -2462,6 +2353,7 @@ function createSettingsStore(
         }
       })
       alignDefaultModelToEnabledServices()
+      persist()
       return
     }
     const config = ensureProviderConfig(row.provider.id)
@@ -2479,9 +2371,11 @@ function createSettingsStore(
     })
     if (!enabled && row.provider.id !== 'tokenflux') {
       rehomeDefaultAfterCustomServiceChange(row.provider.id, row.provider.models ?? config.models ?? [])
+      persist()
       return
     }
     alignDefaultModelToEnabledServices()
+    persist()
   }
 
   function formatBytes(value: number) {
@@ -2823,7 +2717,11 @@ function createSettingsStore(
     return Boolean(active?.enabled && hasProviderKey)
   }
 
-  async function save(options?: { quiet?: boolean }): Promise<boolean> {
+  function persist() {
+    void save({ quiet: true })
+  }
+
+  async function save(options?: { quiet?: boolean; verify?: boolean }): Promise<boolean> {
     if (!s.working) return false
     const incompleteCustomProvider = Object.values(s.working.providers).find(item => (
       item.custom && (!item.name?.trim() || !item.base_url?.trim() || !(item.models ?? []).length)
@@ -2843,7 +2741,7 @@ function createSettingsStore(
       }
     }
     s.saving = true
-    s.notice = null
+    if (!options?.quiet || options.verify) s.notice = null
     const submitted = cloneSettings(s.working)
     if (submitted.active_provider !== 'tokenflux') {
       activateConfiguredModelService(
@@ -2853,58 +2751,37 @@ function createSettingsStore(
     }
     try {
       await invokeCommand('save_settings_cmd', { newSettings: submitted })
-      if (s.category !== 'apikeys') {
-        const refreshed = await invokeCommand<AppSettings>('get_settings')
-        s.working = cloneSettings(refreshed)
-        callbacks.current.onSettingsChange?.(refreshed)
-        await refreshCallableModels()
-        if (!options?.quiet) {
+      const refreshed = await invokeCommand<AppSettings>('get_settings')
+      s.working = cloneSettings(refreshed)
+      callbacks.current.onSettingsChange?.(refreshed)
+      await refreshCallableModels()
+      if (options?.verify) {
+        if (!submittedServiceReady(submitted)) {
+          s.notice = {
+            tone: 'error',
+            text: t('当前没有已启用且可用的模型服务。', 'No enabled model service is ready.'),
+          }
+          return true
+        }
+        s.verifying = true
+        try {
+          const result = await invokeCommand<ModelProbeResult>('test_agent_model', { settings: submitted })
           s.notice = {
             tone: 'ok',
-            text: t('设置已保存。', 'Settings saved.'),
+            text: t(`连接正常 ${result.provider}/${result.model}，${result.latencyMs} ms。`, `Connected ${result.provider}/${result.model} in ${result.latencyMs} ms.`),
           }
+        } catch (reason) {
+          const raw = desktopErrorMessage(reason)
+          s.notice = {
+            tone: 'error',
+            text: explainModelVerificationFailure(raw, submitted.active_provider),
+          }
+        } finally {
+          s.verifying = false
         }
         return true
       }
-      if (!submittedServiceReady(submitted)) {
-        const refreshed = await invokeCommand<AppSettings>('get_settings')
-        s.working = cloneSettings(refreshed)
-        callbacks.current.onSettingsChange?.(refreshed)
-        await refreshCallableModels()
-        s.notice = {
-          tone: 'ok',
-          text: t('设置已保存。当前没有已启用且可用的模型服务，请启用账户或填写已配置的模型服务后再验证。', 'Settings saved. No enabled model service is ready yet. Enable the account or add a configured model service, then verify.'),
-        }
-        return true
-      }
-      s.verifying = true
-      try {
-        const result = await invokeCommand<ModelProbeResult>('test_agent_model', { settings: submitted })
-        const verifiedSettings = await invokeCommand<AppSettings>('get_settings')
-        s.working = cloneSettings(verifiedSettings)
-        callbacks.current.onSettingsChange?.(verifiedSettings)
-        await refreshCallableModels()
-        s.notice = {
-          tone: 'ok',
-          text: t(`已保存并验证 ${result.provider}/${result.model}，PI 响应 ${result.latencyMs} ms。`, `Saved and verified ${result.provider}/${result.model}. Pi responded in ${result.latencyMs} ms.`),
-        }
-        return true
-      } catch (reason) {
-        const refreshed = await invokeCommand<AppSettings>('get_settings').catch(() => submitted)
-        if (refreshed) {
-          s.working = cloneSettings(refreshed)
-          callbacks.current.onSettingsChange?.(refreshed)
-        }
-        await refreshCallableModels()
-        const raw = desktopErrorMessage(reason)
-        s.notice = {
-          tone: 'error',
-          text: t(`凭据已保存。${explainModelVerificationFailure(raw, submitted.active_provider)}`, `Credentials saved. ${explainModelVerificationFailure(raw, submitted.active_provider)}`),
-        }
-        return true
-      } finally {
-        s.verifying = false
-      }
+      return true
     } catch (reason) {
       const refreshed = await invokeCommand<AppSettings>('get_settings').catch(() => s.working)
       if (refreshed) {
@@ -2926,9 +2803,9 @@ function createSettingsStore(
     }
   }
 
-  async function saveProviderEditor(closeAfterSave: boolean) {
+  async function saveProviderEditor(_closeAfterSave: boolean) {
     if (!s.working || !s.editingProviderID) {
-      await save()
+      await save({ verify: true })
       return
     }
     const editingID = s.editingProviderID
@@ -2950,13 +2827,10 @@ function createSettingsStore(
         alignDefaultModelToEnabledServices()
       }
     }
-    const persisted = await save()
+    const persisted = await save({ verify: true })
     alignDefaultModelToEnabledServices()
     if (persisted) {
       s.pendingCustomRelay = null
-      if (closeAfterSave && s.notice?.tone === 'ok') {
-        setProviderEditorOpen(false)
-      }
       return
     }
     if (pending) {
@@ -3155,7 +3029,6 @@ const settingsPageCss = `
 .settings-page-header {
   --shell-window-control-gutter: 1.25rem;
 }
-.settings-nav-surface { border-color: var(--border); background-color: var(--sidebar); }
 .settings-page .settings-notice {
   border-radius: 8px;
 }
@@ -3169,27 +3042,29 @@ const settingsPageCss = `
   border-color: var(--destructive-border);
   color: var(--destructive);
 }
-.settings-nav-item { position: relative; display: flex; min-height: 2rem; width: auto; align-items: center; justify-content: flex-start; border: 0; border-radius: 8px; background: transparent; padding: 0 0.5rem; color: var(--foreground); text-align: left; cursor: pointer; text-transform: none; letter-spacing: 0; font-size: 14px; font-weight: 500; }
-.settings-nav-item:hover { color: var(--foreground); background: var(--hover-2); }
-.settings-nav-item.active {
-  color: var(--foreground);
-  background: var(--hover-2);
-  box-shadow: none;
+.settings-page .page-column {
+  max-width: 42rem;
 }
-.model-service-row { transition: background-color 120ms ease, border-color 120ms ease; }
-.model-service-row:hover { background: var(--overlay-hover-light); }
-.model-service-icon { box-shadow: inset 0 0 18px color-mix(in srgb, var(--brand) 5%, transparent); }
-.provider-editor-field { display: grid; grid-template-columns: 7rem minmax(0, 1fr); align-items: center; gap: 1rem; font-size: var(--text-body); }
-@media (max-width: 1080px) {
-  .model-service-row { grid-template-columns: 44px minmax(150px, 1fr) 90px auto auto; }
-  .model-service-row > p { display: none; }
+.settings-page [data-slot='button'],
+.settings-page [data-slot='input'],
+.settings-page [data-slot='native-select'],
+.settings-page [data-slot='select-trigger'] {
+  height: 1.75rem;
+  min-height: 1.75rem;
+  padding-block: 0;
+  font-size: var(--text-label);
+  line-height: var(--text-label--line-height);
 }
+.settings-page [data-slot='button'][data-size='icon'],
+.settings-page [data-slot='button'][data-size='icon-sm'] {
+  width: 1.75rem;
+  padding-inline: 0;
+}
+.settings-page .settings-control {
+  width: 14rem;
+}
+.provider-editor-field { display: grid; grid-template-columns: 7rem minmax(0, 1fr); align-items: center; gap: 1rem; font-size: var(--text-label); }
 @media (max-width: 850px) {
-  .settings-nav { width: 10.5rem; }
-  .model-service-row { grid-template-columns: 40px minmax(110px, 1fr) auto auto; }
-  .model-service-row > :nth-child(4),
-  .model-service-row > :nth-child(5),
-  .model-service-row > p { display: none; }
   .provider-editor-field { grid-template-columns: 1fr; gap: .5rem; }
 }
 `

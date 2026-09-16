@@ -49,6 +49,7 @@ import {
   X,
 } from 'lucide-react'
 import { invokeCommand, listenEvent } from '@/desktop'
+import { toastError } from '@/lib/appToast'
 import { isAskMessage } from '@/lib/agentAsk'
 import { nextChatAutoScrollPinned } from '@/lib/chatAutoScroll'
 import { assessApprovalRequest } from '@/lib/destructiveTarget'
@@ -1104,9 +1105,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     try {
       await invokeCommand('set_coding_browser_viewport', geometry)
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('无法放置内嵌浏览器。', 'Could not place the embedded browser.'))
+      toastError(reason, t('无法放置内嵌浏览器。', 'Could not place the embedded browser.'))
     }
   }
 
@@ -1179,9 +1178,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     } else {
       setCodingBrowserStatus(null)
       codingBrowserStatusRef.current = null
-      setBrowserPanelError(browser.reason instanceof Error
-        ? browser.reason.message
-        : t('暂时无法读取浏览器状态。', 'Browser status cannot be read right now.'))
+      toastError(browser.reason, t('暂时无法读取浏览器状态。', 'Browser status cannot be read right now.'))
     }
     if (computerUse.status === 'fulfilled') {
       nextStatus = computerUse.value
@@ -1190,9 +1187,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     } else {
       setComputerUseStatus(null)
       computerUseStatusRef.current = null
-      setBrowserPanelError(current => current || (computerUse.reason instanceof Error
-        ? computerUse.reason.message
-        : t('暂时无法读取 Computer Use 状态。', 'Computer Use status cannot be read right now.')))
+      toastError(computerUse.reason, t('暂时无法读取 Computer Use 状态。', 'Computer Use status cannot be read right now.'))
     }
     if (computerUseTargetsResult.status === 'fulfilled') {
       setComputerUseTargets(computerUseTargetsResult.value)
@@ -1209,9 +1204,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     } else {
       setComputerUseTargets([])
       computerUseTargetsRef.current = []
-      setBrowserPanelError(current => current || (computerUseTargetsResult.reason instanceof Error
-        ? computerUseTargetsResult.reason.message
-        : t('暂时无法读取可见 App 窗口。', 'Visible app windows cannot be read right now.')))
+      toastError(computerUseTargetsResult.reason, t('暂时无法读取可见 App 窗口。', 'Visible app windows cannot be read right now.'))
     }
     setCodingBrowserLoading(false)
     setComputerUseLoading(false)
@@ -1288,9 +1281,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       codingBrowserStatusRef.current = status
       await refreshCodingBrowserState()
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('浏览器启动失败。', 'The browser failed to start.'))
+      toastError(reason, t('浏览器启动失败。', 'The browser failed to start.'))
     } finally {
       setCodingBrowserLoading(false)
     }
@@ -1361,9 +1352,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
       await syncCodingBrowserViewport()
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('浏览器启动失败。', 'The browser failed to start.'))
+      toastError(reason, t('浏览器启动失败。', 'The browser failed to start.'))
     } finally {
       setCodingBrowserLoading(false)
     }
@@ -1386,9 +1375,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       setCodingBrowserEvidenceRevealed(false)
       setBrowserEvidence(null)
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('浏览器停止失败。', 'The browser failed to stop.'))
+      toastError(reason, t('浏览器停止失败。', 'The browser failed to stop.'))
     } finally {
       setCodingBrowserLoading(false)
     }
@@ -1418,9 +1405,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       })
       window.setTimeout(() => void refreshCodingBrowserState(), 250)
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('页面导航失败。', 'Page navigation failed.'))
+      toastError(reason, t('页面导航失败。', 'Page navigation failed.'))
     } finally {
       setCodingBrowserLoading(false)
     }
@@ -1445,9 +1430,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       await refreshCodingBrowserState()
       await syncCodingBrowserViewport()
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('标签页操作失败。', 'The tab action failed.'))
+      toastError(reason, t('标签页操作失败。', 'The tab action failed.'))
     }
   }
 
@@ -1483,9 +1466,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       }[action], { conversationId: conversationID })
       window.setTimeout(() => void refreshCodingBrowserState(), 180)
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('浏览器操作失败。', 'The browser action failed.'))
+      toastError(reason, t('浏览器操作失败。', 'The browser action failed.'))
     }
   }
 
@@ -1596,9 +1577,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
         })
       }
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('Computer Use 可见会话启动失败。', 'The Computer Use visible session failed to start.'))
+      toastError(reason, t('Computer Use 可见会话启动失败。', 'The Computer Use visible session failed to start.'))
     } finally {
       setComputerUseLoading(false)
     }
@@ -1623,9 +1602,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       computerUseStatusRef.current = status
       setComputerUseEvidence(null)
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('Computer Use 可见会话停止失败。', 'The Computer Use visible session failed to stop.'))
+      toastError(reason, t('Computer Use 可见会话停止失败。', 'The Computer Use visible session failed to stop.'))
     } finally {
       setComputerUseLoading(false)
     }
@@ -1892,9 +1869,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     try {
       await invokeCommand('open_playwright_browser_extension')
     } catch (reason) {
-      setBrowserPanelError(reason instanceof Error
-        ? reason.message
-        : t('无法打开 Playwright MCP 官方扩展页面。', 'Could not open the official Playwright MCP extension page.'))
+      toastError(reason, t('无法打开 Playwright MCP 官方扩展页面。', 'Could not open the official Playwright MCP extension page.'))
     }
   }
 
@@ -1980,15 +1955,16 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     onForgetWorkspace?.(path)
   }
 
-  async function checkoutGitBranch(branch: string) {
+  async function applyGitBranchAction(action: 'checkout' | 'create-branch', branch: string) {
     const workspace = workspacePath
     const next = branch.trim()
-    if (!workspace || !next || next === gitBranch || running) return
+    if (!workspace || !next || running) return
+    if (action === 'checkout' && next === gitBranch) return
     setGitBranchError('')
     try {
       const result = await invokeCommand<CodingGitActionResult>('apply_coding_git_action', {
         workspacePath: workspace,
-        action: 'checkout',
+        action,
         relativePath: next,
         message: '',
       })
@@ -1999,7 +1975,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
         await refreshEnvironment()
       }
     } catch (reason) {
-      setGitBranchError(reason instanceof Error ? reason.message : t('无法切换分支。', 'Could not switch branches.'))
+      const fallback = action === 'create-branch'
+        ? t('无法创建分支。', 'Could not create the branch.')
+        : t('无法切换分支。', 'Could not switch branches.')
+      setGitBranchError(reason instanceof Error ? reason.message : fallback)
     }
   }
 
@@ -2700,7 +2679,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             onSelectWorkspace={selectRecentProject}
             onForgetWorkspace={path => void forgetRecentProject(path)}
             onClearWorkspace={() => onClearWorkspace?.()}
-            onCheckoutBranch={branch => void checkoutGitBranch(branch)}
+            onCheckoutBranch={branch => void applyGitBranchAction('checkout', branch)}
+            onCreateBranch={branch => void applyGitBranchAction('create-branch', branch)}
             onCancelQueuedGuidance={index => onCancelQueuedGuidance?.(index)}
             onEditQueuedGuidance={index => onEditQueuedGuidance?.(index)}
             onConsumeGoal={() => setGoalMode(false)}

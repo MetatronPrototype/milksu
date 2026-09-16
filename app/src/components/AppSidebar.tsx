@@ -1,6 +1,7 @@
 import ContextSidebar from '@/components/ContextSidebar'
 import { useT } from '@/hooks/useUiLocale'
 import type { ThemeMode } from '@/lib/themeMode'
+import type { NormalizedSettingsCategory } from '@/lib/settingsNavigation'
 import type { AppSection, CTFWorkspaceSection, WorkspaceSection } from '@/lib/workspaceNavigation'
 import type { AccountStatus, Conversation, UpdateStatus } from '@/types'
 
@@ -18,6 +19,9 @@ export default function AppSidebar({
   onNew,
   onNavigate,
   onSettings,
+  settingsCategory,
+  onSelectSettingsCategory,
+  onCloseSettings,
   onProfile,
   onAccountLogin,
   onAccountLogout,
@@ -30,11 +34,12 @@ export default function AppSidebar({
   onSetPinned,
   onMovePinned,
   onReorderPinned,
+  onForkConversation,
   onNavigateCtf,
   onOpenCodingContext,
   onCollapseCodingContext,
-  onDownloadUpdate,
-  onInstallUpdate,
+  onApplyUpdate,
+  onOpenCommandPanel,
 }: {
   activeSection: AppSection
   accountStatus: AccountStatus
@@ -49,6 +54,9 @@ export default function AppSidebar({
   onNew?: () => void
   onNavigate?: (value: WorkspaceSection) => void
   onSettings?: () => void
+  settingsCategory?: NormalizedSettingsCategory
+  onSelectSettingsCategory?: (value: NormalizedSettingsCategory) => void
+  onCloseSettings?: () => void
   onProfile?: () => void
   onAccountLogin?: () => void
   onAccountLogout?: () => void
@@ -61,18 +69,19 @@ export default function AppSidebar({
   onSetPinned?: (id: string, pinned: boolean) => void
   onMovePinned?: (id: string, direction: -1 | 1) => void
   onReorderPinned?: (id: string, beforeId: string) => void
+  onForkConversation?: (id: string) => void
   onNavigateCtf?: (value: CTFWorkspaceSection) => void
   onOpenCodingContext?: () => void
   onCollapseCodingContext?: () => void
-  onDownloadUpdate?: () => void
-  onInstallUpdate?: () => void
+  onApplyUpdate?: () => void
+  onOpenCommandPanel?: () => void
 }) {
   const t = useT()
   return (
     <aside
       className="workspace-navigation-shell relative z-30 flex h-full min-h-0 shrink-0 text-sidebar-foreground"
       data-testid="stable-app-sidebar"
-      aria-label={t('工作区导航', 'Workspace navigation')}
+      aria-label={activeSection === 'settings' ? t('设置分类', 'Settings categories') : t('工作区导航', 'Workspace navigation')}
     >
       <ContextSidebar
         activeSection={activeSection}
@@ -84,7 +93,10 @@ export default function AppSidebar({
         accountStatus={accountStatus}
         themeMode={themeMode}
         updateStatus={updateStatus}
-        collapsed={!codingContextOpen}
+        collapsed={activeSection === 'settings' ? false : !codingContextOpen}
+        settingsCategory={settingsCategory}
+        onSelectSettingsCategory={onSelectSettingsCategory}
+        onCloseSettings={onCloseSettings}
         onNew={onNew}
         onCollapse={onCollapseCodingContext}
         onExpand={onOpenCodingContext}
@@ -96,6 +108,7 @@ export default function AppSidebar({
         onSetPinned={onSetPinned}
         onMovePinned={onMovePinned}
         onReorderPinned={onReorderPinned}
+        onForkConversation={onForkConversation}
         onNavigateCtf={onNavigateCtf}
         onNavigate={onNavigate}
         onProfile={onProfile}
@@ -103,8 +116,8 @@ export default function AppSidebar({
         onAccountLogin={onAccountLogin}
         onAccountLogout={onAccountLogout}
         onToggleTheme={onToggleTheme}
-        onDownloadUpdate={onDownloadUpdate}
-        onInstallUpdate={onInstallUpdate}
+        onApplyUpdate={onApplyUpdate}
+        onOpenCommandPanel={onOpenCommandPanel}
       />
       <style>{`
 .workspace-navigation-shell {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatContextWindowSize,
   modelContextWindowOverride,
   normalizeModelContextWindows,
   resolveModelContextWindow,
@@ -47,6 +48,13 @@ describe('knownContextWindow', () => {
     }, {})).toEqual({
       tokenflux: { 'x-ai/grok-4.6': 2_000_000 },
     })
+  })
+
+  it('prints compact context window sizes', () => {
+    expect(formatContextWindowSize(1_000_000)).toBe('1M')
+    expect(formatContextWindowSize(1_050_000)).toBe('1.1M')
+    expect(formatContextWindowSize(500_000)).toBe('500K')
+    expect(formatContextWindowSize(0)).toBe('')
   })
 
   it('fills known output limits instead of 8k/16k/32k placeholders', () => {

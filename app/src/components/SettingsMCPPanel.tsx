@@ -247,12 +247,20 @@ export default function SettingsMCPPanel({
     }
   }
 
+  function persistServer() {
+    if (!formName.trim()) return
+    if (formTransport === 'command' && !formCommand.trim()) return
+    if (formTransport === 'url' && !formURL.trim()) return
+    if (formTransport === 'socket' && !formSocket.trim()) return
+    void saveServer()
+  }
+
   async function saveServer() {
     setSaving(true)
     setError('')
     try {
       setCatalog(await invokeCommand<AgentResourceCatalog>('upsert_user_mcp_server', { input: buildInput() }))
-      closeEditor()
+      setEditingName(formName.trim())
     } catch (reason) {
       setError(desktopErrorMessage(reason))
     } finally {
@@ -312,7 +320,6 @@ export default function SettingsMCPPanel({
           args: parseArgs(builtinArgs),
         },
       }))
-      closeBuiltinEditor()
     } catch (reason) {
       setError(desktopErrorMessage(reason))
     } finally {
@@ -441,15 +448,10 @@ export default function SettingsMCPPanel({
       {builtinEditorOpen ? (
         <SettingsSection
           title={t('编辑内置 MCP', 'Edit built-in MCP')}
-          footer={(
-            <div className="flex items-center justify-end gap-2">
-              <Button type="button" variant="outline" size="sm" disabled={saving} onClick={closeBuiltinEditor}>
-                {t('取消', 'Cancel')}
-              </Button>
-              <Button type="button" size="sm" disabled={saving} onClick={() => void saveBuiltin()}>
-                {t('保存', 'Save')}
-              </Button>
-            </div>
+          actions={(
+            <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={closeBuiltinEditor}>
+              {t('关闭', 'Close')}
+            </Button>
           )}
         >
           <SettingsRow
@@ -458,6 +460,7 @@ export default function SettingsMCPPanel({
               <Input
                 value={builtinCommand}
                 onChange={event => setBuiltinCommand(event.target.value)}
+                onBlur={() => void saveBuiltin()}
                 className="w-72 max-w-full"
                 disabled={saving}
                 aria-label={t('覆盖启动命令', 'Override launch command')}
@@ -471,6 +474,7 @@ export default function SettingsMCPPanel({
               <Textarea
                 value={builtinArgs}
                 onChange={event => setBuiltinArgs(event.target.value)}
+                onBlur={() => void saveBuiltin()}
                 className="w-72 max-w-full"
                 disabled={saving}
                 aria-label={t('每行一个覆盖参数', 'One override argument per line')}
@@ -545,15 +549,10 @@ export default function SettingsMCPPanel({
       {editorOpen ? (
         <SettingsSection
           title={editing ? t('编辑服务器', 'Edit server') : t('添加服务器', 'Add server')}
-          footer={(
-            <div className="flex items-center justify-end gap-2">
-              <Button type="button" variant="outline" size="sm" disabled={saving} onClick={closeEditor}>
-                {t('取消', 'Cancel')}
-              </Button>
-              <Button type="button" size="sm" disabled={saving || !formName.trim()} onClick={() => void saveServer()}>
-                {t('保存', 'Save')}
-              </Button>
-            </div>
+          actions={(
+            <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={closeEditor}>
+              {t('关闭', 'Close')}
+            </Button>
           )}
         >
           <SettingsRow
@@ -562,6 +561,7 @@ export default function SettingsMCPPanel({
               <Input
                 value={formName}
                 onChange={event => setFormName(event.target.value)}
+                onBlur={persistServer}
                 className="w-72 max-w-full"
                 disabled={editing || saving}
                 aria-label={t('服务器名称', 'Server name')}
@@ -575,6 +575,7 @@ export default function SettingsMCPPanel({
                 value={formTransport}
                 aria-label={t('传输方式', 'Transport')}
                 onChange={event => setFormTransport(event.target.value as AgentResourceMCPTransport)}
+                onBlur={persistServer}
               >
                 <NativeSelectOption value="command">{t('本地进程', 'Local process')}</NativeSelectOption>
                 <NativeSelectOption value="url">{t('远程 HTTP', 'Remote HTTP')}</NativeSelectOption>
@@ -589,6 +590,7 @@ export default function SettingsMCPPanel({
                 <Input
                   value={formCommand}
                   onChange={event => setFormCommand(event.target.value)}
+                  onBlur={persistServer}
                   className="w-72 max-w-full"
                   disabled={saving}
                   aria-label={t('启动命令', 'Launch command')}
@@ -603,6 +605,7 @@ export default function SettingsMCPPanel({
                 <Textarea
                   value={formArgs}
                   onChange={event => setFormArgs(event.target.value)}
+                  onBlur={persistServer}
                   className="w-72 max-w-full"
                   disabled={saving}
                   aria-label={t('每行一个参数', 'One argument per line')}
@@ -617,6 +620,7 @@ export default function SettingsMCPPanel({
                 <Input
                   value={formURL}
                   onChange={event => setFormURL(event.target.value)}
+                  onBlur={persistServer}
                   className="w-72 max-w-full"
                   disabled={saving}
                   aria-label={t('远程地址', 'Remote URL')}
@@ -631,6 +635,7 @@ export default function SettingsMCPPanel({
                 <Input
                   value={formSocket}
                   onChange={event => setFormSocket(event.target.value)}
+                  onBlur={persistServer}
                   className="w-72 max-w-full"
                   disabled={saving}
                   aria-label={t('本地 Socket', 'Local socket')}
@@ -644,6 +649,7 @@ export default function SettingsMCPPanel({
               <Textarea
                 value={formEnv}
                 onChange={event => setFormEnv(event.target.value)}
+                onBlur={persistServer}
                 className="w-72 max-w-full"
                 disabled={saving}
                 aria-label={t('每行一个 KEY=value，留空值表示保持原值', 'One KEY=value per line; empty values keep the stored secret')}
@@ -656,6 +662,7 @@ export default function SettingsMCPPanel({
               <Textarea
                 value={formHeaders}
                 onChange={event => setFormHeaders(event.target.value)}
+                onBlur={persistServer}
                 className="w-72 max-w-full"
                 disabled={saving}
                 aria-label={t('每行一个 Header=value', 'One Header=value per line')}
@@ -669,6 +676,7 @@ export default function SettingsMCPPanel({
               <Input
                 value={formBearer}
                 onChange={event => setFormBearer(event.target.value)}
+                onBlur={persistServer}
                 type="password"
                 className="w-72 max-w-full"
                 disabled={saving}
