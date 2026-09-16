@@ -3049,8 +3049,21 @@ const settingsPageCss = `
   height: 1.75rem;
   min-height: 1.75rem;
   padding-block: 0;
+  font-family: var(--font-sans);
   font-size: var(--text-label);
+  font-weight: var(--font-weight-medium);
   line-height: var(--text-label--line-height);
+  letter-spacing: var(--text-label--letter-spacing);
+}
+.settings-page .settings-row-type,
+.settings-page .settings-control,
+.settings-picker-menu,
+.settings-picker-menu .settings-row-type {
+  font-family: var(--font-sans);
+  font-size: var(--text-label) !important;
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-label--line-height) !important;
+  letter-spacing: var(--text-label--letter-spacing);
 }
 .settings-page [data-slot='button'][data-size='icon'],
 .settings-page [data-slot='button'][data-size='icon-sm'] {

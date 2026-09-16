@@ -1,13 +1,11 @@
 import * as React from 'react'
 import { useState, type ReactNode } from 'react'
 import { Check, ChevronDown } from 'lucide-react'
-import { Button } from './button'
 import { Popover, PopoverContent, PopoverTrigger } from './popover'
 import { cn } from '@/lib/cn'
 
-/** Same type as SettingsRow labels: 13px / medium / 1.125. Controls reuse this so they cannot drift from `text-sm`. */
-const settingsControlTypeClass =
-  'text-[length:var(--text-label)] font-medium leading-[var(--text-label--line-height)]'
+/** Shared by SettingsRow labels and trailing pickers so Button `text-sm` cannot drift the right side. */
+const settingsControlTypeClass = 'settings-row-type'
 
 function SettingsSection({
   title,
@@ -109,27 +107,28 @@ function SettingsGhostPicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button
+        <button
           type="button"
-          variant="ghost"
-          size="sm"
           aria-label={ariaLabel}
-          className={cn('settings-control h-7 justify-between gap-1.5 px-2', settingsControlTypeClass)}
+          className={cn(
+            'settings-control inline-flex h-7 items-center justify-between gap-1.5 rounded-md px-2 text-left text-foreground hover:bg-accent',
+            settingsControlTypeClass,
+          )}
         >
           <span className="inline-flex min-w-0 flex-1 items-center gap-2 truncate text-left">
             {selected?.leading}
             <span className="min-w-0 truncate">{selected?.label ?? ''}</span>
           </span>
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
-        </Button>
+        </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[14rem] p-1">
+      <PopoverContent align="end" className="settings-picker-menu w-[14rem] p-1">
         {options.map(option => (
           <button
             key={option.value}
             type="button"
             className={cn(
-              'flex h-8 w-full items-center gap-2 rounded-md px-2 text-left hover:bg-accent',
+              'flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-foreground hover:bg-accent',
               settingsControlTypeClass,
             )}
             onClick={() => {

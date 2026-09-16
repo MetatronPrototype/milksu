@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Button, Input, Popover, PopoverContent, PopoverTrigger, settingsControlTypeClass } from '@/components/ui'
+import { Input, Popover, PopoverContent, PopoverTrigger, settingsControlTypeClass } from '@/components/ui'
 import { Check, ChevronDown } from 'lucide-react'
 import ModelVendorIcon from '@/components/ModelVendorIcon'
 import {
@@ -118,20 +118,22 @@ export default function SearchableModelPicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button
+        <button
           type="button"
-          variant="ghost"
-          size="sm"
           disabled={disabled}
           aria-label={ariaLabel}
           title={title}
-          className={cn('justify-between gap-1.5', settingsControlTypeClass, triggerClassName)}
+          className={cn(
+            'inline-flex items-center justify-between gap-1.5 rounded-md text-left text-foreground hover:bg-accent disabled:opacity-40',
+            settingsControlTypeClass,
+            triggerClassName,
+          )}
         >
           <span className="min-w-0 flex-1 truncate text-left">{trigger}</span>
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
-        </Button>
+        </button>
       </PopoverTrigger>
-      <PopoverContent align={align} sideOffset={8} className="w-[22rem] max-w-[calc(100vw-2rem)] p-0">
+      <PopoverContent align={align} sideOffset={8} className="settings-picker-menu w-[22rem] max-w-[calc(100vw-2rem)] p-0">
         <SearchableModelList
           value={value}
           leading={leading}
