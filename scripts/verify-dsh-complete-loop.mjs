@@ -47,9 +47,9 @@ const TASK_A_PROMPT = [
 const TASK_B_PROMPT_TEMPLATE = [
   '请使用本产品的隔离浏览器访问这个本机页面（只走 127.0.0.1，不要打开用户自己的 Chrome / Edge）：',
   '{url}',
-  '页面上有一段标记字符串。请读取该标记，把它原样写进工作区 NOTES.md（可以新建或追加），并在回复里引用该标记。',
+  '隔离浏览器已经打开该页面。请立刻对当前页做 snapshot 或读取 #marker，把标记字符串原样写进工作区 NOTES.md（可以新建或追加），并在回复里引用该标记，然后结束。',
   `优先使用官方 Playwright MCP 工具（名称通常带 ${PLAYWRIGHT_OFFICIAL_PREFIX} 前缀），或产品内置的隔离浏览器 / milksu_workspace 浏览器动作。`,
-  '不要启动第二只用户日常浏览器，不要做 Browser Use 配对。',
+  '不要启动第二只用户日常浏览器，不要做 Browser Use 配对，不要去读产品仓库或加载 skill。',
 ].join('\n')
 
 const TASK_C_PROMPT_TEMPLATE = [
