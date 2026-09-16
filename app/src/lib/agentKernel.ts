@@ -6,6 +6,10 @@ export function normalizeAgentKernel(value: unknown): AgentKernel {
   return 'pi'
 }
 
+export function defaultAgentKernel(value: unknown): AgentKernel {
+  return normalizeAgentKernel(value)
+}
+
 export function conversationKernelLocked(
   messages: Array<{ role?: string; status?: string | null }> | undefined,
 ): boolean {

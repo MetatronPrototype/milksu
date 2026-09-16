@@ -1,8 +1,9 @@
 import { createStore, useStore, useStoreRuntime } from '@/lib/reactStore'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   Check,
+  ChevronDown,
   LogOut,
   Plus,
   Trash2,
@@ -21,6 +22,9 @@ import {
   Input,
   NativeSelect,
   NativeSelectOption,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   Select,
   SelectContent,
   SelectGroup,
@@ -187,6 +191,50 @@ const databaseStateVariants: Record<DatabaseCompatibilityState, 'secondary' | 'd
   newer: 'destructive',
   corrupt: 'destructive',
   remaining: 'outline',
+}
+
+function DefaultKernelPicker({
+  value,
+  ariaLabel,
+  onChange,
+}: {
+  value: 'pi' | 'dsh'
+  ariaLabel: string
+  onChange: (value: 'pi' | 'dsh') => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-label={ariaLabel}
+          className="settings-control h-7 justify-between gap-1.5 px-2"
+        >
+          <span className="min-w-0 flex-1 truncate text-left">{value === 'dsh' ? 'DSH' : 'Pi'}</span>
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[14rem] p-1">
+        {(['pi', 'dsh'] as const).map(id => (
+          <button
+            key={id}
+            type="button"
+            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
+            onClick={() => {
+              onChange(id)
+              setOpen(false)
+            }}
+          >
+            <span className="min-w-0 flex-1 truncate">{id === 'dsh' ? 'DSH' : 'Pi'}</span>
+            {value === id ? <Check className="size-3.5 shrink-0" /> : null}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 export default function SettingsPage({
@@ -799,6 +847,16 @@ export default function SettingsPage({
                         }] : undefined}
                         groups={searchablePickerGroups}
                         onChange={value => store.setDefaultModelKey(value)}
+                      />
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('默认运行时', 'Default runtime')}
+                    trailing={(
+                      <DefaultKernelPicker
+                        value={working?.default_kernel === 'dsh' ? 'dsh' : 'pi'}
+                        ariaLabel={t('默认运行时', 'Default runtime')}
+                        onChange={store.setDefaultKernel}
                       />
                     )}
                   />
@@ -1458,6 +1516,13 @@ function createSettingsStore(
       } else if (selection.source === 'personal') {
         working.model_routing = { ...working.model_routing, source_order: ['personal', 'account'] }
       }
+    })
+    persist()
+  }
+
+  function setDefaultKernel(value: string) {
+    patchWorking(working => {
+      working.default_kernel = value === 'dsh' ? 'dsh' : 'pi'
     })
     persist()
   }
@@ -2987,6 +3052,7 @@ function createSettingsStore(
     accountStateLabel,
     databaseStateLabels,
     defaultModelKey,
+    setDefaultKernel,
     defaultModelAvailable,
     availableModelCount,
     defaultModelLabel,

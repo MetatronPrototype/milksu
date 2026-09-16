@@ -45,6 +45,7 @@ import {
 import { normalizeDomainTaskContext } from '@/lib/domainTaskContext'
 import { shouldRememberCodingProject } from '@/lib/codingProjectMemory'
 import { conversationWorkspaceHome, type WorkspaceHome } from '@/lib/workspaceSessionRouting'
+import { clearComposerDraft, composerDraftKey } from '@/lib/composerDraftStore'
 import { modelContextWindowOverride, resolveModelContextWindow } from '@/lib/knownContextWindow'
 import { installedModelContextWindows } from '@/modelCatalog'
 import { MODEL_THINKING_LEVELS } from '@/lib/modelThinking'
@@ -388,6 +389,11 @@ export function normalizeConversation(raw: Record<string, unknown>): Conversatio
       ? Number(raw.pinnedOrder)
       : undefined,
     kernel: normalizeAgentKernel(raw.kernel),
+    parentConversationId: typeof raw.parentConversationId === 'string'
+      && raw.parentConversationId.trim()
+      ? raw.parentConversationId.trim()
+      : undefined,
+    multitask: raw.multitask === true ? true : undefined,
     modelMode: ['auto', 'manual'].includes(String(raw.modelMode))
       ? raw.modelMode as Conversation['modelMode']
       : undefined,
@@ -839,6 +845,7 @@ type ConversationsState = {
   activeId: string | null
   pendingWorkspacePath: string
   pendingWorkspaceHome: WorkspaceHome
+  defaultKernel: AgentKernel
   pendingKernel: AgentKernel
   pendingModelMode: 'auto' | 'manual' | undefined
   pendingModelProvider: string | undefined
@@ -863,12 +870,27 @@ type ConversationsState = {
   pendingComposerDraft: PendingComposerDraft | null
 }
 
+type ParkedPendingCanvas = {
+  workspacePath: string
+  kernel: AgentKernel
+  modelMode: ConversationsState['pendingModelMode']
+  modelProvider: string | undefined
+  modelId: string | undefined
+  thinkingLevel: ModelThinkingLevel | undefined
+  modelSourcePreference: ConversationsState['pendingModelSourcePreference']
+  executionMode: CodingExecutionMode
+  approvalPolicy: CodingApprovalPolicy
+  mcpServers: string[]
+  mcpConfigDigest: string
+}
+
 export function createConversationsRuntime(options?: { live?: boolean }) {
   const store = createStore<ConversationsState>({
     conversations: [],
     activeId: null,
     pendingWorkspacePath: '',
     pendingWorkspaceHome: 'chat',
+    defaultKernel: 'pi',
     pendingKernel: 'pi',
     pendingModelMode: undefined,
     pendingModelProvider: undefined,
@@ -901,6 +923,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set pendingWorkspacePath(value) { store.setState({ pendingWorkspacePath: value }) },
     get pendingWorkspaceHome() { return store.getState().pendingWorkspaceHome },
     set pendingWorkspaceHome(value) { store.setState({ pendingWorkspaceHome: value }) },
+    get defaultKernel() { return store.getState().defaultKernel },
+    set defaultKernel(value) { store.setState({ defaultKernel: value }) },
     get pendingKernel() { return store.getState().pendingKernel },
     set pendingKernel(value) { store.setState({ pendingKernel: value }) },
     get pendingModelMode() { return store.getState().pendingModelMode },
@@ -946,6 +970,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get pendingComposerDraft() { return store.getState().pendingComposerDraft },
     set pendingComposerDraft(value) { store.setState({ pendingComposerDraft: value }) },
   }
+  const parkedPendingByHome: Partial<Record<WorkspaceHome, ParkedPendingCanvas>> = {}
 
   // A short-lived engine status line (idle reclaim, blocked deletions and friends). It is
   // deliberately not part of any conversation's messages.
@@ -1314,6 +1339,71 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     })
   }
 
+  async function spawnMultitaskChild(
+    parentId: string,
+    prompt: string,
+    visiblePrompt: string,
+    attachments: CodingAttachment[],
+    scopeToken?: ComposerScopeToken,
+    productAction?: CodingProductActionRequest,
+  ) {
+    const parent = s.conversations.find(item => item.id === parentId)
+    if (!parent || normalizeAgentKernel(parent.kernel) !== 'dsh') return false
+    const childId = crypto.randomUUID()
+    const message: Message = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: visiblePrompt,
+      timestamp: Date.now(),
+      attachments: attachments.length ? attachments : undefined,
+    }
+    const child: Conversation = {
+      id: childId,
+      title: fallbackConversationTitle(visiblePrompt),
+      createdAt: Date.now(),
+      workspacePath: parent.workspacePath,
+      workspaceHome: parent.workspaceHome,
+      kernel: 'dsh',
+      parentConversationId: parent.id,
+      modelMode: parent.modelMode,
+      modelProvider: parent.modelProvider,
+      modelId: parent.modelId,
+      thinkingLevel: parent.thinkingLevel,
+      modelSourcePreference: parent.modelSourcePreference,
+      executionMode: parent.executionMode,
+      approvalPolicy: parent.approvalPolicy,
+      mcpServers: parent.mcpServers,
+      mcpConfigDigest: parent.mcpConfigDigest,
+      messages: [message],
+    }
+    s.conversations = [child, ...s.conversations]
+    persist(child)
+    s.runningIds = new Set(s.runningIds).add(childId)
+    patchTurnStatus(childId, state => applySessionRunStarted(state))
+    try {
+      await invokeRuntimeTurn(childId, {
+        prompt,
+        attachments,
+        scopeToken,
+        productAction,
+      })
+      return true
+    } catch (reason) {
+      finishRun(childId)
+      update(childId, conversation => ({
+        ...conversation,
+        messages: [...conversation.messages, {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: t(`Agent 未启动：${agentRuntimeErrorMessage(reason)}`, `Agent did not start: ${agentRuntimeErrorMessage(reason)}`),
+          timestamp: Date.now(),
+          status: 'done',
+        }],
+      }))
+      return false
+    }
+  }
+
   function setMessageQueue(id: string, queue: CodingMessageQueue) {
     const next = new Map(s.messageQueues)
     if (queue.steering.length || queue.followUp.length) next.set(id, queue)
@@ -1325,11 +1415,69 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   // same way the archived-chat settings panel reports its own errors.
 
   async function archive(id: string) {
+    await abortChildSessions(id)
     await runConversationAction(t('归档', 'Archive'), 'archive_conversation', id)
   }
 
   async function remove(id: string) {
+    await abortChildSessions(id)
     await runConversationAction(t('删除', 'Delete'), 'delete_conversation', id)
+  }
+
+  function childIdsFor(parentId: string) {
+    return s.conversations
+      .filter(item => item.parentConversationId === parentId)
+      .map(item => item.id)
+  }
+
+  async function abortChildSessions(parentId: string) {
+    await Promise.all(childIdsFor(parentId).map(id => abort(id)))
+  }
+
+  async function abortWorkingItem(id: string) {
+    const item = s.conversations.find(conversation => conversation.id === id)
+    if (item) {
+      await abort(item.id)
+      return
+    }
+    const owner = s.conversations.find(conversation => (
+      (conversation.subagentTasks ?? []).some(task => (
+        task.id === id || task.toolCallId === id
+      ))
+    ))
+    if (!owner) return
+    if (normalizeAgentKernel(owner.kernel) === 'dsh') {
+      await invokeCommand('abort_message', {
+        conversationId: owner.id,
+        subagentId: id,
+      })
+      return
+    }
+    await abort(owner.id)
+  }
+
+  async function abortWorkingAll(parentId?: string) {
+    const rootId = parentId || s.activeId
+    if (!rootId) return
+    const root = s.conversations.find(item => (
+      item.id === rootId || item.parentConversationId === rootId
+    ))
+    const target = root?.parentConversationId
+      ? root.parentConversationId
+      : rootId
+    await abortChildSessions(target)
+    const parent = s.conversations.find(item => item.id === target)
+    const liveTasks = (parent?.subagentTasks ?? []).some(task => (
+      task.status === 'start' || task.status === 'running'
+    ))
+    if (parent && normalizeAgentKernel(parent.kernel) === 'dsh' && liveTasks) {
+      await invokeCommand('abort_message', {
+        conversationId: target,
+        subagentId: '*',
+      })
+      return
+    }
+    if (liveTasks) await abort(target)
   }
 
   async function runConversationAction(action: string, command: string, id: string) {
@@ -1446,17 +1594,48 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     return draft
   }
 
-  function startNew(options: { workspaceHome?: WorkspaceHome } = {}) {
-    const nextHome = options.workspaceHome ?? 'chat'
-    const previousHome = currentWorkspaceHome()
-    const currentWorkspace = active()?.workspacePath || s.pendingWorkspacePath
-    const inheritHomeProject = nextHome === 'chat'
-      && previousHome === 'chat'
-      && shouldRememberCodingProject(currentWorkspace)
+  function snapshotPendingCanvas(): ParkedPendingCanvas {
+    return {
+      workspacePath: s.pendingWorkspacePath,
+      kernel: s.pendingKernel,
+      modelMode: s.pendingModelMode,
+      modelProvider: s.pendingModelProvider,
+      modelId: s.pendingModelId,
+      thinkingLevel: s.pendingThinkingLevel,
+      modelSourcePreference: s.pendingModelSourcePreference,
+      executionMode: s.pendingExecutionMode,
+      approvalPolicy: s.pendingApprovalPolicy,
+      mcpServers: [...s.pendingMCPServers],
+      mcpConfigDigest: s.pendingMCPConfigDigest,
+    }
+  }
+
+  function applyPendingCanvas(next: ParkedPendingCanvas, home: WorkspaceHome) {
     s.activeId = null
-    s.pendingWorkspaceHome = nextHome
-    s.pendingWorkspacePath = inheritHomeProject ? String(currentWorkspace) : ''
-    s.pendingKernel = 'pi'
+    s.pendingWorkspaceHome = home
+    s.pendingWorkspacePath = next.workspacePath
+    s.pendingKernel = next.kernel
+    s.pendingModelMode = next.modelMode
+    s.pendingModelProvider = next.modelProvider
+    s.pendingModelId = next.modelId
+    s.pendingThinkingLevel = next.thinkingLevel
+    s.pendingModelSourcePreference = next.modelSourcePreference
+    s.pendingExecutionMode = next.executionMode
+    s.pendingApprovalPolicy = next.approvalPolicy
+    s.pendingMCPServers = [...next.mcpServers]
+    s.pendingMCPConfigDigest = next.mcpConfigDigest
+  }
+
+  function parkCurrentPending() {
+    if (s.activeId) return
+    parkedPendingByHome[s.pendingWorkspaceHome] = snapshotPendingCanvas()
+  }
+
+  function applyFreshPending(home: WorkspaceHome, inheritWorkspace = '') {
+    s.activeId = null
+    s.pendingWorkspaceHome = home
+    s.pendingWorkspacePath = inheritWorkspace
+    s.pendingKernel = s.defaultKernel
     s.pendingModelMode = undefined
     s.pendingModelProvider = undefined
     s.pendingModelId = undefined
@@ -1467,7 +1646,32 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.pendingMCPServers = []
     s.pendingMCPConfigDigest = ''
     s.pendingComposerDraft = null
-    if (nextHome === 'chat' && !inheritHomeProject) void applyRememberedHomeProjectIfIdle()
+    clearComposerDraft(composerDraftKey(null, home))
+    delete parkedPendingByHome[home]
+    if (home === 'chat' && !inheritWorkspace) void applyRememberedHomeProjectIfIdle()
+  }
+
+  function startNew(options: { workspaceHome?: WorkspaceHome } = {}) {
+    const nextHome = options.workspaceHome ?? 'chat'
+    const previousHome = currentWorkspaceHome()
+    const currentWorkspace = active()?.workspacePath || s.pendingWorkspacePath
+    const inheritHomeProject = nextHome === 'chat'
+      && previousHome === 'chat'
+      && shouldRememberCodingProject(currentWorkspace)
+    if (!s.activeId && previousHome !== nextHome) parkCurrentPending()
+    applyFreshPending(nextHome, inheritHomeProject ? String(currentWorkspace) : '')
+  }
+
+  function resumePendingHome(home: WorkspaceHome) {
+    if (!s.activeId && s.pendingWorkspaceHome === home) return
+    if (!s.activeId) parkCurrentPending()
+    const parked = parkedPendingByHome[home]
+    if (parked) {
+      delete parkedPendingByHome[home]
+      applyPendingCanvas(parked, home)
+      return
+    }
+    applyFreshPending(home)
   }
 
   function ensureConversation(
@@ -1578,6 +1782,23 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       workspacePath: undefined,
       mcpServers: undefined,
       mcpConfigDigest: undefined,
+    }))
+  }
+
+  function setDefaultKernel(kernel: AgentKernel) {
+    const next = normalizeAgentKernel(kernel)
+    const previous = s.defaultKernel
+    s.defaultKernel = next
+    if (!s.activeId && s.pendingKernel === previous) s.pendingKernel = next
+  }
+
+  function setMultitask(enabled: boolean) {
+    if (!s.activeId) return
+    const current = s.conversations.find(item => item.id === s.activeId)
+    if (!current || normalizeAgentKernel(current.kernel) !== 'dsh') return
+    update(s.activeId, conversation => ({
+      ...conversation,
+      multitask: enabled ? true : undefined,
     }))
   }
 
@@ -1747,6 +1968,25 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       && s.runningIds.has(runningConversationId)
       && !answeringAsk,
     )
+    const activeKernel = normalizeAgentKernel(
+      activeConversation?.kernel ?? s.pendingKernel,
+    )
+    if (
+      steering
+      && activeKernel === 'dsh'
+      && activeConversation?.multitask
+      && runningConversationId
+    ) {
+      return spawnMultitaskChild(
+        runningConversationId,
+        prompt,
+        visiblePrompt,
+        attachments,
+        scopeToken,
+        productAction,
+      )
+    }
+    if (steering && activeKernel !== 'pi') return false
     if ((steering || answeringAsk) && attachments.length) return false
     const message: Message = {
       id: crypto.randomUUID(),
@@ -2929,6 +3169,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get selectedMCPConfigDigest() { return selectedMCPConfigDigest() },
     get conversationActionError() { return s.conversationActionError },
     get pendingComposerDraft() { return s.pendingComposerDraft },
+    get pendingWorkspaceHome() { return s.pendingWorkspaceHome },
     get activeSessionReady() { return activeSessionReady() },
     get activeResumed() { return activeResumed() },
     get activeCompacting() { return activeCompacting() },
@@ -2957,9 +3198,14 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     cancelQueuedGuidance,
     editQueuedGuidance,
     startNew,
+    resumePendingHome,
     ensureConversation,
     setWorkspace,
     clearWorkspace,
+    setDefaultKernel,
+    setMultitask,
+    abortWorkingItem,
+    abortWorkingAll,
     setKernel,
     setModelSelection,
     setThinkingLevel,

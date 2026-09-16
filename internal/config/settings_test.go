@@ -53,6 +53,15 @@ func TestWithDefaults(t *testing.T) {
 	if settings.ActiveProvider != presetDeepSeekServiceID || settings.ActiveModel != "deepseek-flash" {
 		t.Fatalf("unexpected defaults: %#v", settings)
 	}
+	if settings.DefaultKernel != "pi" {
+		t.Fatalf("default kernel should be pi: %q", settings.DefaultKernel)
+	}
+	if got := NormalizeDefaultKernel("DSH"); got != "dsh" {
+		t.Fatalf("NormalizeDefaultKernel(DSH)=%q", got)
+	}
+	if got := NormalizeDefaultKernel(""); got != "pi" {
+		t.Fatalf("NormalizeDefaultKernel empty=%q", got)
+	}
 	if settings.PreferredExternalEditor != "vscode" {
 		t.Fatalf("expected default VS Code editor, got %q", settings.PreferredExternalEditor)
 	}

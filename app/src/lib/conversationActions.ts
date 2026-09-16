@@ -40,6 +40,8 @@ export function cloneConversationForFork(
     archivedAt: undefined,
     lastContextUsage: undefined,
     subagentTasks: undefined,
+    parentConversationId: undefined,
+    multitask: undefined,
     messages: (options.messages ?? []).map(item => ({ ...item })),
   }
 }

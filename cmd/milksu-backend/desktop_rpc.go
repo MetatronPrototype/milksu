@@ -256,6 +256,7 @@ func desktopAppMethods(app *App) map[string]desktopAppMethod {
 		"PreviewCodingAttachment":              rendererDesktopMethod(app.PreviewCodingAttachment),
 		"SendMessage":                          rendererDesktopMethod(app.SendMessage),
 		"AbortMessage":                         rendererDesktopMethod(app.AbortMessage),
+		"AbortSubagent":                        rendererDesktopMethod(app.AbortSubagent),
 		"RespondToolApproval":                  rendererDesktopMethod(app.RespondToolApproval),
 		"RefreshCodingBackgroundTasks":         rendererDesktopMethod(app.RefreshCodingBackgroundTasks),
 		"StartCodingBackgroundTask":            rendererDesktopMethod(app.StartCodingBackgroundTask),

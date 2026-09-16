@@ -76,6 +76,6 @@ npm run test:product-loop-catalog
 
 - 不要为了跑回归构建 MilkSU Beta。
 - 不要把协调器挂进 Settings「评测」或 App 启动。
-- 不要发明第二套 GUI runner；CDP 附着走 `scripts/lib/desktop-gui-driver.mjs`，产品接口是 `window.milksu.invoke`。
+- 不要发明第二套 GUI runner；CDP 附着走 `scripts/lib/desktop-gui-driver.mjs`，产品接口是 `window.milksu.invoke`。`isMilkSUPage` 必须先排除标题或 URL 带 fixture 的页（例如 `MilkSU DSH fixture`）；那些隔离浏览器页会抢走 CDP，主窗的 `window.milksu` 就连不上。
 - 不要在 CI 默认跑 `--gui --suite all`（真 API、本机窗口）。
 - 不要把本回执写成 Coding / CTF / Memory / 发版完成。

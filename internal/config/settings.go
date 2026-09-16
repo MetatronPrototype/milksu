@@ -83,8 +83,11 @@ type LabConfig struct {
 }
 
 type AppSettings struct {
-	ActiveProvider          string                                    `json:"active_provider"`
-	ActiveModel             string                                    `json:"active_model"`
+	ActiveProvider string `json:"active_provider"`
+	ActiveModel    string `json:"active_model"`
+	// DefaultKernel chooses Pi or DSH for a new conversation only.
+	// Existing conversations keep the kernel persisted on that row.
+	DefaultKernel           string                                    `json:"default_kernel,omitempty"`
 	ModelVerified           *ModelVerification                        `json:"model_verification,omitempty"`
 	ModelRouting            ModelRoutingConfig                        `json:"model_routing"`
 	Relay                   *RelayConfig                              `json:"relay,omitempty"`
@@ -120,10 +123,20 @@ func defaultDeepSeekProvider() ProviderConfig {
 	}
 }
 
+func NormalizeDefaultKernel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "dsh", "deepseek", "deepseek-harness":
+		return "dsh"
+	default:
+		return "pi"
+	}
+}
+
 func DefaultSettings() AppSettings {
 	return AppSettings{
 		ActiveProvider: presetDeepSeekServiceID,
 		ActiveModel:    "deepseek-flash",
+		DefaultKernel:  "pi",
 		ModelRouting: ModelRoutingConfig{
 			SourceOrder:  []string{ModelSourceAccount, ModelSourcePersonal},
 			AutoFallback: boolPointer(false),
@@ -708,6 +721,7 @@ func withDefaults(value AppSettings) AppSettings {
 	if value.ActiveModel == "" {
 		value.ActiveModel = defaults.ActiveModel
 	}
+	value.DefaultKernel = NormalizeDefaultKernel(value.DefaultKernel)
 	if value.Providers == nil {
 		value.Providers = make(map[string]ProviderConfig)
 	}

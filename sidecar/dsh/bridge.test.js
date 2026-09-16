@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
-import { readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join } from "node:path";
 import test from "node:test";
-import { dshProductIpc } from "../hostpath.js";
+import { codingBrowserDescriptorFile, dshProductIpc } from "../hostpath.js";
 import { dshPlaywrightMcpServerName } from "./mcp-servers.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -352,5 +352,193 @@ test("DSH resumeSessionId uses session/resume when the ACP session is still live
     } catch {
       // Already gone.
     }
+  }
+});
+
+test("DSH greeting create_session does not write a coding-browser descriptor", async () => {
+  const conversationId = `conv-hi-cdp-${process.pid}`;
+  const descriptorFile = codingBrowserDescriptorFile(conversationId);
+  const bridge = runBridge();
+  try {
+    bridge.send({
+      action: "create_session",
+      conversationId,
+      cwd: here,
+    });
+    await bridge.waitFor("ready");
+    assert.equal(existsSync(descriptorFile), false);
+  } finally {
+    bridge.child.kill();
+    try {
+      rmSync(dirname(descriptorFile), { recursive: true, force: true });
+    } catch {
+      // Nothing to clean.
+    }
+  }
+});
+
+test("DSH attaches the coding-browser descriptor after a typed workspace response", async () => {
+  const conversationId = `conv-late-cdp-${process.pid}`;
+  const descriptorFile = codingBrowserDescriptorFile(conversationId);
+  const bridge = runBridge();
+  try {
+    bridge.send({
+      action: "create_session",
+      conversationId,
+      cwd: here,
+    });
+    await bridge.waitFor("ready");
+    assert.equal(existsSync(descriptorFile), false);
+    bridge.send({
+      action: "workspace_action_response",
+      conversationId,
+      requestId: "workspace-late-cdp",
+      ok: true,
+      result: "{\"tabs\":[]}",
+      codingBrowser: {
+        sessionId: "browser_testdsh01",
+        cdpEndpoint: "http://127.0.0.1:9333",
+      },
+    });
+    const started = Date.now();
+    while (Date.now() - started < 2000) {
+      if (existsSync(descriptorFile)) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(existsSync(descriptorFile), true);
+    const written = JSON.parse(readFileSync(descriptorFile, "utf8"));
+    assert.equal(written.sessionId, "browser_testdsh01");
+    assert.equal(written.cdpEndpoint, "http://127.0.0.1:9333");
+  } finally {
+    bridge.child.kill();
+    try {
+      rmSync(dirname(descriptorFile), { recursive: true, force: true });
+    } catch {
+      // Nothing to clean.
+    }
+  }
+});
+
+test("DSH send_message can attach a later-opened browser without creating it", async () => {
+  const conversationId = `conv-reuse-cdp-${process.pid}`;
+  const descriptorFile = codingBrowserDescriptorFile(conversationId);
+  const bridge = runBridge();
+  try {
+    bridge.send({
+      action: "send_message",
+      conversationId,
+      prompt: "hi",
+      cwd: here,
+    });
+    await bridge.waitFor("message_done");
+    assert.equal(existsSync(descriptorFile), false);
+    bridge.send({
+      action: "send_message",
+      conversationId,
+      prompt: "continue",
+      cwd: here,
+      codingBrowser: {
+        sessionId: "browser_testdsh02",
+        cdpEndpoint: "http://127.0.0.1:9334",
+      },
+    });
+    const started = Date.now();
+    while (Date.now() - started < 2000) {
+      if (existsSync(descriptorFile)) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(existsSync(descriptorFile), true);
+    const written = JSON.parse(readFileSync(descriptorFile, "utf8"));
+    assert.equal(written.sessionId, "browser_testdsh02");
+    assert.equal(written.cdpEndpoint, "http://127.0.0.1:9334");
+  } finally {
+    bridge.child.kill();
+    try {
+      rmSync(dirname(descriptorFile), { recursive: true, force: true });
+    } catch {
+      // Nothing to clean.
+    }
+  }
+});
+
+test("DSH send_message on different sessions is not serialized", async () => {
+  const bridge = runBridge({ MILKSU_DSH_FAKE_PROMPT_MS: "180" });
+  try {
+    bridge.send({ action: "create_session", conversationId: "parent", cwd: here });
+    await bridge.waitFor("ready");
+    bridge.send({ action: "create_session", conversationId: "child", cwd: here });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    const started = Date.now();
+    bridge.send({ action: "send_message", conversationId: "parent", prompt: "slow", cwd: here });
+    bridge.send({ action: "send_message", conversationId: "child", prompt: "fast", cwd: here });
+    const childDone = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`child did not settle: ${JSON.stringify(bridge.events)}`)), 2000);
+      const tick = () => {
+        const done = bridge.events.find(event => (
+          event.type === "turn_settled" && event.id === "child"
+        ));
+        if (done) {
+          clearTimeout(timer);
+          resolve(done);
+          return;
+        }
+        setTimeout(tick, 15);
+      };
+      tick();
+    });
+    const parentDone = bridge.events.find(event => (
+      event.type === "turn_settled" && event.id === "parent"
+    ));
+    assert.ok(childDone);
+    assert.equal(parentDone, undefined);
+    assert.ok(Date.now() - started < 160);
+  } finally {
+    bridge.child.kill();
+  }
+});
+
+test("DSH native subagent ACP updates project into subagent_tasks", async () => {
+  const bridge = runBridge({ MILKSU_DSH_FAKE_SUBAGENT: "1" });
+  try {
+    bridge.send({
+      action: "create_session",
+      conversationId: "conv-sub",
+      cwd: here,
+    });
+    await bridge.waitFor("ready");
+    bridge.send({
+      action: "send_message",
+      conversationId: "conv-sub",
+      prompt: "open four",
+      cwd: here,
+    });
+    const started = Date.now();
+    let roster;
+    while (Date.now() - started < 3000) {
+      roster = [...bridge.events].reverse().find(event => event.type === "subagent_tasks");
+      if (roster?.subagentTasks?.some(task => task.id === "cf4fb9a2" && task.status === "running")) {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.ok(roster, `missing subagent_tasks: ${JSON.stringify(bridge.events)}`);
+    assert.deepEqual(roster.subagentTasks, [{
+      id: "cf4fb9a2",
+      role: "环境巡检",
+      status: "running",
+      toolCallId: "call-sub-1",
+    }]);
+    bridge.send({
+      action: "abort_session",
+      conversationId: "conv-sub",
+      subagentId: "cf4fb9a2",
+    });
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(
+      bridge.events.some(event => event.type === "turn_settled" && event.aborted === true),
+      false,
+    );
+  } finally {
+    bridge.child.kill();
   }
 });

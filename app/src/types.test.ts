@@ -43,6 +43,16 @@ describe('model provider catalog', () => {
     const settings = withAppSettingsDefaults({} as AppSettings)
     expect(settings.active_provider).toBe('custom-relay-deepseek')
     expect(settings.active_model).toBe('deepseek-flash')
+    expect(settings.default_kernel).toBe('pi')
+  })
+
+  it('normalizes default_kernel without rewriting other settings', () => {
+    const settings = withAppSettingsDefaults({
+      active_provider: 'custom-relay-deepseek',
+      active_model: 'deepseek-flash',
+      default_kernel: 'deepseek-harness',
+    } as AppSettings)
+    expect(settings.default_kernel).toBe('dsh')
   })
 
   it('falls unknown official providers back to official DeepSeek Flash', () => {

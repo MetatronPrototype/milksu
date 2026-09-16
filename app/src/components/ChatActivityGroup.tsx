@@ -1,6 +1,5 @@
 import { useMemo, useRef } from 'react'
 import AgentPixelLoader from '@/components/AgentPixelLoader'
-import ChatSubagentRoster from '@/components/ChatSubagentRoster'
 import {
   buildChatActivityEntries,
   detailsToggleOpen,
@@ -9,7 +8,6 @@ import {
   type ChatActivityEntry,
 } from '@/lib/chatActivity'
 import { agentToolChip } from '@/lib/agentConversation'
-import { subagentTasksForActivity } from '@/lib/subagentRoster'
 import { useT } from '@/hooks/useUiLocale'
 import type { SubagentTask } from '@/types'
 
@@ -18,7 +16,7 @@ export default function ChatActivityGroup({
   open,
   openEntryIds,
   revealCompleted = false,
-  subagentTasks = [],
+  subagentTasks: _subagentTasks = [],
   onToggleGroup: _onToggleGroup,
   onToggleEntry,
 }: {
@@ -33,20 +31,11 @@ export default function ChatActivityGroup({
   const t = useT()
   const entryDetails = useRef(new Map<string, HTMLDetailsElement>())
 
-  const rosterTasks = useMemo(() => (
-    subagentTasksForActivity(subagentTasks, activity.messages)
-  ), [subagentTasks, activity.messages])
-  const rosterCallIds = useMemo(() => new Set(
-    rosterTasks.flatMap(task => [task.id, task.toolCallId].filter(Boolean) as string[]),
-  ), [rosterTasks])
   const toolEntries = useMemo(() => {
     const entries = buildChatActivityEntries(activity.messages)
-      .filter(entry => (
-        entry.toolName !== 'subagent'
-        || !rosterCallIds.has(String(entry.request?.toolCallId ?? ''))
-      ))
+      .filter(entry => entry.toolName !== 'subagent')
     return revealCompleted ? entries : visibleChatActivityEntries(entries, openEntryIds)
-  }, [activity.messages, rosterCallIds, revealCompleted, openEntryIds])
+  }, [activity.messages, revealCompleted, openEntryIds])
 
   function setEntryDetails(entryId: string, element: HTMLDetailsElement | null) {
     if (element) entryDetails.current.set(entryId, element)
@@ -81,14 +70,13 @@ export default function ChatActivityGroup({
     return t(`${Math.round(durationMs / 1000)} 秒`, `${Math.round(durationMs / 1000)} s`)
   }
 
-  if (!toolEntries.length && !rosterTasks.length) return null
+  if (!toolEntries.length) return null
 
   return (
     <div
       className="tool-activity mb-7"
       data-activity-open={open ? 'true' : 'false'}
     >
-      <ChatSubagentRoster tasks={rosterTasks} />
       {toolEntries.length ? (
         <div className="tool-activity__entries">
           {toolEntries.map(entry => {

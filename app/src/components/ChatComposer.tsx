@@ -35,6 +35,7 @@ import {
   FileText,
   FolderOpen,
   Globe2,
+  Layers2,
   Lightbulb,
   LoaderCircle,
   MessageSquarePlus,
@@ -86,6 +87,12 @@ import type {
 import type { CodingRecentProject } from '@/codingEnvironmentTypes'
 import type { ContextUsagePresentation } from '@/lib/sessionTurnStatus'
 import { CODING_SKILLS } from '@/codingSkills'
+import {
+  clearComposerDraft,
+  readComposerDraft,
+  writeComposerDraft,
+  type StoredComposerDraft,
+} from '@/lib/composerDraftStore'
 import { useT } from '@/hooks/useUiLocale'
 
 type ComposerScopeToken = 'browser-use' | 'computer-use'
@@ -384,6 +391,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   thinkingLevel?: ModelThinkingLevel
   kernel?: 'pi' | 'dsh'
   kernelLocked?: boolean
+  multitask?: boolean
+  onToggleMultitask?: (enabled: boolean) => void
   compactDisabled?: boolean
   contextUsage?: ContextUsagePresentation | null
   workspaceReady?: boolean
@@ -435,7 +444,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   const {
     running, aborting, compacting, ctfSession, goalMode, goal, executionMode,
     approvalPolicy, approvalLabel, modelKey, automaticModelLabel, compactModelLabel,
-    thinkingLevels, thinkingLevel, kernel, kernelLocked, contextUsage, workspaceReady,
+    thinkingLevels, thinkingLevel, kernel, kernelLocked, multitask, contextUsage, workspaceReady,
     workspaceLocked, workspaceName, workspacePath, gitRepository, gitBranch, gitBranches,
     browserUseReady, computerUseReady, availableSkills, importedSkills, selectedMcpServers,
     mcpCatalog, mcpConfigDigest, conversationKey, queuedGuidance,
@@ -449,10 +458,10 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }))
 
   const [draft, setDraft] = useState('')
-  const draftsByConversation = useRef(new Map<string, { html: string; text: string }>())
   const composerFrame = useRef<HTMLDivElement | null>(null)
   const messageEditor = useRef<HTMLDivElement | null>(null)
   const [pendingAttachments, setPendingAttachments] = useState<CodingAttachment[]>([])
+  const pendingAttachmentsRef = useRef<CodingAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [attachmentImporting, setAttachmentImporting] = useState(false)
   const attachmentPreviewDialog = useRef<HTMLDialogElement | null>(null)
@@ -479,6 +488,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   const goalSlot = useRef<HTMLDivElement | null>(null)
   const conversationKeyRef = useRef(conversationKey)
   const previousConversationKey = useRef(conversationKey)
+  const hydratedComposerKey = useRef<string | null>(null)
+  pendingAttachmentsRef.current = pendingAttachments
 
   function currentConversationKey() {
     return String(conversationKey ?? '')
@@ -540,23 +551,43 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     applyingComposerHistory.current = false
   }
 
-  function captureComposerDraft() {
-    return { html: composerHtml(), text: readComposerText() }
+  function captureComposerDraft(): StoredComposerDraft {
+    return {
+      html: composerHtml(),
+      text: readComposerText(),
+      attachments: [...pendingAttachmentsRef.current],
+    }
   }
 
-  function applyStoredComposerDraft(stored?: { html: string; text: string }) {
+  function persistComposerDraft(key = String(conversationKeyRef.current ?? currentConversationKey())) {
+    const normalized = String(key ?? '').trim()
+    if (!normalized) return
+    writeComposerDraft(normalized, captureComposerDraft())
+  }
+
+  function applyStoredComposerDraft(stored?: StoredComposerDraft) {
+    pendingAttachmentsRef.current = stored?.attachments ?? []
     applyComposerHtml(stored?.html ?? '')
     setDraft(stored?.text ?? '')
+    setPendingAttachments(stored?.attachments ?? [])
   }
 
   useEffect(() => {
     const key = currentConversationKey()
-    const previous = previousConversationKey.current
-    if (previous) draftsByConversation.current.set(String(previous), captureComposerDraft())
-    applyStoredComposerDraft(key ? draftsByConversation.current.get(key) : undefined)
+    const previous = String(previousConversationKey.current ?? '')
+    const switched = previous !== String(conversationKey ?? '')
+    if (switched && previous) persistComposerDraft(previous)
+    if (switched || hydratedComposerKey.current !== key) {
+      applyStoredComposerDraft(key ? readComposerDraft(key) : undefined)
+      hydratedComposerKey.current = key
+    }
     previousConversationKey.current = conversationKey
     conversationKeyRef.current = conversationKey
   }, [conversationKey])
+
+  useEffect(() => {
+    return () => persistComposerDraft()
+  }, [])
 
   const hasUnfinishedGoal = Boolean(goal && goal.status !== 'complete')
   const availableSkillOptions = useMemo(() => {
@@ -772,7 +803,10 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
       setAttachmentError(t('每条消息最多添加 8 个附件。', 'Each message can have at most 8 attachments.'))
       return false
     }
-    setPendingAttachments([...merged.values()])
+    const next = [...merged.values()]
+    pendingAttachmentsRef.current = next
+    setPendingAttachments(next)
+    persistComposerDraft()
     return true
   }
 
@@ -847,7 +881,12 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
 
   function removeCodingAttachment(attachment: CodingAttachment) {
     const key = attachmentKey(attachment)
-    setPendingAttachments(current => current.filter(value => value.id !== attachment.id || value.name !== attachment.name))
+    setPendingAttachments(current => {
+      const next = current.filter(value => value.id !== attachment.id || value.name !== attachment.name)
+      pendingAttachmentsRef.current = next
+      persistComposerDraft()
+      return next
+    })
     setAttachmentThumbs(current => {
       if (!current[key]) return current
       const next = { ...current }
@@ -947,6 +986,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
 
   function syncComposerInput() {
     setDraft(readComposerText())
+    persistComposerDraft()
     const token = messageEditor.current?.querySelector<HTMLElement>('[data-composer-scope-token]')
     const tokenValue = token?.dataset.composerScopeToken
     setScopeToken(tokenValue === 'browser-use' || tokenValue === 'computer-use' ? tokenValue : null)
@@ -1084,7 +1124,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   function clearComposerInput() {
     rememberComposerSnapshot()
     messageEditor.current?.replaceChildren()
-    draftsByConversation.current.delete(currentConversationKey())
+    clearComposerDraft(currentConversationKey())
     setDraft('')
     setSlashQuery(null)
     slashQueryRange.current = null
@@ -1152,13 +1192,14 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     const attachments = [...pendingAttachments]
     const text = textValue.trim() || (attachments.length ? t('请检查这些附件并完成我接下来需要处理的任务。', 'Please review these attachments and complete the task I need next.') : '')
     if (!text) return
-    if (running && attachments.length) {
+    const parallelSend = kernel === 'dsh' && Boolean(multitask)
+    if (running && attachments.length && !parallelSend) {
       setAttachmentError(t('运行中引导暂不支持附件；请等待当前回合结束后再发送附件。', 'Steering while a turn is running does not support attachments. Wait until this turn finishes.'))
       return
     }
     const activeSkillToken = skillToken ?? undefined
-    const prompt = running ? text : goalMode ? `/goal ${text}` : activeSkillToken ? `/skill:${activeSkillToken} ${text}` : text
-    const visiblePrompt = !running && activeSkillToken && !goalMode
+    const prompt = running && !parallelSend ? text : goalMode ? `/goal ${text}` : activeSkillToken ? `/skill:${activeSkillToken} ${text}` : text
+    const visiblePrompt = !(running && !parallelSend) && activeSkillToken && !goalMode
       ? t(`使用 ${skillOption(activeSkillToken)?.label ?? activeSkillToken}\n${text}`, `Use ${skillOption(activeSkillToken)?.label ?? activeSkillToken}\n${text}`)
       : text
     const activeScopeToken = scopeToken ?? undefined
@@ -1513,9 +1554,10 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                 onChangeKernel={requestKernelChange}
                 onShowPermissions={() => props.onShowPermissions?.()}
                 leading={(
+                  <span className="inline-flex items-center gap-1">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button type="button" variant="ghost" size="icon" className="chat-composer__add" disabled={running} aria-label={t('添加内容与工具', 'Add content and tools')} title={t('添加附件、工作方式或交互范围', 'Add attachments, a working mode, or an interaction scope')}>
+                      <Button type="button" variant="ghost" size="icon" className="chat-composer__add" disabled={running && kernel !== 'dsh'} aria-label={t('添加内容与工具', 'Add content and tools')} title={t('添加附件、工作方式或交互范围', 'Add attachments, a working mode, or an interaction scope')}>
                         <Plus className="size-4" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -1541,6 +1583,25 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                           <span className="block text-label font-medium">{t('目标', 'Goal')}</span>
                           <span className="block text-caption text-muted-foreground">{hasUnfinishedGoal ? t('当前已有持续目标', 'A goal is already in progress') : t('设置一个持续追踪的目标', 'Set a goal to keep working toward')}</span>
                         </span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="composer-add-option"
+                        disabled={kernel !== 'dsh'}
+                        onSelect={() => {
+                          if (kernel !== 'dsh') return
+                          props.onToggleMultitask?.(!multitask)
+                        }}
+                      >
+                        <Layers2 className="size-4 shrink-0" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-label font-medium">Multitask</span>
+                          <span className="block text-caption text-muted-foreground">
+                            {kernel === 'dsh'
+                              ? t('一边跑子代理，一边继续主对话', 'Keep chatting while subagents run')
+                              : t('Pi 不能并行。模型拉起的子代理仍会出现在进行中。', 'Pi cannot run in parallel. Model-started subagents still appear in Working.')}
+                          </span>
+                        </span>
+                        {kernel === 'dsh' && multitask ? <Check className="size-4 shrink-0 text-primary" /> : null}
                       </DropdownMenuItem>
                       <DropdownMenuItem className="composer-add-option" onSelect={togglePlanningMode}>
                         <Lightbulb className="size-4 shrink-0" />
@@ -1611,6 +1672,19 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
+                  {kernel === 'dsh' && multitask ? (
+                    <button
+                      type="button"
+                      className="chat-composer__chip"
+                      aria-label="Multitask"
+                      title={t('一边跑子代理，一边继续主对话', 'Keep chatting while subagents run')}
+                      onClick={() => props.onToggleMultitask?.(false)}
+                    >
+                      <Layers2 className="size-3.5 shrink-0" />
+                      <span className="chat-composer__chip__label">Multitask</span>
+                    </button>
+                  ) : null}
+                  </span>
                 )}
                 status={(
                   <>
@@ -1712,8 +1786,20 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                   {aborting ? <LoaderCircle className="size-3.5 animate-spin" /> : <Square className="size-3.5 fill-current" />}
                 </Button>
               ) : null}
-              {!compacting && (!running || draft.trim() || pendingAttachments.length) ? (
-                <Button type="submit" variant="brand" size="icon" className="chat-composer__send" disabled={attachmentImporting || (!draft.trim() && !pendingAttachments.length)} aria-label={running ? t('发送引导', 'Send steering') : t('发送', 'Send')} title={running ? sendSteeringTitle : t('发送', 'Send')}>
+              {!compacting && (!running || kernel === 'dsh' && multitask || draft.trim() || pendingAttachments.length) ? (
+                <Button
+                  type="submit"
+                  variant="brand"
+                  size="icon"
+                  className="chat-composer__send"
+                  disabled={
+                    attachmentImporting
+                    || (!draft.trim() && !pendingAttachments.length)
+                    || (running && kernel === 'dsh' && !multitask)
+                  }
+                  aria-label={running && kernel === 'pi' ? t('发送引导', 'Send steering') : t('发送', 'Send')}
+                  title={running && kernel === 'pi' ? sendSteeringTitle : t('发送', 'Send')}
+                >
                   <ArrowUp className="size-4" />
                 </Button>
               ) : null}

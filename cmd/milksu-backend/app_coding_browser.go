@@ -62,41 +62,29 @@ func (a *App) lookupCodingBrowserDescriptor(
 }
 
 // resolveInteractiveCodingBrowser decides whether this send may attach the
-// isolated browser. Pi still only reuses a session the user or a typed
-// milksu_workspace action already started. DSH create_session needs the CDP
-// endpoint before ACP session/new, so that kernel Ensures on a typed send.
+// isolated browser. Pi and DSH only reuse a session the user or a typed
+// milksu_workspace browser action already started. Do not Ensure Chromium
+// on send: a greeting or ordinary chat must not open the rail. DSH
+// Playwright is lazy and reads the descriptor when a browser tool runs.
 func resolveInteractiveCodingBrowser(
 	kernel,
 	executionMode,
 	approvalPolicy string,
-	ensure func() error,
 	lookup func() (*engine.CodingBrowserDescriptor, bool),
 ) (*engine.CodingBrowserDescriptor, error) {
 	if strings.TrimSpace(executionMode) == "plan" ||
 		strings.TrimSpace(approvalPolicy) == "read-only" {
 		return nil, nil
 	}
-	if engine.NormalizeKernel(kernel) == engine.KernelDSH {
-		if ensure == nil {
-			return nil, fmt.Errorf("浏览器服务不可用")
-		}
-		if err := ensure(); err != nil {
-			return nil, err
-		}
-		if lookup == nil {
-			return nil, fmt.Errorf("隔离浏览器尚未就绪")
-		}
-		descriptor, ok := lookup()
-		if !ok || descriptor == nil || strings.TrimSpace(descriptor.CDPEndpoint) == "" {
-			return nil, fmt.Errorf("隔离浏览器尚未就绪")
-		}
-		return descriptor, nil
-	}
 	if lookup == nil {
 		return nil, nil
 	}
 	descriptor, ok := lookup()
-	if !ok {
+	if !ok || descriptor == nil {
+		return nil, nil
+	}
+	if engine.NormalizeKernel(kernel) == engine.KernelDSH &&
+		strings.TrimSpace(descriptor.CDPEndpoint) == "" {
 		return nil, nil
 	}
 	return descriptor, nil

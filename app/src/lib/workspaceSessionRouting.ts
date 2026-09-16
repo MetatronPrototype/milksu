@@ -27,7 +27,10 @@ export function conversationsForWorkspaceHome(
   conversations: Conversation[],
   home: WorkspaceHome,
 ) {
-  return conversations.filter(item => conversationWorkspaceHome(item) === home)
+  return conversations.filter(item => (
+    conversationWorkspaceHome(item) === home
+    && !item.parentConversationId
+  ))
 }
 
 export function conversationActivityAt(conversation: Conversation) {

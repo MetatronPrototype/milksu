@@ -459,6 +459,7 @@ export default function App() {
     setSettings(normalized)
     installAppModelSettings(normalized)
     applyUiLocale(normalized.locale)
+    conversations.setDefaultKernel(normalized.default_kernel ?? 'pi')
   }
 
   async function loadSettings() {
@@ -579,8 +580,11 @@ export default function App() {
     const restored = conversations.conversations.find(conversation => (
       conversation.id === lastCodingConversationId.current && isHomeConversation(conversation)
     ))
-    if (restored) conversations.activeId = restored.id
-    else conversations.startNew()
+    if (restored) {
+      conversations.activeId = restored.id
+      return
+    }
+    conversations.resumePendingHome('chat')
   }
 
   function restoreCTFWorkspaceResumePoint() {
@@ -1651,7 +1655,11 @@ export default function App() {
                 />
               </div>
             ) : null}
-            {section === 'chat' || dossierChatMaximized ? (
+            {section === 'chat' || section === 'settings' || section === 'profile' || dossierChatMaximized ? (
+              <div
+                className="relative flex min-h-0 min-w-0 flex-1"
+                style={{ display: section === 'chat' || dossierChatMaximized ? undefined : 'none' }}
+              >
               <ChatPage
                 className="min-h-0 min-w-0 flex-1 bg-surface-editor"
                 conversation={conv.active}
@@ -1722,6 +1730,7 @@ export default function App() {
                 onSwitchCtfAgent={switchCTFAgent}
                 onToggleConversationDrawer={toggleCodingConversationDrawer}
               />
+              </div>
             ) : null}
           </div>
         </Suspense>

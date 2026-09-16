@@ -119,7 +119,6 @@ export default function ComposerAgentMenu({
         <div
           ref={panel}
           className="relative w-[15.5rem] rounded-md border border-border bg-popover p-1 text-popover-foreground"
-          onMouseLeave={() => setPane(null)}
         >
           {row('model', t('模型', 'Model'), modelLabel)}
           {thinkingLevels.length ? row('thinking', t('推理强度', 'Reasoning'), thinkingLabel) : null}
@@ -133,9 +132,9 @@ export default function ComposerAgentMenu({
           {pane ? (
             <div
               className={cn(
-                'absolute z-50',
-                flyoutRight ? 'left-full pl-1.5' : 'right-full pr-1.5',
-                flyoutAlignBottom ? 'bottom-0' : 'top-0',
+                'absolute inset-y-0 z-50 flex',
+                flyoutRight ? 'left-full -ml-1 pl-2.5' : 'right-full -mr-1 pr-2.5',
+                flyoutAlignBottom ? 'items-end' : 'items-start',
               )}
             >
               {pane === 'model' ? (

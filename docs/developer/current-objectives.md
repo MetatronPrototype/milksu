@@ -2,7 +2,7 @@
 
 > 文档状态：Current / Canonical target contract
 >
-> 最后收口：2026-09-15
+> 最后收口：2026-09-16
 >
 > 本页只回答“当前处于什么阶段、下一条完成线是什么”。实现以当前代码、测试、Git 历史和原生 App 为准。
 > 可下载安装包只写在 README，本页不写「当前最新版是」版本号或 hash。
@@ -25,7 +25,7 @@
 | --- | --- |
 | 阶段 | 内测迭代 / Agent Runtime 与跨平台发行收敛。不再按 M3/M4 组织。 |
 | 历史基线 | M3 product-loop 已在 `108e0e3`（2026-08-05）合并，仅供追溯。 |
-| 当前开发 | 新对话可选 Pi 或 DeepSeek Harness。出厂默认官方 DeepSeek Flash。工作树 DSH 钉 `0.1.6-alpha.1`（内核，不是 UI 参考）。Pi 子 Agent 默认主工作区；Computer Use 由模型列窗 / 认窗 / 锁定。产品回归入口 `npm run test:product-loop`。产品 UI 语言和工作树 renderer 是 React + shadcn，见 `AGENTS.md`。最近一次正式安装包 `v26.915.1` 仍是 Vue + Felinic。未做：新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。宽作业用 `recon-authorized-target` Skill，不造 typed sweep。 |
+| 当前开发 | 新对话可选 Pi 或 DeepSeek Harness；设置 → 模型「默认运行时」只改新对话 kernel，不改写旧会话。出厂默认官方 DeepSeek Flash、默认运行时 Pi。工作树 DSH 钉 `0.1.6-alpha.1`（内核，不是 UI 参考）。Pi 子 Agent 默认主工作区、父回合阻塞；DSH 可在 Multitask 下用 ACP `session/new` 开子会话并继续主对话。Working 条对 Pi / DSH 同一套信息架构。Computer Use 由模型列窗 / 认窗 / 锁定。产品回归入口 `npm run test:product-loop`。产品 UI 语言和工作树 renderer 是 React + shadcn，见 `AGENTS.md`。最近一次正式安装包 `v26.915.1` 仍是 Vue + Felinic。未做：新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。宽作业用 `recon-authorized-target` Skill，不造 typed sweep。 |
 | 平台边界 | macOS DMG 签名公证；Windows 安装器未代码签名，打入 CUA Driver `0.27.0`；Linux 发共用 DEB 与 tarball，GNOME Portal 已进包，无 Secret Service / 本地 OCR；Hyprland/Xorg Computer Use 不可用。Windows/Linux 窗口铬尚未真机验收。安装包见 README。 |
 | 发行流水 | 干净已推送的 `main` 上跑一次 canonical 验证；三端走 GitHub-hosted。`macos-release` 仅限 `main`，dispatch 后立即签名。正式包装 OTA 到私有 R2 并发布 current pointer；GitHub Release 不上 updater ZIP。 |
 
@@ -49,7 +49,12 @@
 - 新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。
 - Computer Use 已改为模型列窗 / 认窗 / 锁定；选窗器仍是可选人工面。宽作业走 `recon-authorized-target` Skill，不造 typed sweep。均未进安装包。
 - DSH `bash` 没有 MilkSU 侧超时上界（工具在 harness 进程内，不要在客户端复刻第二套循环）。
-- DSH `0.1.6-alpha.1`、产品回归 `npm run test:product-loop`、`desktop-surface`（Computer Use 优先，不可用降级隔离浏览器）均未进安装包。不要把 `test:dsh-complete-loop` 当主入口。安装包里的 DSH host plugin 必须打成独立 ESM（Sidecar `package.json` 是 CommonJS，不能只拷 `host-plugin.mjs` 再去 import `permission.js`）。
+- DSH `0.1.6-alpha.1`、产品回归 `npm run test:product-loop`、`desktop-surface`（Computer Use 优先，不可用降级隔离浏览器）均未进安装包。不要把 `test:dsh-complete-loop` 当主入口。工作树打包已把 DSH host plugin 打成独立 ESM（`bundleDshHostPlugin`；Sidecar `package.json` 是 CommonJS，不能只拷 `host-plugin.mjs` 再 import `permission.js`），下一包装才会进安装包。产品回归 CDP 只附着产品主窗，不附着标题带 fixture 的隔离浏览器页。
+- 设置占用原侧栏并即时落盘、居中命令面板、作曲栏模型/Git 芯片已进 `main`，未进安装包。
+- 新对话未发送前，作曲栏草稿和模型/运行时/项目芯片跟空会话走：去设置或其他页再回来仍在。未进安装包。
+- DSH 发送消息只复用已打开的隔离浏览器，不再 Ensure；问候 / 闲聊不会弹右栏。未进安装包。
+- 设置 → 模型「默认运行时」；作曲栏加号 Multitask（仅 DSH 可开并行）；对话下方 Working 胶囊（默认一条，点开才是列表；Pi 与 DSH 同一套，主 thread 不再内嵌 sub-agent 大方板）。DSH 模型自己拉起的 `subagent` 经 ACP `tool_call` 与 host `ctx.subagents` 投影进同一 roster，可停单个/全部。未进安装包。
+- Agent Harness：DSH 没有 Cursor 那种 `run_in_background` Task。并行走 ACP 已有的 `session/new` + `session/prompt` + `session/cancel`，以及 DSH `subagent/start` / `interrupt` / `listChildren`；桥接按会话排队，不再把不同会话的 `send_message` 串成一条。Pi 的 `subagent` 仍是阻塞父工具，Working 只是投影；加号 Multitask 在 Pi 上不可用。不要升 Pi 来假装能并行。
 - 准备 writer 时按停止，有时同时出现「本轮已停止。」和「Agent 运行失败」。合同只留前者。
 - macOS OTA ZIP 须先把 sidecar 许可证改成属主可写，否则 ShipIt 可能装完仍是旧版。已装的 26.912.3 在下一包装进包前仍用 GitHub DMG。
 

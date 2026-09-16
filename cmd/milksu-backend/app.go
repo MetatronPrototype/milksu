@@ -1184,10 +1184,6 @@ func (a *App) SendMessage(
 		kernel,
 		executionMode,
 		approvalPolicy,
-		func() error {
-			_, ensureErr := a.EnsureCodingBrowser(conversationID)
-			return ensureErr
-		},
 		func() (*engine.CodingBrowserDescriptor, bool) {
 			return a.lookupCodingBrowserDescriptor(conversationID)
 		},
@@ -1355,6 +1351,10 @@ func (a *App) ctfWorkspaceRoot() string {
 
 func (a *App) AbortMessage(conversationID string) error {
 	return a.engines.AbortMessage(conversationID)
+}
+
+func (a *App) AbortSubagent(conversationID string, subagentID string) error {
+	return a.engines.AbortMessage(conversationID, subagentID)
 }
 
 func (a *App) SteerMessage(conversationID, prompt string) error {

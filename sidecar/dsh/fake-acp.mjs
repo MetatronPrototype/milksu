@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 
 const sessions = new Map();
 let nextId = 1;
+let promptCount = 0;
 const dumpPath = String(process.env.MILKSU_DSH_FAKE_ACP_DUMP ?? "").trim();
 const received = [];
 let lastCreated = {};
@@ -127,14 +128,46 @@ input.on("line", line => {
   }
   if (method === "session/prompt") {
     const sessionId = params?.sessionId;
-    write({ jsonrpc: "2.0", id, result: {} });
-    notify("session/update", {
-      sessionId,
-      update: {
-        sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "ok" },
-      },
-    });
+    promptCount += 1;
+    const firstDelay = Number(process.env.MILKSU_DSH_FAKE_PROMPT_MS ?? 0);
+    const delay = promptCount === 1 ? firstDelay : 0;
+    const reply = () => {
+      write({ jsonrpc: "2.0", id, result: {} });
+      if (String(process.env.MILKSU_DSH_FAKE_SUBAGENT ?? "") === "1") {
+        notify("session/update", {
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call-sub-1",
+            title: "subagent",
+            kind: "other",
+            status: "in_progress",
+            rawInput: { description: "环境巡检" },
+          },
+        });
+        notify("session/update", {
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call-sub-1",
+            status: "completed",
+            content: [{
+              type: "content",
+              content: { type: "text", text: "started subagent cf4fb9a2" },
+            }],
+          },
+        });
+      }
+      notify("session/update", {
+        sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "ok" },
+        },
+      });
+    };
+    if (Number.isFinite(delay) && delay > 0) setTimeout(reply, delay);
+    else reply();
     return;
   }
   if (method === "session/cancel") {

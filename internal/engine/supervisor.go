@@ -1760,9 +1760,13 @@ func normalizeCodingBrowserDescriptor(
 	}, nil
 }
 
-func (s *Supervisor) AbortMessage(sessionID string) error {
+func (s *Supervisor) AbortMessage(sessionID string, extra ...string) error {
 	if strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("session id is required")
+	}
+	subagentID := ""
+	if len(extra) > 0 {
+		subagentID = strings.TrimSpace(extra[0])
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1770,10 +1774,14 @@ func (s *Supervisor) AbortMessage(sessionID string) error {
 	if proc == nil {
 		return nil
 	}
-	return writeCommand(proc.stdin, map[string]any{
+	command := map[string]any{
 		"action":         "abort_session",
 		"conversationId": sessionID,
-	})
+	}
+	if subagentID != "" {
+		command["subagentId"] = subagentID
+	}
+	return writeCommand(proc.stdin, command)
 }
 
 func (s *Supervisor) ForkSession(sessionID, role string, occurrence int) (string, error) {

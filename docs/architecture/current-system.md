@@ -2,7 +2,7 @@
 
 > 文档状态：Current
 >
-> 事实审计：2026-09-15。本页描述当前代码结构，不安排任务。
+> 事实审计：2026-09-16。本页描述当前代码结构，不安排任务。
 > 发行回执见 [当前开发目标](/developer/current-objectives)。产品 UI 只写在 `AGENTS.md`。
 
 ## 系统上下文
@@ -63,13 +63,13 @@ Pi 拥有会话、压缩和工具循环。桌面 GUI 把外部动作变成可见
 | OTA | implemented | 已登录 Stable 轮询 Admin latest；macOS/Windows 走 electron-updater，Linux dpkg/tarball。GitHub Release 不上 OTA ZIP。 |
 | Go Runtime | implemented | JSONL RPC。Sidecar 停靠保活；凭据轮换惰性、撤回立即停。Pi `bash` 缺省 600 秒。 |
 | 插件 | packaged | `milksu.plugin/v1`：签名包、发布者信任、六个主题表面。 |
-| Pi | verified core | Session / Compaction / Tool Loop。Coding/CTF/CVE/实验室共用完整循环与 80% 自动压缩。`milksu_workspace`、`milksu_ask` 是产品工具。新对话可选 DSH（ACP，工作树钉 `0.1.6-alpha.1`）。 |
+| Pi | verified core | Session / Compaction / Tool Loop。Coding/CTF/CVE/实验室共用完整循环与 80% 自动压缩。`milksu_workspace`、`milksu_ask` 是产品工具。新对话可选 DSH（ACP，工作树钉 `0.1.6-alpha.1`）。设置里的默认运行时只决定新对话 kernel。活着的子代理投影到 Working 胶囊（默认收起）；DSH 模型自己拉起的 `subagent` 与 GUI Multitask 子会话走同一 roster，Pi 子代理仍阻塞父回合。 |
 | 安全工具 | setup 已通 | 设置 → MCP：IDA / capa 可准备。CodeQL / Burp / Shannon 仅检测。 |
 | 浏览器三面 | packaged / pairing pending | 隔离浏览器按会话；Browser Use 待桌面配对回执；Computer Use：模型列窗锁定，macOS/Windows 窗口 Scope + CUA `0.27.0`，Linux GNOME Portal。 |
 | CTF / CVE / 实验室 | implemented | CTF 持题目、Evidence、Judge。CVE 点进档案复现。实验室起本机 Docker / AVD 或用户地址。CTF 本地房还不能引用环境经纪。 |
 | Worktree | opt-in | 子 Agent 默认主工作区；writer 只在模型调用 `prepare_coding_worktree` 时准备。脏主区不进 writer。 |
 | 持久化 | implemented | 产物在文档目录 `MilkSU`；Runtime、凭据、Obelisk、浏览器 Profile 在用户配置目录。 |
-| 产品回归 | partial / 未进安装包 | `npm run test:product-loop`，见 [产品回归循环](/developer/product-regression-loop)。`desktop-surface` 优先 Computer Use，不可用降级隔离浏览器。Settings「评测」是另一条。 |
+| 产品回归 | partial / 未进安装包 | `npm run test:product-loop`，见 [产品回归循环](/developer/product-regression-loop)。CDP 只附着产品主窗，不附着 DSH fixture 页。`desktop-surface` 优先 Computer Use，不可用降级隔离浏览器。Settings「评测」是另一条。 |
 
 ## 进程与 IPC
 

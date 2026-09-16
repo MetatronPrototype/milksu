@@ -104,6 +104,8 @@ function createMockConversations() {
       store.setState({ activeId: null })
       return null
     }),
+    resumePendingHome: vi.fn(),
+    get pendingWorkspaceHome() { return 'chat' as const },
     ensureConversation: vi.fn((title: string, options: {
       conversationId?: string
       workspacePath?: string
@@ -211,6 +213,7 @@ function createMockConversations() {
     editAndResend: vi.fn(),
     branchFromAssistant: vi.fn(),
     setKernel: vi.fn(),
+    setDefaultKernel: vi.fn(),
     setModelSelection: vi.fn(),
     setThinkingLevel: vi.fn(),
     setModelSourcePreference: vi.fn(),

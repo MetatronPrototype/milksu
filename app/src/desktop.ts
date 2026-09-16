@@ -288,6 +288,7 @@ interface DesktopAppBindings {
   RewindCodingSession(conversationId: string): Promise<void>
   HandoffCodingSession(conversationId: string, kernel?: string): Promise<string>
   AbortMessage(conversationId: string): Promise<void>
+  AbortSubagent(conversationId: string, subagentId: string): Promise<void>
   RespondToolApproval(
     conversationId: string,
     requestId: string,
@@ -745,7 +746,9 @@ export async function invokeCommand<T = unknown>(command: string, args?: Command
           (args?.kernel as string) ?? '',
         ) as Promise<T>
       case 'abort_message':
-        return app.AbortMessage(args?.conversationId as string) as Promise<T>
+        return (args?.subagentId
+          ? app.AbortSubagent(args.conversationId as string, args.subagentId as string)
+          : app.AbortMessage(args?.conversationId as string)) as Promise<T>
       case 'steer_message':
         return app.SteerMessage(
           args?.conversationId as string,

@@ -2,10 +2,15 @@ import { createServer } from "node:net";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { dshPresetForApprovalPolicy } from "./permission.js";
+import {
+  interruptAllHostSubagents,
+  interruptHostSubagent,
+  listHostSubagents,
+} from "./host-subagents.js";
 
 export const name = "milksu-dsh-host";
 export const inject = ["compaction", "agents"];
-export const optionalInject = ["permissionPresets"];
+export const optionalInject = ["permissionPresets", "subagents"];
 
 export function apply(ctx) {
   const path = String(process.env.MILKSU_DSH_HOST_IPC ?? "").trim();
@@ -17,15 +22,47 @@ export function apply(ctx) {
     // Named pipes have no parent directory.
   }
 
+  const watchers = new Set();
+
+  function notifyWatchers(payload) {
+    const line = `${JSON.stringify({ method: "subagent_event", params: payload })}\n`;
+    for (const socket of watchers) {
+      try {
+        socket.write(line);
+      } catch {
+        watchers.delete(socket);
+      }
+    }
+  }
+
+  if (ctx.subagents) {
+    ctx.on("subagent/start", (info) => {
+      notifyWatchers({
+        phase: "start",
+        childId: String(info?.id ?? ""),
+        runId: String(info?.runId ?? ""),
+      });
+    });
+    ctx.on("subagent/end", (info) => {
+      notifyWatchers({
+        phase: "end",
+        childId: String(info?.id ?? ""),
+        runId: String(info?.runId ?? ""),
+        stopReason: info?.stopReason,
+      });
+    });
+  }
+
   const server = createServer(socket => {
     let buffer = "";
+    socket.on("close", () => watchers.delete(socket));
     socket.on("data", chunk => {
       buffer += chunk.toString("utf8");
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
         if (!line.trim()) continue;
-        void handleLine(ctx, socket, line);
+        void handleLine(ctx, socket, watchers, line);
       }
     });
   });
@@ -38,7 +75,7 @@ export function apply(ctx) {
   });
 }
 
-async function handleLine(ctx, socket, line) {
+async function handleLine(ctx, socket, watchers, line) {
   let message;
   try {
     message = JSON.parse(line);
@@ -46,7 +83,7 @@ async function handleLine(ctx, socket, line) {
     return;
   }
   try {
-    const result = await dispatch(ctx, message);
+    const result = await dispatch(ctx, watchers, socket, message);
     socket.write(`${JSON.stringify({ id: message.id, result })}\n`);
   } catch (error) {
     socket.write(`${JSON.stringify({
@@ -56,9 +93,29 @@ async function handleLine(ctx, socket, line) {
   }
 }
 
-async function dispatch(ctx, message) {
+export async function dispatch(ctx, watchers, socket, message) {
+  if (message.method === "watch") {
+    watchers.add(socket);
+    return { watching: true };
+  }
   const sessionId = String(message.params?.sessionId ?? "").trim();
   if (!sessionId) throw new Error("sessionId is required");
+  if (message.method === "list_subagents") {
+    return { subagentTasks: await listHostSubagents(ctx.subagents, sessionId) };
+  }
+  if (message.method === "interrupt_subagent") {
+    await interruptHostSubagent(
+      ctx.subagents,
+      ctx.agents,
+      sessionId,
+      message.params?.subagentId,
+    );
+    return { interrupted: true };
+  }
+  if (message.method === "interrupt_all_subagents") {
+    const ids = await interruptAllHostSubagents(ctx.subagents, ctx.agents, sessionId);
+    return { interrupted: ids };
+  }
   const agent = ctx.agents.get(sessionId);
   if (!agent) throw new Error(`DeepSeek Harness session not found: ${sessionId}`);
   if (message.method === "set_approval") {

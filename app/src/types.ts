@@ -1,3 +1,4 @@
+import { normalizeAgentKernel } from '@/lib/agentKernel'
 import { normalizePreferredExternalEditor } from '@/lib/externalEditor'
 import { normalizeModelContextWindows } from '@/lib/knownContextWindow'
 import { normalizeModelThinkingSettings } from '@/lib/modelThinking'
@@ -163,6 +164,10 @@ export interface Conversation {
   workspacePath?: string
   /** Agent runtime pinned for this conversation. Missing records are Pi. */
   kernel?: import('@/lib/agentKernel').AgentKernel
+  /** DSH child session spawned from Multitask; hidden from the sidebar. */
+  parentConversationId?: string
+  /** DSH only: new sends while the parent is running become child sessions. */
+  multitask?: boolean
   modelMode?: 'auto' | 'manual'
   modelProvider?: string
   modelId?: string
@@ -303,6 +308,7 @@ export interface ModelThinkingConfig {
 export interface AppSettings {
   active_provider: string
   active_model: string
+  default_kernel?: import('@/lib/agentKernel').AgentKernel
   model_verification?: ModelVerification
   model_routing: ModelRoutingConfig
   relay?: RelayConfig
@@ -386,6 +392,7 @@ export function withAppSettingsDefaults(value: AppSettings): AppSettings {
     ...value,
     active_provider: activeProvider,
     active_model: activeModel,
+    default_kernel: normalizeAgentKernel(value.default_kernel),
     model_routing: normalizeModelRouting(value.model_routing),
     preferred_external_editor: normalizePreferredExternalEditor(value.preferred_external_editor),
     disabled_skills: [...new Set((value.disabled_skills ?? [])

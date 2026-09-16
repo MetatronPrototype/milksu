@@ -40,14 +40,17 @@ import {
 } from "../pi/bridge-ask.js";
 import { createWorkspaceActionBroker } from "../pi/bridge-workspace.js";
 import { acpImagePromptsEnabled, buildDshPromptBlocks } from "./prompt-blocks.js";
+import { applyDshSubagentToolUpdate } from "./subagent-projection.js";
 
 const sessions = new Map();
 const pendingAsks = new Map();
-let commandQueue = Promise.resolve();
+const sessionCommandQueues = new Map();
+const sessionSubagentTasks = new Map();
 let acp;
 let acpImagePrompts = false;
 let productIpc;
 let hostIpcPath = "";
+let hostWatch = null;
 const workspaceBroker = createWorkspaceActionBroker(emit);
 
 function emit(conversationId, type, extra = {}) {
@@ -291,6 +294,93 @@ function sessionRecord(conversationId) {
   return sessions.get(conversationId);
 }
 
+function emitSubagentTasks(conversationId, tasks) {
+  const next = Array.isArray(tasks) ? tasks : [];
+  if (next.length) sessionSubagentTasks.set(conversationId, next);
+  else sessionSubagentTasks.delete(conversationId);
+  emit(conversationId, "subagent_tasks", { subagentTasks: next });
+}
+
+function projectSubagentUpdate(conversationId, update) {
+  const current = sessionSubagentTasks.get(conversationId) ?? [];
+  const next = applyDshSubagentToolUpdate(current, update);
+  if (next === current) return;
+  const changed = next.length !== current.length
+    || next.some((task, index) => (
+      task.id !== current[index]?.id
+      || task.status !== current[index]?.status
+      || task.role !== current[index]?.role
+    ));
+  if (!changed) return;
+  emitSubagentTasks(conversationId, next);
+}
+
+async function refreshHostSubagents(conversationId) {
+  const record = sessionRecord(conversationId);
+  if (!record?.acpSessionId || !hostIpcPath) return;
+  try {
+    const result = await callHost("list_subagents", { sessionId: record.acpSessionId });
+    if (!Array.isArray(result?.subagentTasks)) return;
+    if (result.subagentTasks.length) {
+      emitSubagentTasks(conversationId, result.subagentTasks);
+      return;
+    }
+    const current = sessionSubagentTasks.get(conversationId) ?? [];
+    if (!current.some(task => task.status === "running" || task.status === "start")) return;
+    emitSubagentTasks(conversationId, current.map(task => (
+      task.status === "running" || task.status === "start"
+        ? { ...task, status: "succeeded" }
+        : task
+    )));
+  } catch {
+    // Host plugin may not have ctx.subagents in this process.
+  }
+}
+
+async function interruptHostSubagents(record, subagentId) {
+  if (!record?.acpSessionId) return;
+  if (subagentId === "*") {
+    await callHost("interrupt_all_subagents", { sessionId: record.acpSessionId });
+    return;
+  }
+  await callHost("interrupt_subagent", {
+    sessionId: record.acpSessionId,
+    subagentId,
+  });
+}
+
+function startHostWatch() {
+  if (hostWatch || !hostIpcPath) return;
+  const socket = createConnection(hostIpcPath);
+  hostWatch = socket;
+  let buffer = "";
+  socket.on("data", chunk => {
+    buffer += chunk.toString("utf8");
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (message.method !== "subagent_event") continue;
+      for (const conversationId of sessions.keys()) {
+        void refreshHostSubagents(conversationId);
+      }
+    }
+  });
+  socket.on("error", () => {
+    if (hostWatch === socket) hostWatch = null;
+  });
+  socket.on("close", () => {
+    if (hostWatch === socket) hostWatch = null;
+  });
+  socket.write(`${JSON.stringify({ id: "watch", method: "watch", params: {} })}\n`);
+}
+
 async function handleAcpNotification(message) {
   if (message.method === "session/update") {
     const sessionId = String(message.params?.sessionId ?? "");
@@ -368,10 +458,12 @@ function projectSessionUpdate(conversationId, update) {
       toolName: String(update?.title || update?.kind || "tool"),
       toolCallId: String(update?.toolCallId || update?.tool_call_id || ""),
     });
+    projectSubagentUpdate(conversationId, update);
     return;
   }
   if (kind === "tool_call_update") {
     const status = String(update?.status ?? "");
+    projectSubagentUpdate(conversationId, update);
     if (status === "completed" || status === "failed") {
       emit(conversationId, "tool_call_end", {
         toolCallId: String(update?.toolCallId || update?.tool_call_id || ""),
@@ -403,9 +495,7 @@ async function createSession(command) {
     disabledSkills: command.disabledSkills,
     extraSkillPaths: command.userSkillPaths,
   });
-  if (command.codingBrowser) {
-    await writeCodingBrowserDescriptor(conversationId, command.codingBrowser);
-  }
+  await attachCodingBrowserDescriptor(command);
   const client = await ensureAcp(cwd);
   const mcpServers = sessionMcpServers(conversationId, command);
   const resumeId = String(command.resumeSessionId || command.acpSessionId || "").trim();
@@ -460,6 +550,7 @@ async function createSession(command) {
     // answers session/request_permission in the MilkSU client.
   }
   emit(conversationId, "ready", { resumed });
+  startHostWatch();
 }
 
 async function sendMessage(command) {
@@ -467,6 +558,8 @@ async function sendMessage(command) {
   if (!conversationId) throw new Error("conversationId is required");
   if (!sessions.has(conversationId)) {
     await createSession(command);
+  } else {
+    await attachCodingBrowserDescriptor(command);
   }
   const record = sessionRecord(conversationId);
   if (command.approvalPolicy) {
@@ -507,9 +600,26 @@ async function sendMessage(command) {
 
 async function abortSession(command) {
   const conversationId = String(command.conversationId ?? "").trim();
+  const subagentId = String(command.subagentId ?? "").trim();
   const record = sessionRecord(conversationId);
+  if (subagentId) {
+    try {
+      await interruptHostSubagents(record, subagentId);
+      await refreshHostSubagents(conversationId);
+    } catch (error) {
+      emit(conversationId || null, "error", { error: describeError(error) });
+    }
+    return;
+  }
   if (record) record.aborted = true;
   finishThinking(conversationId);
+  if (record) {
+    try {
+      await interruptHostSubagents(record, "*");
+    } catch {
+      // Native children stay listed until the host catalog refreshes.
+    }
+  }
   if (record && acp) {
     try {
       acp.notify("session/cancel", { sessionId: record.acpSessionId });
@@ -556,6 +666,7 @@ async function destroySession(command) {
     }
   }
   sessions.delete(conversationId);
+  sessionSubagentTasks.delete(conversationId);
   emit(conversationId || null, "session_destroyed");
 }
 
@@ -591,7 +702,18 @@ async function respondApproval(command) {
   record.pendingPermission = null;
 }
 
-function respondWorkspaceAction(command) {
+async function attachCodingBrowserDescriptor(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  if (!conversationId || command.codingBrowser == null) return;
+  await writeCodingBrowserDescriptor(conversationId, command.codingBrowser);
+}
+
+async function respondWorkspaceAction(command) {
+  try {
+    await attachCodingBrowserDescriptor(command);
+  } catch (error) {
+    emit(command.conversationId ?? null, "error", { error: describeError(error) });
+  }
   workspaceBroker.respond({
     requestId: command.requestId,
     ok: command.ok !== false && !command.error,
@@ -615,6 +737,14 @@ async function handoffSession(command) {
     requestId,
     forkedSessionId,
   });
+}
+
+function enqueueSessionCommand(conversationId, work) {
+  const key = String(conversationId ?? "").trim() || "_";
+  const previous = sessionCommandQueues.get(key) ?? Promise.resolve();
+  const next = previous.then(work, work);
+  sessionCommandQueues.set(key, next);
+  return next;
 }
 
 async function handleCommand(command) {
@@ -648,7 +778,7 @@ async function handleCommand(command) {
       });
       break;
     case "workspace_action_response":
-      respondWorkspaceAction(command);
+      await respondWorkspaceAction(command);
       break;
     case "steer_message":
     case "remove_queued_message":
@@ -680,18 +810,15 @@ input.on("line", line => {
     return;
   }
   if (command.action === "workspace_action_response") {
-    try {
-      respondWorkspaceAction(command);
-    } catch (error) {
+    void respondWorkspaceAction(command).catch(error => {
       emit(command.conversationId ?? null, "error", { error: describeError(error) });
-    }
+    });
     return;
   }
-  commandQueue = commandQueue
-    .then(() => handleCommand(command))
+  enqueueSessionCommand(command.conversationId, () => handleCommand(command))
     .catch(error => {
       emit(command.conversationId ?? null, "error", { error: describeError(error) });
     });
 });
 
-export { handleCommand, emit, sessions };
+export { handleCommand, emit, sessions, enqueueSessionCommand };

@@ -59,6 +59,7 @@ import AkLoadingMark from '@/components/AkLoadingMark'
 import ChatActivityGroup from '@/components/ChatActivityGroup'
 import ChatProcessFold from '@/components/ChatProcessFold'
 import ChatComposer, { type ChatComposerHandle } from '@/components/ChatComposer'
+import WorkingTray from '@/components/WorkingTray'
 import ChatMessageItem from '@/components/ChatMessageItem'
 import CodingArtifactPreviewPanel, {
   type CodingArtifactPreviewPanelHandle,
@@ -171,6 +172,13 @@ import {
   lastRewindableUserMessageId,
   type CodingMessageQueue,
 } from '@/composables/useConversations'
+import { useConversations } from '@/stores/conversationsStore'
+import { composerDraftKey } from '@/lib/composerDraftStore'
+import { conversationWorkspaceHome } from '@/lib/workspaceSessionRouting'
+import {
+  workingItemsForConversation,
+  workingRootConversation,
+} from '@/lib/workingRoster'
 import {
   encodeComposerModelKey,
   modelServiceSourceLabel,
@@ -355,6 +363,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   onRestore,
 }: ChatPageProps, ref) {
   const t = useT()
+  const conversations = useConversations()
   const dockSurface = surface === 'dock'
   const catalog = useLiveModelCatalog()
   const pickerGroups = catalog.pickerGroups
@@ -829,6 +838,12 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   )
   const workspaceLocked = Boolean(conversation?.messages.length)
   const agentKernel: 'pi' | 'dsh' = kernel ?? (conversation?.kernel === 'dsh' ? 'dsh' : 'pi')
+  const workingRoot = workingRootConversation(conversation, conversations.conversations)
+  const workingItems = workingItemsForConversation(
+    workingRoot,
+    conversations.conversations,
+    conversations.runningConversationIds,
+  )
   const sessionTreeUnavailable = agentKernel === 'dsh'
   const rewindUnavailable = Boolean(compacting) || sessionTreeUnavailable
   const activeModelLabel = useMemo(() => {
@@ -2624,9 +2639,25 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             </div>
           ) : null}
 
+          <WorkingTray
+            items={workingItems}
+            conversations={conversations.conversations}
+            onStopOne={item => {
+              void conversations.abortWorkingItem(item.id)
+            }}
+            onStopAll={() => {
+              void conversations.abortWorkingAll(workingRoot?.id)
+            }}
+          />
+
           <ChatComposer
             ref={composer}
-            conversationKey={conversation?.id ?? ''}
+            conversationKey={composerDraftKey(
+              conversation?.id,
+              conversation
+                ? conversationWorkspaceHome(conversation)
+                : conversations.pendingWorkspaceHome,
+            )}
             running={running}
             aborting={aborting}
             compacting={compacting}
@@ -2647,6 +2678,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             thinkingLevel={currentThinkingLevel}
             kernel={agentKernel}
             kernelLocked={Boolean(conversation?.messages.some(message => message.role === 'user' && message.status !== 'queued'))}
+            multitask={Boolean(conversation?.multitask)}
+            onToggleMultitask={enabled => conversations.setMultitask(enabled)}
             compactDisabled={continuity.compactDisabled}
             contextUsage={contextUsagePresentation}
             workspaceReady={Boolean(workspacePath)}

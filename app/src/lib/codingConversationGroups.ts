@@ -65,7 +65,7 @@ export function groupCodingConversations(
   const pinnedConversations: Conversation[] = []
 
   for (const conversation of projectUniqueDomainConversations(conversations)) {
-    if (conversation.ctfJobId) continue
+    if (conversation.ctfJobId || conversation.parentConversationId) continue
     if (conversation.pinned) {
       pinnedConversations.push(conversation)
       continue
