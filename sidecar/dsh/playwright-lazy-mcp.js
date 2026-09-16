@@ -5,7 +5,9 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { codingBrowserDescriptorFile } from "../hostpath.js";
-import { advertisedPlaywrightTools, playwrightMcpChildEnv } from "./playwright-lazy-tools.js";
+import { advertisedPlaywrightTools, playwrightChildInitializeParams, playwrightMcpChildEnv } from "./playwright-lazy-tools.js";
+
+const childRpcTimeoutMs = 20_000;
 
 const conversationId = String(process.env.MILKSU_CONVERSATION_ID ?? "").trim();
 const cli = String(process.env.MILKSU_PLAYWRIGHT_MCP_CLI ?? "").trim();
@@ -65,17 +67,32 @@ async function waitForCdp() {
   throw new Error("isolated browser is not open");
 }
 
-function sendChild(message) {
+function sendChild(message, timeoutMs = childRpcTimeoutMs) {
   return new Promise((resolve, reject) => {
     if (!child?.stdin) {
       reject(new Error("isolated browser is not attached"));
       return;
     }
     const id = nextChildId++;
-    pending.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (!pending.has(id)) return;
+      pending.delete(id);
+      reject(new Error("Playwright MCP timed out"));
+    }, timeoutMs);
+    pending.set(id, {
+      resolve: value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      reject: error => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
     child.stdin.write(`${JSON.stringify({ ...message, id })}\n`, error => {
       if (error) {
         pending.delete(id);
+        clearTimeout(timer);
         reject(error);
       }
     });
@@ -141,7 +158,7 @@ async function ensureChild() {
   await sendChild({
     jsonrpc: "2.0",
     method: "initialize",
-    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "milksu-dsh" } },
+    params: playwrightChildInitializeParams,
   });
   if (!child?.stdin) {
     throw new Error("isolated browser is not attached");

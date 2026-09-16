@@ -23,6 +23,15 @@ function tool(name, description, properties, required) {
   };
 }
 
+export const playwrightChildInitializeParams = Object.freeze({
+  protocolVersion: "2025-06-18",
+  capabilities: {},
+  clientInfo: Object.freeze({
+    name: "milksu-dsh",
+    version: "1",
+  }),
+})
+
 export const advertisedPlaywrightTools = Object.freeze([
   tool("browser_navigate", "Open a URL in the focused isolated browser tab.", {
     url: stringField("Absolute URL to open, including http://127.0.0.1 pages."),

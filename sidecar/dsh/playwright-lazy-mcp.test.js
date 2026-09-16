@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { advertisedPlaywrightTools, playwrightMcpChildEnv } from "./playwright-lazy-tools.js";
+import { advertisedPlaywrightTools, playwrightChildInitializeParams, playwrightMcpChildEnv } from "./playwright-lazy-tools.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -58,6 +58,12 @@ test("lazy Playwright MCP lists tools before an isolated browser exists", async 
   } finally {
     mcp.child.kill();
   }
+});
+
+test("official Playwright child initialize includes clientInfo.version", () => {
+  assert.equal(playwrightChildInitializeParams.protocolVersion, "2025-06-18");
+  assert.equal(playwrightChildInitializeParams.clientInfo.name, "milksu-dsh");
+  assert.equal(playwrightChildInitializeParams.clientInfo.version, "1");
 });
 
 test("Playwright child env keeps sockets and temp roots short and separate", () => {
