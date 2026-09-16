@@ -5,6 +5,10 @@ import { Button } from './button'
 import { Popover, PopoverContent, PopoverTrigger } from './popover'
 import { cn } from '@/lib/cn'
 
+/** Same type as SettingsRow labels: 13px / medium / 1.125. Controls reuse this so they cannot drift from `text-sm`. */
+const settingsControlTypeClass =
+  'text-[length:var(--text-label)] font-medium leading-[var(--text-label--line-height)]'
+
 function SettingsSection({
   title,
   className,
@@ -76,7 +80,7 @@ function SettingsRow({
       {...props}
     >
       <div className="min-w-0 overflow-hidden">
-        {label ? <div className="text-[length:var(--text-label)] font-medium leading-[var(--text-label--line-height)]">{label}</div> : null}
+        {label ? <div className={settingsControlTypeClass}>{label}</div> : null}
         {description ? <p className="mt-0.5 break-words text-[length:var(--text-caption)] leading-[var(--text-caption--line-height)] text-muted-foreground">{description}</p> : null}
         {children}
       </div>
@@ -110,7 +114,7 @@ function SettingsGhostPicker({
           variant="ghost"
           size="sm"
           aria-label={ariaLabel}
-          className="settings-control h-7 justify-between gap-1.5 px-2"
+          className={cn('settings-control h-7 justify-between gap-1.5 px-2', settingsControlTypeClass)}
         >
           <span className="inline-flex min-w-0 flex-1 items-center gap-2 truncate text-left">
             {selected?.leading}
@@ -124,7 +128,10 @@ function SettingsGhostPicker({
           <button
             key={option.value}
             type="button"
-            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
+            className={cn(
+              'flex h-8 w-full items-center gap-2 rounded-md px-2 text-left hover:bg-accent',
+              settingsControlTypeClass,
+            )}
             onClick={() => {
               onChange(option.value)
               setOpen(false)
@@ -140,4 +147,4 @@ function SettingsGhostPicker({
   )
 }
 
-export { SettingsGhostPicker, SettingsRow, SettingsSection }
+export { SettingsGhostPicker, SettingsRow, SettingsSection, settingsControlTypeClass }
