@@ -76,13 +76,14 @@ export function isMilkSUPage(target) {
   const title = String(target?.title ?? '')
   const url = String(target?.url ?? '')
   if (/fixture/i.test(title + url)) return false
+  if (/about:blank/i.test(url)) return false
   if (/milksu:\/\//i.test(url)) return true
-  if (/MilkSU/i.test(title)) return true
   if (/localhost:\d+/.test(url) && /milksu|vite/i.test(url + title)) return true
   return false
 }
 
-export async function findDesktopCdpTarget() {
+export async function listDesktopCdpTargets() {
+  const found = []
   const ports = await listLoopbackListenPorts()
   for (const port of ports) {
     try {
@@ -91,25 +92,36 @@ export async function findDesktopCdpTarget() {
       if (!/Chrome|Electron|MilkSU/i.test(browser)) continue
       const list = await fetchJson(`http://127.0.0.1:${port}/json/list`)
       const pages = Array.isArray(list) ? list : []
-      const candidates = pages.filter(item => (
-        (item.type === 'page' || item.type === 'webview')
-        && item.webSocketDebuggerUrl
-        && isMilkSUPage(item)
-      ))
-      const page = candidates.find(item => /milksu:\/\//i.test(String(item.url ?? ''))) || candidates[0]
-      if (!page) continue
-      return {
-        port,
-        browser,
-        title: page.title ?? '',
-        url: page.url ?? '',
-        webSocketDebuggerUrl: page.webSocketDebuggerUrl,
+      for (const item of pages) {
+        if (
+          (item.type === 'page' || item.type === 'webview')
+          && item.webSocketDebuggerUrl
+          && isMilkSUPage(item)
+        ) {
+          found.push({
+            port,
+            browser,
+            title: item.title ?? '',
+            url: item.url ?? '',
+            webSocketDebuggerUrl: item.webSocketDebuggerUrl,
+          })
+        }
       }
     } catch {
       // Not a DevTools endpoint.
     }
   }
-  return null
+  found.sort((left, right) => {
+    const leftApp = /milksu:\/\//i.test(left.url) ? 0 : 1
+    const rightApp = /milksu:\/\//i.test(right.url) ? 0 : 1
+    return leftApp - rightApp
+  })
+  return found
+}
+
+export async function findDesktopCdpTarget() {
+  const targets = await listDesktopCdpTargets()
+  return targets[0] ?? null
 }
 
 export const CDP_EVAL_TIMEOUT_MS = 15_000
@@ -256,7 +268,7 @@ export class GuiDriver {
     await this.cdp.open()
     const hasRuntime = await this.cdp.evaluate('Boolean(window.milksu && window.milksu.invoke)')
     if (!hasRuntime) {
-      this.gaps.push('已连上 Chromium 页，但 window.milksu 不可用，无法调用 Desktop RPC。')
+      this.cdp.close()
       return false
     }
     await this.cdp.evaluate(`(() => {
@@ -278,10 +290,18 @@ export class GuiDriver {
     if (this.cdpAlive()) return true
     const deadline = Date.now() + 8_000
     while (Date.now() <= deadline) {
-      this.target = await findDesktopCdpTarget()
-      if (this.target && await this.bindRuntime()) return true
+      const targets = await listDesktopCdpTargets()
+      for (const target of targets) {
+        this.target = target
+        try {
+          if (await this.bindRuntime()) return true
+        } catch {
+          this.cdp?.close()
+        }
+      }
       await delay(400)
     }
+    this.gaps.push('未能附着产品窗口：Electron 把 DevTools 绑在随机 127.0.0.1 端口，扫描超时。没有对外 Desktop RPC 套接字。')
     return false
   }
 
