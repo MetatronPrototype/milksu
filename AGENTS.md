@@ -132,7 +132,7 @@ authorization. Do not vendor Beautiful UI's React runtime, `globals.css`, or pai
 LIVE flourishes) are deferred — do not reintroduce them while rewriting a page.
 Do not use the DeepSeek Harness trademark as the MilkSU product name.
 
-The table below is current. Installers still on Vue + Felinic are not the language.
+The table below is current. Older Vue + Felinic installers are not the language.
 
 | Layer | Owns | Use |
 | --- | --- | --- |
@@ -225,7 +225,7 @@ three platforms, and for a user who is not this developer.
 ## Current Product Boundary
 
 MilkSU is an Electron/Chromium desktop app with a supervised Go Runtime and Pi Sidecars.
-New product UI is React + shadcn. Current installers still mount Vue + Felinic.
+Product UI is React + shadcn.
 
 TokenFlux API traffic must use `https://tokenflux.dev/v1`. Never use the `tokenflux.ai` domain in product
 code, configuration, test defaults or documentation.

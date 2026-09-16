@@ -108,5 +108,5 @@ CVE：点进档案复现，Agent 改 `report.md`。实验室：独立入口，�
 - CVE：完成面是复现报告，不是「复现成功」。
 - 实验室：未知洞探测，不是对外红队，也不是 CTF 环境包。
 - Memory：用户能力事实必须能链到 Judge、正式 Evidence 或用户确认。
-- 依赖方向：`React → Preload / RPC → Application Service → Domain / Runtime → Adapter`。工作树入口是 `main.tsx`；最近一次正式安装包仍是 Vue 入口。
+- 依赖方向：`React → Preload / RPC → Application Service → Domain / Runtime → Adapter`。入口是 `main.tsx`。
 - 触碰 `CTFPage.tsx`、`app.go`、`bridge-policy.js`、`browsercap/manager.go` 或 Runner/Recovery 时，不往热点文件再加一份通用 harness。
