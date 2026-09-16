@@ -55,6 +55,8 @@ export function dshShouldAutoAllowPermission(approvalPolicy, toolCall) {
   if (policy !== "workspace-auto" && policy !== "full-auto") return false;
   if (dshPermissionLooksDangerous(toolCall)) return false;
   if (dshPermissionLooksExternalOrPaid(toolCall)) return false;
+  const text = JSON.stringify(toolCall ?? "").toLowerCase();
+  if (/exit_plan_mode|"plan-review"|plan review/.test(text)) return false;
   if (policy === "workspace-auto") return dshPermissionLooksGrantable(toolCall);
   return true;
 }

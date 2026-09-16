@@ -1881,6 +1881,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   }
 
   function changeExecutionMode(value: string) {
+    if (agentKernel === 'dsh') {
+      void conversations.toggleDshPlanMode(value === 'plan')
+      return
+    }
     onChangeCodingPolicy?.(normalizeCodingExecutionMode(value), effectiveApprovalPolicy)
   }
 
@@ -2701,7 +2705,11 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             thinkingLevel={currentThinkingLevel}
             kernel={agentKernel}
             kernelLocked={Boolean(conversation?.messages.some(message => message.role === 'user' && message.status !== 'queued'))}
-            multitask={Boolean(conversation?.multitask)}
+            planModeActive={conversation?.planMode?.active === true}
+            dshCommands={conversation?.dshCommands}
+            dshCommandsError={conversation?.dshCommandsError}
+            busySend={conversations.busySend}
+            multitask={conversations.selectedMultitask}
             onToggleMultitask={enabled => conversations.setMultitask(enabled)}
             compactDisabled={continuity.compactDisabled}
             contextUsage={contextUsagePresentation}

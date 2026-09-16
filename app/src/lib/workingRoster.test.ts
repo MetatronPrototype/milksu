@@ -85,6 +85,42 @@ describe('working roster', () => {
     })])
   })
 
+  it('projects DSH jobs that are not already subagents', () => {
+    const parent = conversation({
+      id: 'parent',
+      kernel: 'dsh',
+      subagentTasks: [{ id: 'cf4fb9a2', role: '环境巡检', status: 'running' }],
+      dshJobs: [
+        { id: 'bash-1', kind: 'bash', label: 'sleep 30', status: 'running' },
+        { id: 'cf4fb9a2', kind: 'subagent', label: '环境巡检', status: 'running' },
+      ],
+    })
+    const items = workingItemsForConversation(parent, [parent], [])
+    expect(items.map(item => item.id)).toEqual(['cf4fb9a2', 'bash-1'])
+    expect(items[1]).toMatchObject({ kind: 'job', stoppable: true, title: 'sleep 30' })
+  })
+
+  it('does not keep a settled Multitask child live after the parent run cleared', () => {
+    const parent = conversation({ id: 'parent', kernel: 'dsh', multitask: true })
+    const child = conversation({
+      id: 'child',
+      parentConversationId: 'parent',
+      kernel: 'dsh',
+      title: '你能设定计划吗',
+      messages: [
+        { id: 'u1', role: 'user', content: '你能设定计划吗', timestamp: 1 },
+        { id: 't1', role: 'tool', content: '', timestamp: 2, status: 'done', toolName: 'list_agents' },
+      ],
+    })
+    const items = workingItemsForConversation(parent, [parent, child], [])
+    expect(items).toEqual([expect.objectContaining({
+      id: 'child',
+      kind: 'child',
+      status: 'succeeded',
+    })])
+    expect(liveWorkingItems(items)).toEqual([])
+  })
+
   it('keeps the collapsed capsule as one short line', () => {
     const zh = (chinese: string) => chinese
     const en = (_chinese: string, english: string) => english

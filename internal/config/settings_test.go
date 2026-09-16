@@ -53,14 +53,23 @@ func TestWithDefaults(t *testing.T) {
 	if settings.ActiveProvider != presetDeepSeekServiceID || settings.ActiveModel != "deepseek-flash" {
 		t.Fatalf("unexpected defaults: %#v", settings)
 	}
-	if settings.DefaultKernel != "pi" {
-		t.Fatalf("default kernel should be pi: %q", settings.DefaultKernel)
+	if settings.DefaultKernel != "dsh" {
+		t.Fatalf("default kernel should be dsh: %q", settings.DefaultKernel)
+	}
+	if settings.BusySend != "interrupt" {
+		t.Fatalf("default busy send should be interrupt: %q", settings.BusySend)
+	}
+	if got := NormalizeBusySend("排队"); got != "queue" {
+		t.Fatalf("NormalizeBusySend(排队)=%q", got)
 	}
 	if got := NormalizeDefaultKernel("DSH"); got != "dsh" {
 		t.Fatalf("NormalizeDefaultKernel(DSH)=%q", got)
 	}
-	if got := NormalizeDefaultKernel(""); got != "pi" {
+	if got := NormalizeDefaultKernel(""); got != "dsh" {
 		t.Fatalf("NormalizeDefaultKernel empty=%q", got)
+	}
+	if got := NormalizeDefaultKernel("pi"); got != "pi" {
+		t.Fatalf("NormalizeDefaultKernel(pi)=%q", got)
 	}
 	if settings.PreferredExternalEditor != "vscode" {
 		t.Fatalf("expected default VS Code editor, got %q", settings.PreferredExternalEditor)
@@ -100,6 +109,7 @@ func TestStorePersistsLocaleKernelAndActiveModel(t *testing.T) {
 	settings := store.Get()
 	settings.Locale = &locale
 	settings.DefaultKernel = "dsh"
+	settings.BusySend = "queue"
 	settings.ActiveProvider = presetDeepSeekServiceID
 	settings.ActiveModel = "deepseek-v4-pro"
 	if err := store.Save(settings); err != nil {
@@ -116,6 +126,9 @@ func TestStorePersistsLocaleKernelAndActiveModel(t *testing.T) {
 	}
 	if got.DefaultKernel != "dsh" {
 		t.Fatalf("default kernel did not persist: %q", got.DefaultKernel)
+	}
+	if got.BusySend != "queue" {
+		t.Fatalf("busy send did not persist: %q", got.BusySend)
 	}
 	if got.ActiveProvider != presetDeepSeekServiceID || got.ActiveModel != "deepseek-v4-pro" {
 		t.Fatalf("active model did not persist: %s/%s", got.ActiveProvider, got.ActiveModel)

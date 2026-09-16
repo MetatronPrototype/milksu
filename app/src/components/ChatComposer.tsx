@@ -86,6 +86,13 @@ import type {
 } from '@/types'
 import type { CodingRecentProject } from '@/codingEnvironmentTypes'
 import type { ContextUsagePresentation } from '@/lib/sessionTurnStatus'
+import type { BusySendPolicy } from '@/lib/agentKernel'
+import {
+  dshPlanCopy,
+  dshSlashDecision,
+  piPlanCopy,
+} from '@/lib/dshHostSurface'
+import type { DshCommandDescriptor } from '@/types'
 import {
   composerAllowsFollowupSend,
   composerParentTurnActive,
@@ -99,6 +106,11 @@ import {
   writeComposerDraft,
   type StoredComposerDraft,
 } from '@/lib/composerDraftStore'
+import {
+  COMPOSER_ADD_MENU_HEIGHT_CAP,
+  layoutComposerAddMenu,
+} from '@/lib/composerAddMenu'
+import { shouldShowMultitaskCapsule } from '@/lib/composerMultitask'
 import { useT } from '@/hooks/useUiLocale'
 
 type ComposerScopeToken = 'browser-use' | 'computer-use'
@@ -225,7 +237,11 @@ const COMPOSER_STYLES = `
   .chat-composer__progress-pill { min-width: 0; overflow: hidden; padding-inline: 0.5rem; }
 }
 .composer-add-option { display: flex; min-height: 3.5rem; align-items: center; gap: 0.75rem; padding: 0.55rem 0.75rem; }
-.composer-add-menu { max-height: min(38rem, calc(100vh - 10rem)); overflow-x: hidden; overflow-y: auto; }
+.composer-add-menu {
+  max-height: min(24rem, var(--radix-dropdown-menu-content-available-height, calc(100vh - 8rem)));
+  overflow-x: hidden;
+  overflow-y: auto;
+}
 .chat-composer__island {
   display: flex;
   flex-direction: column;
@@ -399,6 +415,10 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   kernel?: 'pi' | 'dsh'
   kernelLocked?: boolean
   multitask?: boolean
+  planModeActive?: boolean
+  dshCommands?: DshCommandDescriptor[]
+  dshCommandsError?: string
+  busySend?: BusySendPolicy
   onToggleMultitask?: (enabled: boolean) => void
   compactDisabled?: boolean
   contextUsage?: ContextUsagePresentation | null
@@ -451,7 +471,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   const {
     running, aborting, compacting, runPhase, ctfSession, goalMode, goal, executionMode,
     approvalPolicy, approvalLabel, modelKey, automaticModelLabel, compactModelLabel,
-    thinkingLevels, thinkingLevel, kernel, kernelLocked, multitask, contextUsage, workspaceReady,
+    thinkingLevels, thinkingLevel, kernel, kernelLocked, multitask, planModeActive, dshCommands,
+    dshCommandsError, busySend, contextUsage, workspaceReady,
     workspaceLocked, workspaceName, workspacePath, gitRepository, gitBranch, gitBranches,
     browserUseReady, computerUseReady, availableSkills, importedSkills, selectedMcpServers,
     mcpCatalog, mcpConfigDigest, conversationKey, queuedGuidance,
@@ -493,6 +514,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   const [skillToken, setSkillToken] = useState<string | null>(null)
   const [goalPanelOpen, setGoalPanelOpen] = useState(false)
   const goalSlot = useRef<HTMLDivElement | null>(null)
+  const addMenuTrigger = useRef<HTMLButtonElement | null>(null)
+  const [addMenuMaxHeight, setAddMenuMaxHeight] = useState(COMPOSER_ADD_MENU_HEIGHT_CAP)
   const conversationKeyRef = useRef(conversationKey)
   const previousConversationKey = useRef(conversationKey)
   const hydratedComposerKey = useRef<string | null>(null)
@@ -629,17 +652,23 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   const abortStalled = Boolean(abortStalledProp)
   const queuedGuidanceStatus = queuedGuidanceIsStalled
     ? t('本回合已结束，未送达；可撤回后重发', 'The turn ended before this was delivered. Withdraw it to send again.')
+    : busySend === 'queue'
+      ? t('将在下一回合发送', 'Sends on the next turn')
+      : queuedGuidanceAwaitingTool
+        ? t('当前工具调用结束后应用', 'Applied after the current tool call finishes')
+        : t('已并入本回合', 'Merged into this turn')
+  const sendSteeringTitle = busySend === 'queue'
+    ? t('排队到下一回合', 'Queue for the next turn')
     : queuedGuidanceAwaitingTool
       ? t('当前工具调用结束后应用', 'Applied after the current tool call finishes')
-      : t('已并入本回合', 'Merged into this turn')
-  const sendSteeringTitle = queuedGuidanceAwaitingTool
-    ? t('当前工具调用结束后应用', 'Applied after the current tool call finishes')
-    : t('并入本回合', 'Merge into this turn')
+      : t('并入本回合', 'Merge into this turn')
+  const planCopy = kernel === 'dsh' ? dshPlanCopy(t, Boolean(planModeActive)) : piPlanCopy(t, executionMode === 'plan')
+  const planActive = kernel === 'dsh' ? Boolean(planModeActive) : executionMode === 'plan'
 
   const slashCommandCatalog = [
     { id: 'goal', label: t('目标', 'Goal'), description: t('设置一个持续追踪的目标', 'Set a goal to keep working toward'), keywords: ['target'], icon: Target },
     { id: 'new', label: t('新任务', 'New task'), description: t('开始一个新的编码会话', 'Start a new coding session'), keywords: ['clear', '新建'], icon: MessageSquarePlus },
-    { id: 'plan', label: t('计划模式', 'Plan mode'), description: t('只分析和规划，不修改文件', 'Analyze and plan only, without changing files'), keywords: ['mode', '规划'], icon: Lightbulb },
+    { id: 'plan', label: kernel === 'dsh' ? dshPlanCopy(t, Boolean(planModeActive)).label : t('计划模式', 'Plan mode'), description: kernel === 'dsh' ? dshPlanCopy(t, Boolean(planModeActive)).description : t('只分析和规划，不修改文件', 'Analyze and plan only, without changing files'), keywords: ['mode', '规划'], icon: Lightbulb },
     { id: 'understand', label: t('理解项目', 'Understand the project'), description: t('读取入口、结构、运行方式和风险', 'Read the entry points, structure, how it runs, and the risks'), keywords: ['project', '项目', '了解'], icon: Compass },
     { id: 'test', label: t('运行测试', 'Run tests'), description: t('自动识别并运行项目的主验证链', 'Detect and run the project’s main verification chain'), keywords: ['verify', '测试'], icon: Terminal },
     { id: 'review', label: t('审阅变更', 'Review changes'), description: t('按文件和风险检查当前 Git 变更', 'Inspect current Git changes by file and risk'), keywords: ['diff', 'code-review', '审查', '审阅'], icon: ScanSearch },
@@ -698,7 +727,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     ))
     if (slashQuery) commands.sort((left, right) => Number(right.id === slashQuery) - Number(left.id === slashQuery))
     return commands
-  }, [slashQuery, hasUnfinishedGoal, kernel, composerBusy, compacting, workspaceReady, t])
+  }, [slashQuery, hasUnfinishedGoal, kernel, composerBusy, compacting, workspaceReady, planModeActive, t])
 
   const slashMenuOpen = !slashMenuDismissed && slashCommands.length > 0
   const activeSlashCommand = slashCommands[activeSlashCommandIndex] ?? slashCommands[0]
@@ -1210,6 +1239,22 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     const attachments = [...pendingAttachments]
     const text = textValue.trim() || (attachments.length ? t('请检查这些附件并完成我接下来需要处理的任务。', 'Please review these attachments and complete the task I need next.') : '')
     if (!text) return
+    if (kernel === 'dsh') {
+      const decision = dshSlashDecision({
+        kernel: 'dsh',
+        line: text,
+        catalog: dshCommands,
+        listingFailed: Boolean(dshCommandsError),
+      })
+      if (decision.kind === 'reject') {
+        setAttachmentError(t(`未知命令：/${decision.name}`, `Unknown command: /${decision.name}`))
+        return
+      }
+      if (decision.kind === 'unavailable') {
+        setAttachmentError(t('命令列表不可用。', 'Command list is unavailable.'))
+        return
+      }
+    }
     const parallelSend = kernel === 'dsh' && Boolean(multitask)
     const treatAsSteer = parentTurnActive && !parallelSend
     if (treatAsSteer && attachments.length) {
@@ -1270,7 +1315,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
       removeScopeToken(false)
       removeSkillToken(false)
       props.onStartGoal?.()
-    } else if (command.id === 'plan') props.onChangeExecutionMode?.('plan')
+    } else if (command.id === 'plan') props.onChangeExecutionMode?.(planActive ? 'go' : 'plan')
     else props.onRunSlashCommand?.(command.id)
     void focusMessageInput()
   }
@@ -1290,7 +1335,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }
 
   function togglePlanningMode() {
-    props.onChangeExecutionMode?.(executionMode === 'plan' ? 'go' : 'plan')
+    props.onChangeExecutionMode?.(planActive ? 'go' : 'plan')
     void focusMessageInput()
   }
 
@@ -1477,7 +1522,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
             <section className="chat-composer__queued-guidance" aria-label={t('待应用引导', 'Queued steering')}>
               <div className="flex items-center gap-2 text-caption font-medium text-primary">
                 <Clock3 className="size-3.5" />
-                <span>{t(`${queuedGuidance.length} 条引导已排队`, `${queuedGuidance.length} steering messages queued`)}</span>
+                <span>{busySend === 'queue'
+                  ? t(`${queuedGuidance.length} 条将在下一回合发送`, `${queuedGuidance.length} queued for the next turn`)
+                  : t(`${queuedGuidance.length} 条引导已排队`, `${queuedGuidance.length} steering messages queued`)}</span>
                 <span className="font-normal text-muted-foreground">{queuedGuidanceStatus}</span>
               </div>
               {queuedGuidance.map((message, index) => (
@@ -1573,14 +1620,27 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                 onChangeKernel={requestKernelChange}
                 onShowPermissions={() => props.onShowPermissions?.()}
                 leading={(
-                  <span className="inline-flex items-center gap-1">
-                  <DropdownMenu>
+                  <DropdownMenu onOpenChange={open => {
+                    if (!open) return
+                    setAddMenuMaxHeight(layoutComposerAddMenu(
+                      addMenuTrigger.current?.getBoundingClientRect(),
+                      { height: window.innerHeight },
+                    ).maxHeight)
+                  }}>
                     <DropdownMenuTrigger asChild>
-                      <Button type="button" variant="ghost" size="icon" className="chat-composer__add" disabled={parentTurnActive && kernel !== 'dsh'} aria-label={t('添加内容与工具', 'Add content and tools')} title={t('添加附件、工作方式或交互范围', 'Add attachments, a working mode, or an interaction scope')}>
+                      <Button ref={addMenuTrigger} type="button" variant="ghost" size="icon" className="chat-composer__add" disabled={parentTurnActive && kernel !== 'dsh'} aria-label={t('添加内容与工具', 'Add content and tools')} title={t('添加附件、工作方式或交互范围', 'Add attachments, a working mode, or an interaction scope')}>
                         <Plus className="size-4" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start" side="top" sideOffset={8} collisionPadding={16} className="agent-floating composer-add-menu app-no-drag w-[31rem] max-w-[calc(100vw-2rem)] max-h-[min(24rem,calc(100vh-8rem))] overflow-y-auto p-1">
+                    <DropdownMenuContent
+                      align="start"
+                      side="top"
+                      sideOffset={8}
+                      collisionPadding={16}
+                      avoidCollisions
+                      className="agent-floating composer-add-menu app-no-drag w-[31rem] max-w-[calc(100vw-2rem)] overflow-y-auto p-1"
+                      style={{ maxHeight: `min(${addMenuMaxHeight}px, var(--radix-dropdown-menu-content-available-height, ${addMenuMaxHeight}px))` }}
+                    >
                       <DropdownMenuLabel className="px-3 pb-1.5 pt-2 text-caption">{t('添加', 'Add')}</DropdownMenuLabel>
                       <DropdownMenuItem className="composer-add-option app-no-drag cursor-pointer" onPointerDown={event => startCodingAttachmentChooser(event.nativeEvent)} onSelect={() => startCodingAttachmentChooser()}>
                         <Paperclip className="size-4 shrink-0" />
@@ -1613,22 +1673,22 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                       >
                         <Layers2 className="size-4 shrink-0" />
                         <span className="min-w-0 flex-1">
-                          <span className="block text-label font-medium">Multitask</span>
+                          <span className="block text-label font-medium">{t('并行', 'Multitask')}</span>
                           <span className="block text-caption text-muted-foreground">
                             {kernel === 'dsh'
                               ? t('一边跑子代理，一边继续主对话', 'Keep chatting while subagents run')
                               : t('Pi 不能并行。模型拉起的子代理仍会出现在进行中。', 'Pi cannot run in parallel. Model-started subagents still appear in Working.')}
                           </span>
                         </span>
-                        {kernel === 'dsh' && multitask ? <Check className="size-4 shrink-0 text-primary" /> : null}
+                        {shouldShowMultitaskCapsule({ kernel, multitask }) ? <Check className="size-4 shrink-0 text-primary" /> : null}
                       </DropdownMenuItem>
                       <DropdownMenuItem className="composer-add-option" onSelect={togglePlanningMode}>
                         <Lightbulb className="size-4 shrink-0" />
                         <span className="min-w-0 flex-1">
-                          <span className="block text-label font-medium">{executionMode === 'plan' ? t('退出计划模式', 'Exit plan mode') : t('计划模式', 'Plan mode')}</span>
-                          <span className="block text-caption text-muted-foreground">{executionMode === 'plan' ? t('恢复使用当前授权工具', 'Resume using currently authorized tools') : t('只分析和规划，不修改文件', 'Analyze and plan only, without changing files')}</span>
+                          <span className="block text-label font-medium">{planCopy.label}</span>
+                          <span className="block text-caption text-muted-foreground">{planCopy.description}</span>
                         </span>
-                        {executionMode === 'plan' ? <Check className="size-4 shrink-0 text-primary" /> : null}
+                        {planActive ? <Check className="size-4 shrink-0 text-primary" /> : null}
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuLabel className="px-3 pb-1.5 pt-2 text-caption">{t('浏览与控制', 'Browse and control')}</DropdownMenuLabel>
@@ -1691,19 +1751,6 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  {kernel === 'dsh' && multitask ? (
-                    <button
-                      type="button"
-                      className="chat-composer__chip"
-                      aria-label="Multitask"
-                      title={t('一边跑子代理，一边继续主对话', 'Keep chatting while subagents run')}
-                      onClick={() => props.onToggleMultitask?.(false)}
-                    >
-                      <Layers2 className="size-3.5 shrink-0" />
-                      <span className="chat-composer__chip__label">Multitask</span>
-                    </button>
-                  ) : null}
-                  </span>
                 )}
                 status={(
                   <>
@@ -1754,10 +1801,16 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                         ) : null}
                       </div>
                     ) : null}
-                    {executionMode === 'plan' ? (
-                      <button type="button" className="chat-composer__chip chat-composer__chip--plan" aria-label={t('计划模式已开启', 'Plan mode is on')} title={t('只分析和规划，不修改文件；点击退出计划模式', 'Analyze and plan only, without changing files. Click to exit plan mode.')} onClick={() => props.onChangeExecutionMode?.('go')}>
+                    {shouldShowMultitaskCapsule({ kernel, multitask }) ? (
+                      <button type="button" className="chat-composer__chip chat-composer__chip--plan" aria-label={t('并行已开启', 'Multitask is on')} title={t('一边跑子代理，一边继续主对话；点击关闭并行', 'Keep chatting while subagents run. Click to turn off Multitask.')} onClick={() => props.onToggleMultitask?.(false)}>
+                        <Layers2 className="size-3.5 shrink-0" />
+                        <span className="chat-composer__chip__label">{t('并行', 'Multitask')}</span>
+                      </button>
+                    ) : null}
+                    {planActive ? (
+                      <button type="button" className="chat-composer__chip chat-composer__chip--plan" aria-label={planCopy.chipTitle} title={planCopy.chipTitle} onClick={() => props.onChangeExecutionMode?.('go')}>
                         <Lightbulb className="size-3.5 shrink-0" />
-                        <span className="chat-composer__chip__label">{t('计划', 'Plan')}</span>
+                        <span className="chat-composer__chip__label">{planCopy.chip}</span>
                       </button>
                     ) : null}
                     {showProgressSummary ? (

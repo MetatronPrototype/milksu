@@ -2,6 +2,9 @@ import { recordRpcCall } from '@/lib/debugMode'
 import {
   type AccountStatus,
   type AppSettings,
+  type DshCommandDescriptor,
+  type DshCommandResult,
+  type DshPlanMode,
   type CodingAttachment,
   type CodingAttachmentImport,
   type CodingAttachmentPreview,
@@ -425,6 +428,12 @@ interface DesktopAppBindings {
   ): Promise<CodingComputerUseStatus>
   StopCodingComputerUse(conversationId: string): Promise<CodingComputerUseStatus>
   SteerMessage(conversationId: string, prompt: string): Promise<void>
+  QueueDshMessage(conversationId: string, prompt: string): Promise<void>
+  ListDshCommands(conversationId: string): Promise<DshCommandDescriptor[]>
+  ExecuteDshCommand(conversationId: string, line: string): Promise<DshCommandResult>
+  SetDshPlanMode(conversationId: string, active: boolean): Promise<DshPlanMode>
+  ControlDshGoal(conversationId: string, action: string, objective?: string): Promise<void>
+  KillDshJob(conversationId: string, jobId: string): Promise<void>
   InspectDestructiveTarget(path: string): Promise<DestructiveTargetInspection>
   RemoveQueuedMessage(
     conversationId: string,
@@ -753,6 +762,34 @@ export async function invokeCommand<T = unknown>(command: string, args?: Command
         return app.SteerMessage(
           args?.conversationId as string,
           args?.prompt as string,
+        ) as Promise<T>
+      case 'queue_dsh_message':
+        return app.QueueDshMessage(
+          args?.conversationId as string,
+          args?.prompt as string,
+        ) as Promise<T>
+      case 'list_dsh_commands':
+        return app.ListDshCommands(args?.conversationId as string) as Promise<T>
+      case 'execute_dsh_command':
+        return app.ExecuteDshCommand(
+          args?.conversationId as string,
+          args?.line as string,
+        ) as Promise<T>
+      case 'set_dsh_plan_mode':
+        return app.SetDshPlanMode(
+          args?.conversationId as string,
+          args?.active === true,
+        ) as Promise<T>
+      case 'control_dsh_goal':
+        return app.ControlDshGoal(
+          args?.conversationId as string,
+          args?.action as string,
+          args?.objective as string | undefined,
+        ) as Promise<T>
+      case 'kill_dsh_job':
+        return app.KillDshJob(
+          args?.conversationId as string,
+          args?.jobId as string,
         ) as Promise<T>
       case 'inspect_destructive_target':
         return app.InspectDestructiveTarget(args?.path as string) as Promise<T>

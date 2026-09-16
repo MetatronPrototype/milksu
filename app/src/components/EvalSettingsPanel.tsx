@@ -5,18 +5,13 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
   SettingsRow,
   SettingsSection,
 } from '@/components/ui'
 import AkLoadingMark from '@/components/AkLoadingMark'
 import ModelVendorIcon from '@/components/ModelVendorIcon'
+import SearchableModelPicker from '@/components/SearchableModelPicker'
+import type { SearchableModelGroup } from '@/lib/modelPickerSearch'
 import { hasDesktopRuntime, invokeCommand, isMissingDesktopRuntime, listenEvent } from '@/desktop'
 import type { EvalBoardModel, EvalBoardSnapshot, EvalModelRef, EvalSuiteBoard } from '@/evalTypes'
 import {
@@ -486,6 +481,15 @@ export default function EvalSettingsPanel({
   store.s.settingsRef = settings
 
   const pickerGroups = store.pickerGroups()
+  const searchablePickerGroups: SearchableModelGroup[] = pickerGroups.map(group => ({
+    key: group.key,
+    label: group.label,
+    models: group.models.map(model => ({
+      value: encodePickerSelection(group.providerId, model, group.source),
+      label: store.pickerModelLabel(group, model),
+      model,
+    })),
+  }))
   const selectedSuite = store.s.selectedSuite
   const cards = store.cards()
   const current = store.current()
@@ -565,41 +569,24 @@ export default function EvalSettingsPanel({
             : current.suite.purpose)}
           trailing={(
             <>
-              <Select
+              <SearchableModelPicker
                 value={current.modelKey}
-                onValueChange={value => store.setSuiteModel(current.suite.id, String(value ?? ''))}
-              >
-                <SelectTrigger className="settings-control" aria-label={t(`${current.suite.name} 模型`, `${current.suite.name} model`)}>
-                  <SelectValue>
-                    <span className="inline-flex min-w-0 items-center gap-2">
-                      <ModelVendorIcon model={current.modelId} label={current.modelId} />
-                      <span className="min-w-0 truncate">
-                        {current.selection
-                          ? store.modelLabel({ provider: current.selection.providerId, model: current.selection.model, source: current.selection.source })
-                          : null}
-                      </span>
+                triggerClassName="settings-control h-7 px-2"
+                ariaLabel={t(`${current.suite.name} 模型`, `${current.suite.name} model`)}
+                align="end"
+                trigger={(
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    <ModelVendorIcon model={current.modelId} label={current.modelId} />
+                    <span className="min-w-0 truncate">
+                      {current.selection
+                        ? store.modelLabel({ provider: current.selection.providerId, model: current.selection.model, source: current.selection.source })
+                        : ''}
                     </span>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent className="min-w-96">
-                  {pickerGroups.map(group => (
-                    <SelectGroup key={group.key}>
-                      <SelectLabel>{group.label}</SelectLabel>
-                      {group.models.map(model => (
-                        <SelectItem
-                          key={`${group.key}:${model}`}
-                          value={encodePickerSelection(group.providerId, model, group.source)}
-                        >
-                          <span className="inline-flex min-w-0 items-center gap-2">
-                            <ModelVendorIcon model={model} label={store.pickerModelLabel(group, model)} />
-                            <span className="min-w-0 truncate">{store.pickerModelLabel(group, model)}</span>
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  ))}
-                </SelectContent>
-              </Select>
+                  </span>
+                )}
+                groups={searchablePickerGroups}
+                onChange={value => store.setSuiteModel(current.suite.id, value)}
+              />
               {!current.busy ? (
                 <Button
                   size="sm"

@@ -5,7 +5,9 @@ import {
   applyDshSubagentToolUpdate,
   dshSubagentRole,
   isDshSubagentToolName,
+  mergeHostSubagentSnapshot,
   parseDshSubagentStart,
+  settleSubagentTask,
   upsertSubagentTask,
 } from "./subagent-projection.js";
 
@@ -62,6 +64,32 @@ test("ACP tool_call start and started-id updates project a running roster row", 
     status: "running",
     toolCallId: "call-1",
   }]);
+});
+
+test("host list does not revive a child that already ended", () => {
+  const settled = settleSubagentTask([
+    { id: "27839a87", role: "sleep A", status: "running", toolCallId: "call-1" },
+  ], "27839a87", "succeeded");
+  assert.equal(settled[0].status, "succeeded");
+  const merged = mergeHostSubagentSnapshot(settled, [
+    { id: "27839a87", role: "sleep A", status: "running", toolCallId: "27839a87" },
+    { id: "1ccdfc32", role: "sleep B", status: "running", toolCallId: "1ccdfc32" },
+  ]);
+  assert.deepEqual(merged.map((task) => [task.id, task.status]), [
+    ["27839a87", "succeeded"],
+    ["1ccdfc32", "running"],
+  ]);
+});
+
+test("host catalog going empty settles leftover running rows", () => {
+  const merged = mergeHostSubagentSnapshot([
+    { id: "27839a87", role: "sleep A", status: "running", toolCallId: "call-1" },
+    { id: "done-1", role: "writer", status: "succeeded" },
+  ], []);
+  assert.deepEqual(merged.map((task) => [task.id, task.status]), [
+    ["27839a87", "succeeded"],
+    ["done-1", "succeeded"],
+  ]);
 });
 
 test("foreground subagent completion settles the same roster row", () => {

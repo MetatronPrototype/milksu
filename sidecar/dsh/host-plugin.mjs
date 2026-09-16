@@ -7,6 +7,22 @@ import {
   interruptHostSubagent,
   listHostSubagents,
 } from "./host-subagents.js";
+import {
+  appendHostInbox,
+  executeHostCommand,
+  getHostGoal,
+  getHostPlanMode,
+  killHostJob,
+  listHostCommands,
+  listHostInbox,
+  listHostJobs,
+  mapAskChoiceToUserQuestionAnswer,
+  mutateHostGoal,
+  projectUserQuestionAsk,
+  removeHostInbox,
+  replaceHostInbox,
+  setHostPlanMode,
+} from "./host-primitives.js";
 
 export const name = "milksu-dsh-host";
 // Process-lifetime IPC. Do not inject agents/compaction: those services recycle
@@ -90,9 +106,10 @@ export function apply(ctx) {
   }
 
   const watchers = new Set();
+  const pendingUserQuestions = new Map();
 
-  function notifyWatchers(payload) {
-    const line = `${JSON.stringify({ method: "subagent_event", params: payload })}\n`;
+  function notifyWatchers(method, payload) {
+    const line = `${JSON.stringify({ method, params: payload })}\n`;
     for (const socket of watchers) {
       try {
         socket.write(line);
@@ -102,17 +119,39 @@ export function apply(ctx) {
     }
   }
 
-  registerOwnedListener(ctx, "subagent/start", (info) => {
-    notifyWatchers({
+  registerOwnedListener(ctx, "user-questions/request", (request, next) => {
+    const ask = projectUserQuestionAsk(request?.questions);
+    if (!ask.options.length) {
+      return typeof next === "function" ? next() : undefined;
+    }
+    const id = `uq_${Date.now()}_${pendingUserQuestions.size}`;
+    const sessionId = String(request?.agent?.id ?? "").trim();
+    const settled = new Promise((resolve, reject) => {
+      pendingUserQuestions.set(id, { request, resolve, reject });
+    });
+    notifyWatchers("user_question", {
+      id,
+      sessionId,
+      question: ask.question,
+      detail: ask.detail,
+      options: ask.options,
+    });
+    return settled;
+  });
+
+  registerOwnedListener(ctx, "subagent/start", (info, parent) => {
+    notifyWatchers("subagent_event", {
       phase: "start",
       childId: String(info?.id ?? ""),
+      parentId: String(parent?.id ?? ""),
       runId: String(info?.runId ?? ""),
     });
   });
-  registerOwnedListener(ctx, "subagent/end", (info) => {
-    notifyWatchers({
+  registerOwnedListener(ctx, "subagent/end", (info, parent) => {
+    notifyWatchers("subagent_event", {
       phase: "end",
       childId: String(info?.id ?? ""),
+      parentId: String(parent?.id ?? ""),
       runId: String(info?.runId ?? ""),
       stopReason: info?.stopReason,
     });
@@ -127,7 +166,7 @@ export function apply(ctx) {
       buffer = lines.pop() ?? "";
       for (const line of lines) {
         if (!line.trim()) continue;
-        void handleLine(ctx, socket, watchers, line);
+        void handleLine(ctx, socket, watchers, pendingUserQuestions, line);
       }
     });
   });
@@ -140,7 +179,7 @@ export function apply(ctx) {
   });
 }
 
-async function handleLine(ctx, socket, watchers, line) {
+async function handleLine(ctx, socket, watchers, pendingUserQuestions, line) {
   let message;
   try {
     message = JSON.parse(line);
@@ -148,7 +187,7 @@ async function handleLine(ctx, socket, watchers, line) {
     return;
   }
   try {
-    const result = await dispatch(ctx, watchers, socket, message);
+    const result = await dispatch(ctx, watchers, socket, message, pendingUserQuestions);
     socket.write(`${JSON.stringify({ id: message.id, result })}\n`);
   } catch (error) {
     socket.write(`${JSON.stringify({
@@ -158,10 +197,22 @@ async function handleLine(ctx, socket, watchers, line) {
   }
 }
 
-export async function dispatch(ctx, watchers, socket, message) {
+export async function dispatch(ctx, watchers, socket, message, pendingUserQuestions = new Map()) {
   if (message.method === "watch") {
     watchers.add(socket);
     return { watching: true };
+  }
+  if (message.method === "answer_user_question") {
+    const id = String(message.params?.id ?? "").trim();
+    const pending = pendingUserQuestions.get(id);
+    if (!pending) throw new Error("User question is no longer pending");
+    pendingUserQuestions.delete(id);
+    pending.resolve(mapAskChoiceToUserQuestionAnswer(
+      pending.request?.questions,
+      message.params?.choice,
+      message.params?.approved,
+    ));
+    return { answered: true };
   }
   const sessionId = String(message.params?.sessionId ?? "").trim();
   if (!sessionId) throw new Error("sessionId is required");
@@ -197,6 +248,51 @@ export async function dispatch(ctx, watchers, socket, message) {
   if (message.method === "followup") {
     followupHostAgent(agent, message.params?.prompt);
     return { queued: true };
+  }
+  if (message.method === "list_commands") {
+    return { commands: listHostCommands(hostService(ctx, "commands"), agent) };
+  }
+  if (message.method === "execute_command") {
+    return executeHostCommand(
+      hostService(ctx, "commands"),
+      agent,
+      message.params?.line,
+    );
+  }
+  if (message.method === "get_plan") {
+    return getHostPlanMode(hostService(ctx, "planMode"), agent);
+  }
+  if (message.method === "set_plan") {
+    return setHostPlanMode(hostService(ctx, "planMode"), agent, message.params?.active === true);
+  }
+  if (message.method === "get_goal") {
+    return getHostGoal(hostService(ctx, "goals"), agent);
+  }
+  if (message.method === "control_goal") {
+    return mutateHostGoal(
+      hostService(ctx, "goals"),
+      agent,
+      String(message.params?.action ?? "").trim(),
+      message.params?.objective,
+    );
+  }
+  if (message.method === "inbox_list") {
+    return listHostInbox(agent);
+  }
+  if (message.method === "inbox_append") {
+    return appendHostInbox(agent, message.params?.prompt);
+  }
+  if (message.method === "inbox_remove") {
+    return removeHostInbox(agent, message.params?.messageId, message.params?.expected);
+  }
+  if (message.method === "inbox_replace") {
+    return replaceHostInbox(agent, message.params?.messageId, message.params?.prompt);
+  }
+  if (message.method === "list_jobs") {
+    return listHostJobs(hostService(ctx, "jobs"), agent);
+  }
+  if (message.method === "kill_job") {
+    return killHostJob(hostService(ctx, "jobs"), agent, message.params?.jobId);
   }
   if (message.method !== "compact") {
     throw new Error(`Unknown MilkSU host method: ${message.method}`);

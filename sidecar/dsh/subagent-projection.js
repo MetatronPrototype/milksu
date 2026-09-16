@@ -37,6 +37,66 @@ export function parseDshSubagentStart(content) {
   return null;
 }
 
+export function subagentTaskIdsMatch(task, id) {
+  const target = String(id ?? "").trim();
+  if (!task || !target) return false;
+  return task.id === target || task.toolCallId === target;
+}
+
+export function settleSubagentTask(tasks, id, status = "succeeded") {
+  const current = Array.isArray(tasks) ? tasks : [];
+  const childId = String(id ?? "").trim();
+  const nextStatus = status === "failed" ? "failed" : "succeeded";
+  if (!childId) return current;
+  const existing = current.find((item) => subagentTaskIdsMatch(item, childId));
+  if (!existing) return current;
+  if (existing.status === nextStatus) return current;
+  return current.map((item) => (
+    subagentTaskIdsMatch(item, childId) ? { ...item, status: nextStatus } : item
+  ));
+}
+
+export function mergeHostSubagentSnapshot(current, listed) {
+  const prev = Array.isArray(current) ? current : [];
+  const now = Array.isArray(listed) ? listed : [];
+  const settled = new Map();
+  for (const task of prev) {
+    if (task.status !== "succeeded" && task.status !== "failed") continue;
+    settled.set(task.id, task);
+    if (task.toolCallId) settled.set(task.toolCallId, task);
+  }
+  const merged = [];
+  const seen = new Set();
+  const markSeen = (task) => {
+    seen.add(task.id);
+    if (task.toolCallId) seen.add(task.toolCallId);
+  };
+  for (const task of now) {
+    const prior = settled.get(task.id) || (task.toolCallId ? settled.get(task.toolCallId) : undefined);
+    if (prior) {
+      merged.push({
+        ...task,
+        ...prior,
+        role: task.role || prior.role,
+        status: prior.status,
+      });
+    } else {
+      merged.push(task);
+    }
+    markSeen(task);
+  }
+  for (const task of prev) {
+    if (seen.has(task.id) || (task.toolCallId && seen.has(task.toolCallId))) continue;
+    merged.push(
+      task.status === "running" || task.status === "start"
+        ? { ...task, status: "succeeded" }
+        : task,
+    );
+    markSeen(task);
+  }
+  return merged;
+}
+
 export function upsertSubagentTask(tasks, next) {
   const current = Array.isArray(tasks) ? tasks : [];
   const incoming = next && typeof next === "object" ? next : null;

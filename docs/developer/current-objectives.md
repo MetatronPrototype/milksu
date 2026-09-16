@@ -25,7 +25,7 @@
 | --- | --- |
 | 阶段 | 内测迭代 / Agent Runtime 与跨平台发行收敛。不再按 M3/M4 组织。 |
 | 历史基线 | M3 product-loop 已在 `108e0e3`（2026-08-05）合并，仅供追溯。 |
-| 当前开发 | 新对话可选 Pi 或 DeepSeek Harness；设置 → 模型「默认运行时」只改新对话 kernel，不改写旧会话。出厂默认官方 DeepSeek Flash、默认运行时 Pi。工作树 DSH 钉 `0.1.6-alpha.1`（内核，不是 UI 参考）。Pi 子 Agent 默认主工作区、父回合阻塞；DSH 可在 Multitask 下用 ACP `session/new` 开子会话并继续主对话。Working 短胶囊对 Pi / DSH 同一套信息架构。Computer Use 由模型列窗 / 认窗 / 锁定。产品回归入口 `npm run test:product-loop`。产品 UI 语言和工作树 renderer 是 React + shadcn，见 `AGENTS.md`。最近一次正式安装包 `v26.915.1` 仍是 Vue + Felinic。未做：新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。宽作业用 `recon-authorized-target` Skill，不造 typed sweep。 |
+| 当前开发 | 新对话可选 Pi 或 DeepSeek Harness；设置 → 模型「默认运行时」只改新对话 kernel，不改写旧会话。出厂默认官方 DeepSeek Flash、默认运行时 DSH。工作树 DSH 钉 `0.1.6-alpha.1`（内核，不是 UI 参考；原厂 GUI 是 `dsh web`）。Pi 子 Agent 默认主工作区、父回合阻塞；DSH 可在 Multitask 下用 ACP `session/new` 开子会话并继续主对话。Working 短胶囊对 Pi / DSH 同一套信息架构。Computer Use 由模型列窗 / 认窗 / 锁定。产品回归入口 `npm run test:product-loop`。产品 UI 语言和工作树 renderer 是 React + shadcn，见 `AGENTS.md`。最近一次正式安装包 `v26.915.1` 仍是 Vue + Felinic。未做：新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。宽作业用 `recon-authorized-target` Skill，不造 typed sweep。 |
 | 平台边界 | macOS DMG 签名公证；Windows 安装器未代码签名，打入 CUA Driver `0.27.0`；Linux 发共用 DEB 与 tarball，GNOME Portal 已进包，无 Secret Service / 本地 OCR；Hyprland/Xorg Computer Use 不可用。Windows/Linux 窗口铬尚未真机验收。安装包见 README。 |
 | 发行流水 | 干净已推送的 `main` 上跑一次 canonical 验证；三端走 GitHub-hosted。`macos-release` 仅限 `main`，dispatch 后立即签名。正式包装 OTA 到私有 R2 并发布 current pointer；GitHub Release 不上 updater ZIP。 |
 
@@ -55,7 +55,9 @@
 - 新对话未发送前，作曲栏草稿和模型/运行时/项目芯片跟空会话走：去设置或其他页再回来仍在。未进安装包。
 - DSH 发送消息只复用已打开的隔离浏览器，不再 Ensure；问候 / 闲聊不会弹右栏。未进安装包。
 - 设置 → 模型「默认运行时」；作曲栏加号 Multitask（仅 DSH 可开并行）；对话下方 Working 短胶囊（折叠「进行中」或「进行中 · N」，不拉满作曲栏；点开才是 overlay 列表；Pi 与 DSH 同一套，主 thread 不再内嵌 sub-agent 大方板）。DSH 模型自己拉起的 `subagent` 经 ACP `tool_call` 与 host `ctx.subagents` 投影进同一 roster，可停单个/全部。未进安装包。
-- Agent Harness：DSH 没有 Cursor 那种 `run_in_background` Task。ACP `session/prompt` 要等到 `whenIdle`（含子代理）才结算，所以主对话继续发走 host `Agent.followup`。作曲栏停止键只在父回合还在生成、压缩或中止时出现（`composerShowsStop`：`parent` / `compacting` / `aborting`）。DSH Working 或 ACP 还在 `whenIdle` 但父文本已结算 / Working 已空时相位是 `working` 或 `idle`，按钮是 Send，并 `finishRun` 清掉 `runningIds`。加号 Multitask 才是另开 ACP 子会话。Pi 的 `subagent` 仍阻塞父工具。产品回归 `composer-runtime` 覆盖这些相位和默认运行时 / 模型 / 界面语言落盘。不要升 Pi 来假装能并行。
+- Agent Harness：DSH 没有 Cursor 那种 `run_in_background` Task。ACP `session/prompt` 要等到 `whenIdle`（含子代理）才结算，所以主对话继续发走 host `Agent.followup`。作曲栏停止键只在父回合还在生成、压缩或中止时出现（`composerShowsStop`：`parent` / `compacting` / `aborting`）。DSH Working 或 ACP 还在 `whenIdle` 但父文本已结算 / Working 已空时相位是 `working` 或 `idle`，按钮是 Send，并 `finishRun` 清掉 `runningIds`。加号 Multitask 才是另开 ACP 子会话。Pi 的 `subagent` 仍阻塞父工具。产品回归 `composer-runtime` 覆盖这些相位和默认运行时 / 忙碌发送 / 模型 / 界面语言落盘。不要升 Pi 来假装能并行。
+- 2026-09-16 对照钉住的原厂 `dsh web`（`@deepseek-ai/dsh@0.1.6-alpha.1`，默认 `127.0.0.1:3080`；本次 `--port 3088 --no-open`）。原厂 GUI 是 web profile + Session Controller，不是 ACP。点过：内测声明「继续」、新会话、选择/添加工作区（无工作区时加号和发送禁用；本机目录选择走 Host 原生文件夹窗，浏览器自动化进不去）、标准/PTC/极简/创造预设、设置（通用 / 模型 / 插件 / Agent 预设 / 已归档；权限「仅可查看 / 工作区内修改 / 完全权限」；繁忙发送「排队发送 / 插话发送」）。ACP 文档写明 slash command 面只给 CLI/Web，不给 ACP。MilkSU 已通过 ACP/host 投影 followup、`session/new` Multitask、subagent roster、stop、compact、审批。不要复刻原厂 web 皮肤、Queue dock、Jobs 顶栏、slash 目录或 Agent preset 切换器。
+- 工作树已把同进程 DSH host 投影补到 `ctx.commands` list/execute、`ctx.planMode` / 官方 `/plan`、`ctx.goals` / `/goal`、`Agent.inbox` 排队、`ctx.jobs`。未知 `/` 按官方 adapter 拒绝，不当事先写好的 prompt。DSH 计划芯片走 `planMode`（引导 + `exit_plan_mode` 可见确认），不再用 Pi `executionMode` 的「不修改文件」文案。忙碌发送设置默认插话（followup），可选排队（inbox 下一回合）。jobs 进现有 Working，可停。未复刻 child transcript、preset、插件清单、归档、Schedule。未进安装包。
 - 准备 writer 时按停止，有时同时出现「本轮已停止。」和「Agent 运行失败」。合同只留前者。
 - macOS OTA ZIP 须先把 sidecar 许可证改成属主可写，否则 ShipIt 可能装完仍是旧版。已装的 26.912.3 在下一包装进包前仍用 GitHub DMG。
 

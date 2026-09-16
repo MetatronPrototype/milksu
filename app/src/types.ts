@@ -1,4 +1,4 @@
-import { normalizeAgentKernel } from '@/lib/agentKernel'
+import { defaultAgentKernel, defaultBusySend, type BusySendPolicy } from '@/lib/agentKernel'
 import { normalizePreferredExternalEditor } from '@/lib/externalEditor'
 import { normalizeModelContextWindows } from '@/lib/knownContextWindow'
 import { normalizeModelThinkingSettings } from '@/lib/modelThinking'
@@ -128,6 +128,34 @@ export interface SubagentYield {
   exitCode: number
 }
 
+export interface DshJob {
+  id: string
+  kind?: string
+  label?: string
+  status: 'running' | 'stopping' | 'completed' | 'killed' | 'failed'
+  detail?: string
+  startedAt?: number
+}
+
+export interface DshPlanMode {
+  active: boolean
+  pending?: boolean
+}
+
+export interface DshCommandDescriptor {
+  name: string
+  description?: string
+  hint?: string
+}
+
+export interface DshCommandResult {
+  name?: string
+  commandId?: string
+  kind?: 'success' | 'error'
+  text?: string
+  executed?: boolean
+}
+
 export interface SubagentTask {
   id: string
   role: string
@@ -188,6 +216,13 @@ export interface Conversation {
   agentGoal?: CodingGoalState
   /** Live subagent roster for the current session; not a second chat. */
   subagentTasks?: SubagentTask[]
+  /** DSH background jobs that are not already a subagent or child session. */
+  dshJobs?: DshJob[]
+  /** Official DSH plan-mode projection; not Pi write-protect. */
+  planMode?: DshPlanMode
+  /** Live slash catalog from host commands.list. */
+  dshCommands?: DshCommandDescriptor[]
+  dshCommandsError?: string
   ctfJobId?: string
   ctfMode?: 'coach' | 'copilot' | 'delegate'
   ctfRole?: 'solver' | 'tool-builder' | 'strategist'
@@ -309,6 +344,7 @@ export interface AppSettings {
   active_provider: string
   active_model: string
   default_kernel?: import('@/lib/agentKernel').AgentKernel
+  busy_send?: BusySendPolicy
   model_verification?: ModelVerification
   model_routing: ModelRoutingConfig
   relay?: RelayConfig
@@ -392,7 +428,8 @@ export function withAppSettingsDefaults(value: AppSettings): AppSettings {
     ...value,
     active_provider: activeProvider,
     active_model: activeModel,
-    default_kernel: normalizeAgentKernel(value.default_kernel),
+    default_kernel: defaultAgentKernel(value.default_kernel),
+    busy_send: defaultBusySend(value.busy_send),
     model_routing: normalizeModelRouting(value.model_routing),
     preferred_external_editor: normalizePreferredExternalEditor(value.preferred_external_editor),
     disabled_skills: [...new Set((value.disabled_skills ?? [])

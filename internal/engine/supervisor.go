@@ -130,6 +130,10 @@ type Event struct {
 	Choice             string                   `json:"choice,omitempty"`
 	BackgroundTasks    []BackgroundTask         `json:"backgroundTasks,omitempty"`
 	SubagentTasks      []SubagentTask           `json:"subagentTasks,omitempty"`
+	Jobs               []DshJob                 `json:"jobs,omitempty"`
+	Commands           []DshCommandDescriptor   `json:"commands,omitempty"`
+	PlanMode           *DshPlanMode             `json:"planMode,omitempty"`
+	Command            *DshCommandResult        `json:"command,omitempty"`
 	Goal               *CodingGoalState         `json:"goal,omitempty"`
 	Resumed            bool                     `json:"resumed,omitempty"`
 	Aborted            bool                     `json:"aborted,omitempty"`
@@ -238,6 +242,34 @@ type SubagentTask struct {
 	Yield      *SubagentYield `json:"yield,omitempty"`
 }
 
+type DshCommandDescriptor struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Hint        string `json:"hint,omitempty"`
+}
+
+type DshPlanMode struct {
+	Active  bool `json:"active"`
+	Pending bool `json:"pending,omitempty"`
+}
+
+type DshCommandResult struct {
+	Name      string `json:"name,omitempty"`
+	CommandID string `json:"commandId,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Executed  bool   `json:"executed,omitempty"`
+}
+
+type DshJob struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind,omitempty"`
+	Label     string `json:"label,omitempty"`
+	Status    string `json:"status"`
+	Detail    string `json:"detail,omitempty"`
+	StartedAt int64  `json:"startedAt,omitempty"`
+}
+
 type CodingGoalState struct {
 	ID                  string `json:"id"`
 	Text                string `json:"text"`
@@ -340,6 +372,10 @@ type bridgeEvent struct {
 	Choice             string                   `json:"choice"`
 	Tasks              []BackgroundTask         `json:"tasks"`
 	SubagentTasks      []SubagentTask           `json:"subagentTasks"`
+	Jobs               []DshJob                 `json:"jobs"`
+	Commands           []DshCommandDescriptor   `json:"commands"`
+	PlanMode           *DshPlanMode             `json:"planMode"`
+	Command            *DshCommandResult        `json:"command"`
 	Goal               *CodingGoalState         `json:"goal"`
 	Resumed            bool                     `json:"resumed"`
 	Aborted            bool                     `json:"aborted"`
@@ -1970,6 +2006,151 @@ func (s *Supervisor) SteerMessage(sessionID, prompt string) error {
 	return nil
 }
 
+// QueueMessage parks a next-turn inbox item on DSH without waking followup.
+func (s *Supervisor) QueueMessage(sessionID, prompt string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	prompt = strings.TrimSpace(prompt)
+	if sessionID == "" {
+		return fmt.Errorf("session id is required")
+	}
+	if prompt == "" {
+		return fmt.Errorf("queued message is required")
+	}
+	if len([]rune(prompt)) > 16000 {
+		return fmt.Errorf("queued message exceeds 16000 characters")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.sessions[sessionID]; !exists {
+		return s.sessionMissingError(sessionID)
+	}
+	if err := s.writeToSessionLocked(sessionID, map[string]any{
+		"action":         "queue_message",
+		"conversationId": sessionID,
+		"prompt":         prompt,
+	}); err != nil {
+		return fmt.Errorf("queue engine message: %w", err)
+	}
+	return nil
+}
+
+func (s *Supervisor) waitHostControl(
+	sessionID, action string,
+	payload map[string]any,
+	doneType string,
+	timeout time.Duration,
+) (Event, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return Event{}, fmt.Errorf("session id is required")
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	requestID := fmt.Sprintf("dsh_%s_%d", action, time.Now().UnixNano())
+	events := make(chan Event, 1)
+	s.probeMu.Lock()
+	s.controlWaiters[requestID] = events
+	s.probeMu.Unlock()
+	defer func() {
+		s.probeMu.Lock()
+		delete(s.controlWaiters, requestID)
+		s.probeMu.Unlock()
+	}()
+
+	command := map[string]any{
+		"action":         action,
+		"conversationId": sessionID,
+		"requestId":      requestID,
+	}
+	for key, value := range payload {
+		command[key] = value
+	}
+	s.mu.Lock()
+	if _, exists := s.sessions[sessionID]; !exists {
+		err := s.sessionMissingError(sessionID)
+		s.mu.Unlock()
+		return Event{}, err
+	}
+	err := s.writeToSessionLocked(sessionID, command)
+	s.mu.Unlock()
+	if err != nil {
+		return Event{}, err
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case event := <-events:
+		if strings.TrimSpace(event.Error) != "" {
+			return Event{}, fmt.Errorf("%s", probeFailureMessage(event))
+		}
+		if event.Type != doneType {
+			return Event{}, fmt.Errorf("%s ended without a result", action)
+		}
+		return event, nil
+	case <-timer.C:
+		return Event{}, fmt.Errorf("%s timed out", action)
+	}
+}
+
+func (s *Supervisor) ListDshCommands(sessionID string) ([]DshCommandDescriptor, error) {
+	event, err := s.waitHostControl(sessionID, "list_commands", nil, "runtime.dsh_commands", 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return event.Commands, nil
+}
+
+func (s *Supervisor) ExecuteDshCommand(sessionID, line string) (DshCommandResult, error) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return DshCommandResult{}, fmt.Errorf("command line is required")
+	}
+	event, err := s.waitHostControl(sessionID, "execute_command", map[string]any{
+		"line": line,
+	}, "runtime.dsh_command", 130*time.Second)
+	if err != nil {
+		return DshCommandResult{}, err
+	}
+	if event.Command == nil {
+		return DshCommandResult{}, fmt.Errorf("command ended without a result")
+	}
+	return *event.Command, nil
+}
+
+func (s *Supervisor) SetDshPlanMode(sessionID string, active bool) (DshPlanMode, error) {
+	event, err := s.waitHostControl(sessionID, "set_plan_mode", map[string]any{
+		"active": active,
+	}, "runtime.dsh_command", 15*time.Second)
+	if err != nil {
+		return DshPlanMode{}, err
+	}
+	if event.PlanMode != nil {
+		return *event.PlanMode, nil
+	}
+	return DshPlanMode{Active: active}, nil
+}
+
+func (s *Supervisor) ControlDshGoal(sessionID, action, objective string) error {
+	_, err := s.waitHostControl(sessionID, "control_goal", map[string]any{
+		"goalAction": action,
+		"objective":  objective,
+	}, "runtime.dsh_command", 15*time.Second)
+	return err
+}
+
+func (s *Supervisor) KillDshJob(sessionID, jobID string) error {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return fmt.Errorf("job id is required")
+	}
+	_, err := s.waitHostControl(sessionID, "kill_job", map[string]any{
+		"jobId": jobID,
+	}, "runtime.dsh_job_killed", 15*time.Second)
+	return err
+}
+
 // RemoveQueuedMessage asks Pi to remove one exact pending message and waits
 // for a request-bound receipt. The index and expected text are both sent so a
 // stale renderer cannot accidentally retract a different message after Pi has
@@ -3098,6 +3279,10 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		Choice:             raw.Choice,
 		BackgroundTasks:    raw.Tasks,
 		SubagentTasks:      raw.SubagentTasks,
+		Jobs:               raw.Jobs,
+		Commands:           raw.Commands,
+		PlanMode:           raw.PlanMode,
+		Command:            raw.Command,
 		Goal:               raw.Goal,
 		Resumed:            raw.Resumed,
 		Aborted:            raw.Aborted,
@@ -3205,6 +3390,21 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		event.Type = "runtime.background_tasks"
 	case "subagent_tasks":
 		event.Type = "runtime.subagent_tasks"
+	case "dsh_jobs":
+		event.Type = "runtime.dsh_jobs"
+	case "dsh_commands":
+		event.Type = "runtime.dsh_commands"
+		event.Done = true
+	case "dsh_command":
+		event.Type = "runtime.dsh_command"
+		event.Error = raw.Error
+		event.Done = true
+	case "dsh_job_killed":
+		event.Type = "runtime.dsh_job_killed"
+		event.Error = raw.Error
+		event.Done = true
+	case "plan_updated":
+		event.Type = "session.plan_updated"
 	case "background_task_controlled":
 		event.Type = "runtime.background_task_controlled"
 	case "compaction_start":

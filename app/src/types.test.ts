@@ -43,7 +43,8 @@ describe('model provider catalog', () => {
     const settings = withAppSettingsDefaults({} as AppSettings)
     expect(settings.active_provider).toBe('custom-relay-deepseek')
     expect(settings.active_model).toBe('deepseek-flash')
-    expect(settings.default_kernel).toBe('pi')
+    expect(settings.default_kernel).toBe('dsh')
+    expect(settings.busy_send).toBe('interrupt')
   })
 
   it('normalizes default_kernel without rewriting other settings', () => {
@@ -53,6 +54,24 @@ describe('model provider catalog', () => {
       default_kernel: 'deepseek-harness',
     } as AppSettings)
     expect(settings.default_kernel).toBe('dsh')
+  })
+
+  it('normalizes busy_send without rewriting other settings', () => {
+    const settings = withAppSettingsDefaults({
+      active_provider: 'custom-relay-deepseek',
+      active_model: 'deepseek-flash',
+      busy_send: 'queued',
+    } as AppSettings)
+    expect(settings.busy_send).toBe('queue')
+  })
+
+  it('keeps an explicit Pi default_kernel', () => {
+    const settings = withAppSettingsDefaults({
+      active_provider: 'custom-relay-deepseek',
+      active_model: 'deepseek-flash',
+      default_kernel: 'pi',
+    } as AppSettings)
+    expect(settings.default_kernel).toBe('pi')
   })
 
   it('falls unknown official providers back to official DeepSeek Flash', () => {

@@ -40,12 +40,19 @@ import {
 } from "../pi/bridge-ask.js";
 import { createWorkspaceActionBroker } from "../pi/bridge-workspace.js";
 import { acpImagePromptsEnabled, buildDshPromptBlocks } from "./prompt-blocks.js";
-import { applyDshSubagentToolUpdate } from "./subagent-projection.js";
+import {
+  applyDshSubagentToolUpdate,
+  mergeHostSubagentSnapshot,
+  settleSubagentTask,
+} from "./subagent-projection.js";
+import { parseSlashLine } from "./host-primitives.js";
 
 const sessions = new Map();
 const pendingAsks = new Map();
+const pendingUserQuestions = new Map();
 const sessionCommandQueues = new Map();
 const sessionSubagentTasks = new Map();
+const sessionJobs = new Map();
 let acp;
 let acpImagePrompts = false;
 let productIpc;
@@ -301,18 +308,38 @@ function emitSubagentTasks(conversationId, tasks) {
   emit(conversationId, "subagent_tasks", { subagentTasks: next });
 }
 
-function projectSubagentUpdate(conversationId, update) {
-  const current = sessionSubagentTasks.get(conversationId) ?? [];
-  const next = applyDshSubagentToolUpdate(current, update);
-  if (next === current) return;
-  const changed = next.length !== current.length
+function subagentRosterChanged(current, next) {
+  return current.length !== next.length
     || next.some((task, index) => (
       task.id !== current[index]?.id
       || task.status !== current[index]?.status
       || task.role !== current[index]?.role
     ));
-  if (!changed) return;
+}
+
+function replaceSubagentTasks(conversationId, tasks) {
+  const current = sessionSubagentTasks.get(conversationId) ?? [];
+  const next = Array.isArray(tasks) ? tasks : [];
+  if (!subagentRosterChanged(current, next)) return;
   emitSubagentTasks(conversationId, next);
+}
+
+function settleHostSubagent(conversationId, childId, stopReason) {
+  const status = stopReason === "error"
+    || stopReason === "cancelled"
+    || stopReason === "aborted"
+    || stopReason === "interrupted"
+    ? "failed"
+    : "succeeded";
+  replaceSubagentTasks(
+    conversationId,
+    settleSubagentTask(sessionSubagentTasks.get(conversationId) ?? [], childId, status),
+  );
+}
+
+function projectSubagentUpdate(conversationId, update) {
+  const current = sessionSubagentTasks.get(conversationId) ?? [];
+  replaceSubagentTasks(conversationId, applyDshSubagentToolUpdate(current, update));
 }
 
 async function refreshHostSubagents(conversationId) {
@@ -321,17 +348,13 @@ async function refreshHostSubagents(conversationId) {
   try {
     const result = await callHost("list_subagents", { sessionId: record.acpSessionId });
     if (!Array.isArray(result?.subagentTasks)) return;
-    if (result.subagentTasks.length) {
-      emitSubagentTasks(conversationId, result.subagentTasks);
-      return;
-    }
-    const current = sessionSubagentTasks.get(conversationId) ?? [];
-    if (!current.some(task => task.status === "running" || task.status === "start")) return;
-    emitSubagentTasks(conversationId, current.map(task => (
-      task.status === "running" || task.status === "start"
-        ? { ...task, status: "succeeded" }
-        : task
-    )));
+    replaceSubagentTasks(
+      conversationId,
+      mergeHostSubagentSnapshot(
+        sessionSubagentTasks.get(conversationId) ?? [],
+        result.subagentTasks,
+      ),
+    );
   } catch {
     // Host plugin may not have ctx.subagents in this process.
   }
@@ -347,6 +370,244 @@ async function interruptHostSubagents(record, subagentId) {
     sessionId: record.acpSessionId,
     subagentId,
   });
+}
+
+function conversationIdForSession(sessionId) {
+  const acpSessionId = String(sessionId ?? "").trim();
+  if (!acpSessionId) return "";
+  return [...sessions.entries()].find(([, record]) => record.acpSessionId === acpSessionId)?.[0] ?? "";
+}
+
+function emitInboxQueue(conversationId, inbox) {
+  const followUp = (inbox?.nextTurn ?? []).map(item => String(item?.text ?? "").trim()).filter(Boolean);
+  emit(conversationId, "queue_update", { steering: [], followUp });
+}
+
+function emitPlanMode(conversationId, plan) {
+  emit(conversationId, "plan_updated", {
+    planMode: {
+      active: Boolean(plan?.active),
+      pending: plan?.pending === undefined ? undefined : Boolean(plan.pending),
+    },
+  });
+}
+
+function emitHostGoal(conversationId, goal) {
+  emit(conversationId, "goal_state", { goal: goal ?? null });
+}
+
+function emitHostJobs(conversationId, jobs) {
+  const next = Array.isArray(jobs) ? jobs : [];
+  if (next.length) sessionJobs.set(conversationId, next);
+  else sessionJobs.delete(conversationId);
+  emit(conversationId, "dsh_jobs", { jobs: next });
+}
+
+async function refreshHostJobs(conversationId) {
+  const record = sessionRecord(conversationId);
+  if (!record?.acpSessionId || !hostIpcPath) return;
+  try {
+    const result = await callHost("list_jobs", { sessionId: record.acpSessionId });
+    emitHostJobs(conversationId, result?.jobs ?? []);
+  } catch {
+    // Jobs service may be absent in this process.
+  }
+}
+
+async function refreshHostPlan(conversationId) {
+  const record = sessionRecord(conversationId);
+  if (!record?.acpSessionId) return;
+  try {
+    emitPlanMode(conversationId, await callHost("get_plan", { sessionId: record.acpSessionId }));
+  } catch {
+    // Plan mode service may be absent.
+  }
+}
+
+async function refreshHostGoal(conversationId) {
+  const record = sessionRecord(conversationId);
+  if (!record?.acpSessionId) return;
+  try {
+    const result = await callHost("get_goal", { sessionId: record.acpSessionId });
+    emitHostGoal(conversationId, result?.goal ?? null);
+  } catch {
+    // Goal service may be absent.
+  }
+}
+
+async function presentHostUserQuestion(params) {
+  const conversationId = conversationIdForSession(params?.sessionId);
+  if (!conversationId) return;
+  const options = Array.isArray(params?.options) ? params.options : [];
+  if (options.length < 2) return;
+  const question = [params?.question, params?.detail].filter(Boolean).join("\n\n");
+  pendingUserQuestions.set(String(params?.id ?? ""), true);
+  try {
+    const picked = await requestAsk({
+      conversationId,
+      question,
+      options,
+    });
+    await callHost("answer_user_question", {
+      id: params?.id,
+      choice: picked?.label ?? picked?.id,
+      approved: Boolean(picked),
+    });
+  } catch (error) {
+    try {
+      await callHost("answer_user_question", {
+        id: params?.id,
+        approved: false,
+      });
+    } catch {
+      // The review already timed out or the fiber unloaded.
+    }
+    emit(conversationId, "error", { error: describeError(error) });
+  } finally {
+    pendingUserQuestions.delete(String(params?.id ?? ""));
+  }
+}
+
+function emitCommandOutcome(conversationId, requestId, result, error) {
+  emit(conversationId, "dsh_command", {
+    requestId,
+    command: result,
+    error: error ? describeError(error) : undefined,
+  });
+}
+
+async function listSessionCommands(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  const requestId = String(command.requestId ?? "").trim();
+  const record = sessionRecord(conversationId);
+  try {
+    if (!record?.acpSessionId) throw new Error("DeepSeek Harness session is not ready");
+    const result = await callHost("list_commands", { sessionId: record.acpSessionId });
+    emit(conversationId, "dsh_commands", {
+      requestId,
+      commands: result?.commands ?? [],
+    });
+  } catch (error) {
+    emit(conversationId, "dsh_commands", {
+      requestId,
+      commands: [],
+      error: describeError(error),
+    });
+  }
+}
+
+async function executeSessionCommand(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  const requestId = String(command.requestId ?? "").trim();
+  const record = sessionRecord(conversationId);
+  try {
+    if (!record?.acpSessionId) throw new Error("DeepSeek Harness session is not ready");
+    const result = await callHost("execute_command", {
+      sessionId: record.acpSessionId,
+      line: command.line,
+    });
+    emitCommandOutcome(conversationId, requestId, result);
+    if (result?.name === "plan") await refreshHostPlan(conversationId);
+    if (result?.name === "goal") await refreshHostGoal(conversationId);
+    if (result?.kind === "error") {
+      emit(conversationId, "error", { error: result.text || "Command failed" });
+    }
+  } catch (error) {
+    emitCommandOutcome(conversationId, requestId, undefined, error);
+    emit(conversationId, "error", { error: describeError(error) });
+  }
+}
+
+async function setSessionPlanMode(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  const requestId = String(command.requestId ?? "").trim();
+  const record = sessionRecord(conversationId);
+  try {
+    if (!record?.acpSessionId) throw new Error("DeepSeek Harness session is not ready");
+    const result = await callHost("set_plan", {
+      sessionId: record.acpSessionId,
+      active: command.active === true,
+    });
+    emitPlanMode(conversationId, result);
+    emit(conversationId, "dsh_command", {
+      requestId,
+      command: { name: "plan", ...result },
+      planMode: {
+        active: Boolean(result?.active),
+        pending: result?.pending,
+      },
+    });
+  } catch (error) {
+    emit(conversationId, "error", { error: describeError(error) });
+    emit(conversationId, "dsh_command", { requestId, error: describeError(error) });
+  }
+}
+
+async function controlSessionGoal(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  const requestId = String(command.requestId ?? "").trim();
+  const record = sessionRecord(conversationId);
+  try {
+    if (!record?.acpSessionId) throw new Error("DeepSeek Harness session is not ready");
+    const result = await callHost("control_goal", {
+      sessionId: record.acpSessionId,
+      action: command.goalAction,
+      objective: command.objective,
+    });
+    emitHostGoal(conversationId, result?.goal ?? null);
+    emit(conversationId, "dsh_command", { requestId, command: result });
+  } catch (error) {
+    emit(conversationId, "error", { error: describeError(error) });
+    emit(conversationId, "dsh_command", { requestId, error: describeError(error) });
+  }
+}
+
+async function queueParent(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  const prompt = String(command.prompt ?? "").trim();
+  if (!conversationId) throw new Error("conversationId is required");
+  if (!prompt) throw new Error("prompt is required");
+  const record = sessionRecord(conversationId);
+  if (!record?.acpSessionId) throw new Error("DeepSeek Harness session is not ready");
+  const inbox = await callHost("inbox_append", { sessionId: record.acpSessionId, prompt });
+  emitInboxQueue(conversationId, inbox);
+}
+
+async function removeQueuedParent(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  const requestId = String(command.requestId ?? "").trim();
+  const record = sessionRecord(conversationId);
+  try {
+    if (!record?.acpSessionId) throw new Error("DeepSeek Harness session is not ready");
+    const inbox = await callHost("inbox_remove", {
+      sessionId: record.acpSessionId,
+      expected: command.expected,
+    });
+    emitInboxQueue(conversationId, inbox);
+    emit(conversationId, "queued_message_removed", { requestId });
+  } catch (error) {
+    emit(conversationId, "queued_message_removed", { requestId, error: describeError(error) });
+  }
+}
+
+async function killSessionJob(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  const requestId = String(command.requestId ?? "").trim();
+  const record = sessionRecord(conversationId);
+  try {
+    if (!record?.acpSessionId) throw new Error("DeepSeek Harness session is not ready");
+    const result = await callHost("kill_job", {
+      sessionId: record.acpSessionId,
+      jobId: command.jobId,
+    });
+    emitHostJobs(conversationId, result?.jobs ?? []);
+    emit(conversationId, "dsh_job_killed", { requestId, jobId: command.jobId });
+  } catch (error) {
+    emit(conversationId, "dsh_job_killed", {
+      requestId,
+      error: describeError(error),
+    });
+  }
 }
 
 function startHostWatch() {
@@ -366,9 +627,24 @@ function startHostWatch() {
       } catch {
         continue;
       }
+      if (message.method === "user_question") {
+        void presentHostUserQuestion(message.params);
+        continue;
+      }
       if (message.method !== "subagent_event") continue;
+      const childId = String(message.params?.childId ?? "").trim();
+      const phase = String(message.params?.phase ?? "");
+      const stopReason = String(message.params?.stopReason ?? "");
       for (const conversationId of sessions.keys()) {
-        void refreshHostSubagents(conversationId);
+        if (phase === "end" && childId) {
+          settleHostSubagent(conversationId, childId, stopReason);
+        }
+        void refreshHostSubagents(conversationId).then(() => {
+          if (phase === "end" && childId) {
+            settleHostSubagent(conversationId, childId, stopReason);
+          }
+        });
+        void refreshHostJobs(conversationId);
       }
     }
   });
@@ -551,6 +827,9 @@ async function createSession(command) {
   }
   emit(conversationId, "ready", { resumed });
   startHostWatch();
+  void refreshHostPlan(conversationId);
+  void refreshHostGoal(conversationId);
+  void refreshHostJobs(conversationId);
 }
 
 async function sendMessage(command) {
@@ -572,6 +851,16 @@ async function sendMessage(command) {
     } catch {
       // Catalog discovery lives on the session; a missing option keeps the current route.
     }
+  }
+  const rawPrompt = String(command.prompt ?? "").trim();
+  const slash = parseSlashLine(rawPrompt);
+  if (slash) {
+    await executeSessionCommand({
+      conversationId,
+      requestId: command.requestId,
+      line: slash.line,
+    });
+    return;
   }
   emit(conversationId, "turn_started");
   const prompt = await buildDshPromptBlocks(command, {
@@ -596,6 +885,7 @@ async function sendMessage(command) {
   finishThinking(conversationId);
   emit(conversationId, "message_done");
   emit(conversationId, "turn_settled");
+  void refreshHostSubagents(conversationId);
 }
 
 async function abortSession(command) {
@@ -618,6 +908,17 @@ async function abortSession(command) {
       await interruptHostSubagents(record, "*");
     } catch {
       // Native children stay listed until the host catalog refreshes.
+    }
+    try {
+      const listed = await callHost("list_jobs", { sessionId: record.acpSessionId });
+      for (const job of listed?.jobs ?? []) {
+        if (job?.id && (job.status === "running" || job.status === "stopping")) {
+          await callHost("kill_job", { sessionId: record.acpSessionId, jobId: job.id });
+        }
+      }
+      await refreshHostJobs(conversationId);
+    } catch {
+      // Jobs stay listed until the host catalog refreshes.
     }
   }
   if (record && acp) {
@@ -667,6 +968,7 @@ async function destroySession(command) {
   }
   sessions.delete(conversationId);
   sessionSubagentTasks.delete(conversationId);
+  sessionJobs.delete(conversationId);
   emit(conversationId || null, "session_destroyed");
 }
 
@@ -793,7 +1095,27 @@ async function handleCommand(command) {
     case "steer_message":
       await followupParent(command);
       break;
+    case "queue_message":
+      await queueParent(command);
+      break;
+    case "list_commands":
+      await listSessionCommands(command);
+      break;
+    case "execute_command":
+      await executeSessionCommand(command);
+      break;
+    case "set_plan_mode":
+      await setSessionPlanMode(command);
+      break;
+    case "control_goal":
+      await controlSessionGoal(command);
+      break;
+    case "kill_job":
+      await killSessionJob(command);
+      break;
     case "remove_queued_message":
+      await removeQueuedParent(command);
+      break;
     case "background_task_control":
       break;
     default:
@@ -819,6 +1141,12 @@ input.on("line", line => {
   }
   if (command.action === "steer_message") {
     void followupParent(command).catch(error => {
+      emit(command.conversationId ?? null, "error", { error: describeError(error) });
+    });
+    return;
+  }
+  if (command.action === "queue_message") {
+    void queueParent(command).catch(error => {
       emit(command.conversationId ?? null, "error", { error: describeError(error) });
     });
     return;

@@ -138,6 +138,9 @@ async function runComposerRuntime() {
       'vitest',
       'run',
       'src/lib/composerRunState.test.ts',
+      'src/lib/dshHostSurface.test.ts',
+      'src/lib/agentKernel.test.ts',
+      'src/lib/workingRoster.test.ts',
       'src/composables/useConversationsKernelMultitask.test.ts',
       'src/types.test.ts',
       'src/lib/uiLocale.test.ts',
@@ -159,13 +162,36 @@ async function runComposerRuntime() {
   if (settings.code !== 0) {
     return {
       result: 'FAIL',
-      detail: '默认运行时 / 模型 / 界面语言落盘未过',
+      detail: '默认运行时 / 忙碌发送 / 模型 / 界面语言落盘未过',
       stderr: settings.stderr.slice(-800),
+    }
+  }
+  const queue = await runCommand(
+    'go',
+    ['test', './internal/engine', '-count=1', '-run', 'TestQueueMessageUsesExistingDshSession|TestSteerMessageUsesExistingPiSession'],
+  )
+  if (queue.code !== 0) {
+    return {
+      result: 'FAIL',
+      detail: 'DSH inbox 排队 / Pi 插话 supervisor 未过',
+      stderr: queue.stderr.slice(-800),
+    }
+  }
+  const host = await runCommand(
+    'node',
+    ['--test', 'sidecar/dsh/host-plugin.test.js', 'sidecar/dsh/host-primitives.test.js'],
+  )
+  if (host.code !== 0) {
+    return {
+      result: 'FAIL',
+      detail: 'DSH host commands/plan/goal/inbox/jobs 未过',
+      stdout: host.stdout.slice(-1_200),
+      stderr: host.stderr.slice(-800),
     }
   }
   return {
     result: 'PASS',
-    detail: 'Stop/Send 相位、DSH Working followup、Pi 阻塞子代理、Multitask、locale/kernel/model 落盘通过',
+    detail: 'Stop/Send 相位、DSH host commands/plan/goal/inbox/jobs、Working followup、Pi 阻塞子代理、Multitask、locale/kernel/busy-send/model 落盘通过',
   }
 }
 

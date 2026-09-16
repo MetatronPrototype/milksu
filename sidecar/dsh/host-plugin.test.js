@@ -136,7 +136,7 @@ test("apply does not leak cannot-create-effect on inactive context", async (t) =
           },
         };
         loaded.apply(ctx);
-        assert.deepEqual(listeners, ["subagent/start", "subagent/end"]);
+        assert.deepEqual(listeners, ["user-questions/request", "subagent/start", "subagent/end"]);
         assert.equal(disposers.length, 1);
         await new Promise((resolve, reject) => {
           const started = Date.now();
@@ -199,6 +199,118 @@ test("host plugin followup uses Agent.followup and does not wait for idle", asyn
     }),
     /prompt is required/,
   );
+});
+
+function hostCtx(services) {
+  return {
+    get(name) {
+      return services[name];
+    },
+  };
+}
+
+test("host plugin lists and executes commands without sending unknown slash as a prompt", async () => {
+  const loaded = await loadHostPlugin();
+  const ctx = hostCtx({
+    agents: { get: (id) => (id === "acp_1" ? { id } : null) },
+    commands: {
+      list() {
+        return [{ name: "plan", description: "Enter or leave plan mode" }];
+      },
+      async execute(_agent, line) {
+        if (line === "/plan") {
+          return { commandId: "c1", result: { kind: "success", text: "Plan mode on." } };
+        }
+        return undefined;
+      },
+    },
+  });
+  const listed = await loaded.dispatch(ctx, new Set(), {}, {
+    method: "list_commands",
+    params: { sessionId: "acp_1" },
+  });
+  assert.equal(listed.commands[0].name, "plan");
+  const executed = await loaded.dispatch(ctx, new Set(), {}, {
+    method: "execute_command",
+    params: { sessionId: "acp_1", line: "/plan" },
+  });
+  assert.equal(executed.kind, "success");
+  await assert.rejects(
+    () => loaded.dispatch(ctx, new Set(), {}, {
+      method: "execute_command",
+      params: { sessionId: "acp_1", line: "/not-real" },
+    }),
+    /Unknown command: \/not-real/,
+  );
+});
+
+test("host plugin plan goal inbox and jobs stay on in-process primitives", async () => {
+  const loaded = await loadHostPlugin();
+  let planActive = false;
+  let goal;
+  const nextTurn = [];
+  const agent = {
+    id: "acp_1",
+    inbox: {
+      get nextTurn() { return nextTurn; },
+      nextStep: [],
+      append(_target, message) {
+        nextTurn.push({ id: "m1", content: message.content });
+      },
+      remove() {
+        nextTurn.splice(0, nextTurn.length);
+        return true;
+      },
+    },
+  };
+  const ctx = hostCtx({
+    agents: { get: (id) => (id === "acp_1" ? agent : null) },
+    planMode: {
+      get() { return { active: planActive }; },
+      set(_agent, active) { planActive = active; return "committed"; },
+    },
+    goals: {
+      get() { return goal; },
+      create(_agent, request) {
+        goal = { id: "g1", revision: 1, objective: request.objective, phase: "active" };
+        return goal;
+      },
+      pause() {
+        goal = { ...goal, phase: "paused", revision: 2 };
+        return goal;
+      },
+      clear() { goal = undefined; },
+    },
+    jobs: {
+      list() { return [{ id: "bash-1", kind: "bash", label: "sleep", status: "running" }]; },
+      kill() { return "requested"; },
+    },
+  });
+  const plan = await loaded.dispatch(ctx, new Set(), {}, {
+    method: "set_plan",
+    params: { sessionId: "acp_1", active: true },
+  });
+  assert.equal(plan.active, true);
+  const created = await loaded.dispatch(ctx, new Set(), {}, {
+    method: "control_goal",
+    params: { sessionId: "acp_1", action: "create", objective: "Ship dock" },
+  });
+  assert.equal(created.goal.text, "Ship dock");
+  const queued = await loaded.dispatch(ctx, new Set(), {}, {
+    method: "inbox_append",
+    params: { sessionId: "acp_1", prompt: "after this turn" },
+  });
+  assert.equal(queued.nextTurn[0].text, "after this turn");
+  const jobs = await loaded.dispatch(ctx, new Set(), {}, {
+    method: "list_jobs",
+    params: { sessionId: "acp_1" },
+  });
+  assert.equal(jobs.jobs[0].id, "bash-1");
+  const killed = await loaded.dispatch(ctx, new Set(), {}, {
+    method: "kill_job",
+    params: { sessionId: "acp_1", jobId: "bash-1" },
+  });
+  assert.equal(killed.killed, true);
 });
 
 test("dispatch reads agents through ctx.get so the plugin need not inject them", async () => {

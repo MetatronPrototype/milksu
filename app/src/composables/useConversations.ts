@@ -34,9 +34,19 @@ import {
 import { t } from '@/lib/uiLocale'
 import {
   conversationKernelLocked,
+  FACTORY_DEFAULT_BUSY_SEND,
+  FACTORY_DEFAULT_KERNEL,
   normalizeAgentKernel,
+  normalizeBusySend,
   type AgentKernel,
+  type BusySendPolicy,
 } from '@/lib/agentKernel'
+import {
+  commandsUnavailableCopy,
+  dshSlashDecision,
+  parseComposerSlash,
+  unknownSlashCopy,
+} from '@/lib/dshHostSurface'
 import {
   askApprovalChoice,
   encodeAskOtherChoice,
@@ -83,6 +93,9 @@ import type {
   CodingGoalState,
   CodingProductActionRequest,
   Conversation,
+  DshCommandDescriptor,
+  DshJob,
+  DshPlanMode,
   Message,
   ModelThinkingLevel,
   SubagentTask,
@@ -180,6 +193,52 @@ function normalizeMCPServers(value: unknown): string[] | undefined {
   return servers.length ? servers : undefined
 }
 
+function normalizeDshJobs(value: unknown): DshJob[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const jobs = value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const job = item as Record<string, unknown>
+    const id = String(job.id ?? '').trim()
+    if (!id) return []
+    const status = String(job.status ?? '')
+    if (!['running', 'stopping', 'completed', 'killed', 'failed'].includes(status)) return []
+    return [{
+      id,
+      kind: String(job.kind ?? '').trim() || undefined,
+      label: String(job.label ?? '').trim() || undefined,
+      status: status as DshJob['status'],
+      detail: String(job.detail ?? '').trim() || undefined,
+      startedAt: Number(job.startedAt ?? 0) || undefined,
+    }]
+  })
+  return jobs.length ? jobs : undefined
+}
+
+function normalizePlanMode(value: unknown): DshPlanMode | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const plan = value as Record<string, unknown>
+  return {
+    active: plan.active === true,
+    pending: plan.pending === true ? true : undefined,
+  }
+}
+
+function normalizeDshCommands(value: unknown): DshCommandDescriptor[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const commands = value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const command = item as Record<string, unknown>
+    const name = String(command.name ?? '').trim().toLowerCase()
+    if (!name) return []
+    return [{
+      name,
+      description: String(command.description ?? '').trim() || undefined,
+      hint: String(command.hint ?? '').trim() || undefined,
+    }]
+  })
+  return commands.length ? commands : undefined
+}
+
 const goalStatuses = new Set<CodingGoalState['status']>([
   'active',
   'paused',
@@ -246,6 +305,9 @@ interface AgentEvent {
   reason?: string
   goal?: CodingGoalState
   subagentTasks?: SubagentTask[]
+  jobs?: DshJob[]
+  commands?: DshCommandDescriptor[]
+  planMode?: DshPlanMode
   resumed?: boolean
   aborted?: boolean
   steering?: string[]
@@ -449,6 +511,9 @@ export function normalizeConversation(raw: Record<string, unknown>): Conversatio
       : undefined,
     agentGoal: normalizeGoal(raw.agentGoal),
     subagentTasks: normalizeSubagentTasks(raw.subagentTasks),
+    dshJobs: normalizeDshJobs(raw.dshJobs),
+    planMode: normalizePlanMode(raw.planMode),
+    dshCommands: normalizeDshCommands(raw.dshCommands),
     ctfJobId: typeof raw.ctfJobId === 'string' ? raw.ctfJobId : undefined,
     ctfMode: ['coach', 'copilot', 'delegate'].includes(String(raw.ctfMode))
       ? raw.ctfMode as Conversation['ctfMode']
@@ -866,6 +931,7 @@ type ConversationsState = {
   pendingWorkspacePath: string
   pendingWorkspaceHome: WorkspaceHome
   defaultKernel: AgentKernel
+  busySend: BusySendPolicy
   pendingKernel: AgentKernel
   pendingModelMode: 'auto' | 'manual' | undefined
   pendingModelProvider: string | undefined
@@ -874,6 +940,7 @@ type ConversationsState = {
   pendingModelSourcePreference: 'auto' | 'account' | 'personal'
   pendingExecutionMode: CodingExecutionMode
   pendingApprovalPolicy: CodingApprovalPolicy
+  pendingMultitask: boolean
   pendingMCPServers: string[]
   pendingMCPConfigDigest: string
   runningIds: Set<string>
@@ -900,6 +967,7 @@ type ParkedPendingCanvas = {
   modelSourcePreference: ConversationsState['pendingModelSourcePreference']
   executionMode: CodingExecutionMode
   approvalPolicy: CodingApprovalPolicy
+  multitask: boolean
   mcpServers: string[]
   mcpConfigDigest: string
 }
@@ -910,8 +978,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     activeId: null,
     pendingWorkspacePath: '',
     pendingWorkspaceHome: 'chat',
-    defaultKernel: 'pi',
-    pendingKernel: 'pi',
+    defaultKernel: FACTORY_DEFAULT_KERNEL,
+    busySend: FACTORY_DEFAULT_BUSY_SEND,
+    pendingKernel: FACTORY_DEFAULT_KERNEL,
     pendingModelMode: undefined,
     pendingModelProvider: undefined,
     pendingModelId: undefined,
@@ -919,6 +988,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     pendingModelSourcePreference: 'auto',
     pendingExecutionMode: DEFAULT_CODING_EXECUTION_MODE,
     pendingApprovalPolicy: DEFAULT_CODING_APPROVAL_POLICY,
+    pendingMultitask: false,
     pendingMCPServers: [],
     pendingMCPConfigDigest: '',
     runningIds: new Set<string>(),
@@ -945,6 +1015,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set pendingWorkspaceHome(value) { store.setState({ pendingWorkspaceHome: value }) },
     get defaultKernel() { return store.getState().defaultKernel },
     set defaultKernel(value) { store.setState({ defaultKernel: value }) },
+    get busySend() { return store.getState().busySend },
+    set busySend(value) { store.setState({ busySend: value }) },
     get pendingKernel() { return store.getState().pendingKernel },
     set pendingKernel(value) { store.setState({ pendingKernel: value }) },
     get pendingModelMode() { return store.getState().pendingModelMode },
@@ -961,6 +1033,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set pendingExecutionMode(value) { store.setState({ pendingExecutionMode: value }) },
     get pendingApprovalPolicy() { return store.getState().pendingApprovalPolicy },
     set pendingApprovalPolicy(value) { store.setState({ pendingApprovalPolicy: value }) },
+    get pendingMultitask() { return store.getState().pendingMultitask },
+    set pendingMultitask(value) { store.setState({ pendingMultitask: value }) },
     get pendingMCPServers() { return store.getState().pendingMCPServers },
     set pendingMCPServers(value) { store.setState({ pendingMCPServers: value }) },
     get pendingMCPConfigDigest() { return store.getState().pendingMCPConfigDigest },
@@ -991,6 +1065,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set pendingComposerDraft(value) { store.setState({ pendingComposerDraft: value }) },
   }
   const parkedPendingByHome: Partial<Record<WorkspaceHome, ParkedPendingCanvas>> = {}
+  const pendingDshGoals = new Map<string, string>()
 
   // A short-lived engine status line (idle reclaim, blocked deletions and friends). It is
   // deliberately not part of any conversation's messages.
@@ -1138,6 +1213,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   const selectedApprovalPolicy = (() => (
     active()?.approvalPolicy ?? s.pendingApprovalPolicy
   ))
+  const selectedMultitask = (() => {
+    const current = active()
+    if (current) return current.multitask === true
+    return s.pendingMultitask === true
+  })
   const selectedMCPServers = (() => (
     active()?.mcpServers ?? s.pendingMCPServers
   ))
@@ -1508,9 +1588,17 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       (conversation.subagentTasks ?? []).some(task => (
         task.id === id || task.toolCallId === id
       ))
+      || (conversation.dshJobs ?? []).some(job => job.id === id)
     ))
     if (!owner) return
     if (normalizeAgentKernel(owner.kernel) === 'dsh') {
+      if ((owner.dshJobs ?? []).some(job => job.id === id)) {
+        await invokeCommand('kill_dsh_job', {
+          conversationId: owner.id,
+          jobId: id,
+        })
+        return
+      }
       await invokeCommand('abort_message', {
         conversationId: owner.id,
         subagentId: id,
@@ -1534,13 +1622,25 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     const liveTasks = (parent?.subagentTasks ?? []).some(task => (
       task.status === 'start' || task.status === 'running'
     ))
+    const liveJobs = (parent?.dshJobs ?? []).some(job => (
+      job.status === 'running' || job.status === 'stopping'
+    ))
     if (parent && normalizeAgentKernel(parent.kernel) === 'dsh' && liveTasks) {
       await invokeCommand('abort_message', {
         conversationId: target,
         subagentId: '*',
       })
+    }
+    if (parent && normalizeAgentKernel(parent.kernel) === 'dsh' && liveJobs) {
+      await Promise.all((parent.dshJobs ?? [])
+        .filter(job => job.status === 'running' || job.status === 'stopping')
+        .map(job => invokeCommand('kill_dsh_job', {
+          conversationId: target,
+          jobId: job.id,
+        })))
       return
     }
+    if (parent && normalizeAgentKernel(parent.kernel) === 'dsh' && liveTasks) return
     if (liveTasks) await abort(target)
   }
 
@@ -1669,6 +1769,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       modelSourcePreference: s.pendingModelSourcePreference,
       executionMode: s.pendingExecutionMode,
       approvalPolicy: s.pendingApprovalPolicy,
+      multitask: s.pendingMultitask,
       mcpServers: [...s.pendingMCPServers],
       mcpConfigDigest: s.pendingMCPConfigDigest,
     }
@@ -1686,6 +1787,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.pendingModelSourcePreference = next.modelSourcePreference
     s.pendingExecutionMode = next.executionMode
     s.pendingApprovalPolicy = next.approvalPolicy
+    s.pendingMultitask = next.multitask
     s.pendingMCPServers = [...next.mcpServers]
     s.pendingMCPConfigDigest = next.mcpConfigDigest
   }
@@ -1707,6 +1809,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.pendingModelSourcePreference = 'auto'
     s.pendingExecutionMode = DEFAULT_CODING_EXECUTION_MODE
     s.pendingApprovalPolicy = DEFAULT_CODING_APPROVAL_POLICY
+    s.pendingMultitask = false
     s.pendingMCPServers = []
     s.pendingMCPConfigDigest = ''
     s.pendingComposerDraft = null
@@ -1798,6 +1901,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         : s.pendingModelSourcePreference,
       executionMode: s.pendingExecutionMode,
       approvalPolicy: s.pendingApprovalPolicy,
+      multitask: normalizeAgentKernel(s.pendingKernel) === 'dsh' && s.pendingMultitask
+        ? true
+        : undefined,
       mcpServers: s.pendingMCPServers.length ? s.pendingMCPServers : undefined,
       mcpConfigDigest: s.pendingMCPServers.length
         ? s.pendingMCPConfigDigest
@@ -1856,13 +1962,95 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     if (!s.activeId && s.pendingKernel === previous) s.pendingKernel = next
   }
 
+  function setBusySend(value: BusySendPolicy | string) {
+    s.busySend = normalizeBusySend(value)
+  }
+
+  function pushCommandNotice(conversationId: string, content: string) {
+    update(conversationId, current => ({
+      ...current,
+      messages: [...current.messages, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content,
+        timestamp: Date.now(),
+        status: 'done',
+      }],
+    }))
+  }
+
+  async function executeDshHostCommand(conversationId: string, line: string) {
+    try {
+      const result = await invokeCommand<{ text?: string; kind?: string }>('execute_dsh_command', {
+        conversationId,
+        line,
+      })
+      const text = String(result?.text ?? '').trim()
+      if (text) pushCommandNotice(conversationId, text)
+      return true
+    } catch (reason) {
+      pushCommandNotice(conversationId, t(
+        `命令失败：${agentErrorMessage(reason)}`,
+        `Command failed: ${agentErrorMessage(reason)}`,
+      ))
+      return false
+    }
+  }
+
+  async function toggleDshPlanMode(active: boolean) {
+    const conversationId = s.activeId
+    if (!conversationId) return
+    try {
+      const plan = await invokeCommand<DshPlanMode>('set_dsh_plan_mode', {
+        conversationId,
+        active,
+      })
+      update(conversationId, current => ({
+        ...current,
+        planMode: {
+          active: plan?.active === true,
+          pending: plan?.pending === true ? true : undefined,
+        },
+      }))
+    } catch (reason) {
+      pushCommandNotice(conversationId, t(
+        `无法切换计划：${agentErrorMessage(reason)}`,
+        `Could not change plan: ${agentErrorMessage(reason)}`,
+      ))
+    }
+  }
+
+  async function refreshDshCommands(conversationId: string) {
+    try {
+      const commands = await invokeCommand<DshCommandDescriptor[]>('list_dsh_commands', {
+        conversationId,
+      })
+      update(conversationId, current => ({
+        ...current,
+        dshCommands: normalizeDshCommands(commands),
+        dshCommandsError: undefined,
+      }))
+    } catch (reason) {
+      update(conversationId, current => ({
+        ...current,
+        dshCommands: undefined,
+        dshCommandsError: agentErrorMessage(reason),
+      }))
+    }
+  }
+
   function setMultitask(enabled: boolean) {
-    if (!s.activeId) return
+    const next = enabled === true
+    if (!s.activeId) {
+      if (normalizeAgentKernel(s.pendingKernel) !== 'dsh') return
+      s.pendingMultitask = next
+      return
+    }
     const current = s.conversations.find(item => item.id === s.activeId)
     if (!current || normalizeAgentKernel(current.kernel) !== 'dsh') return
     update(s.activeId, conversation => ({
       ...conversation,
-      multitask: enabled ? true : undefined,
+      multitask: next ? true : undefined,
     }))
   }
 
@@ -2022,7 +2210,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   ) {
     const prompt = text.trim()
     if (!prompt) return false
-    const visiblePrompt = visibleText.trim() || prompt
+    let outboundPrompt = prompt
+    let outboundVisible = visibleText.trim() || prompt
     const runningConversationId = s.activeId
     const activeConversation = s.conversations.find(item => item.id === runningConversationId)
     const pendingAsk = pendingAskMessage(activeConversation?.messages)
@@ -2035,6 +2224,46 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     const activeKernel = normalizeAgentKernel(
       activeConversation?.kernel ?? s.pendingKernel,
     )
+    let pendingGoalObjective = ''
+    if (activeKernel === 'dsh' && !steering && !answeringAsk) {
+      const decision = dshSlashDecision({
+        kernel: 'dsh',
+        line: prompt,
+        catalog: activeConversation?.dshCommands,
+        listingFailed: Boolean(activeConversation?.dshCommandsError),
+      })
+      if (decision.kind === 'reject') {
+        if (runningConversationId) {
+          pushCommandNotice(runningConversationId, unknownSlashCopy(t, decision.name))
+        }
+        return false
+      }
+      if (decision.kind === 'unavailable') {
+        if (runningConversationId) {
+          pushCommandNotice(runningConversationId, commandsUnavailableCopy(t))
+        }
+        return false
+      }
+      if (decision.kind === 'compact') {
+        await compactContext()
+        return true
+      }
+      if (decision.kind === 'host') {
+        if (runningConversationId) {
+          return executeDshHostCommand(runningConversationId, decision.line)
+        }
+        if (decision.name === 'goal') {
+          const objective = parseComposerSlash(prompt)?.rawInput.trim() || prompt
+          outboundPrompt = objective
+          outboundVisible = objective
+          pendingGoalObjective = objective
+        } else {
+          const conversationId = ensureConversation()
+          return executeDshHostCommand(conversationId, decision.line)
+        }
+      }
+    }
+    const visiblePrompt = outboundVisible
     if (
       steering
       && activeKernel === 'dsh'
@@ -2080,6 +2309,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           : s.pendingModelSourcePreference,
         executionMode: s.pendingExecutionMode,
         approvalPolicy: s.pendingApprovalPolicy,
+        multitask: normalizeAgentKernel(s.pendingKernel) === 'dsh' && s.pendingMultitask
+          ? true
+          : undefined,
         mcpServers: s.pendingMCPServers.length ? s.pendingMCPServers : undefined,
         mcpConfigDigest: s.pendingMCPServers.length
           ? s.pendingMCPConfigDigest
@@ -2098,6 +2330,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         messages: [...conversation.messages, message],
       }))
     }
+    if (pendingGoalObjective) pendingDshGoals.set(conversationId, pendingGoalObjective)
 
     if (answeringAsk && pendingAsk?.approvalRequestId) {
       await respondApproval(
@@ -2111,7 +2344,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
 
     if (steering) {
       try {
-        await invokeCommand('steer_message', {
+        const queueNext = activeKernel === 'dsh' && s.busySend === 'queue'
+        await invokeCommand(queueNext ? 'queue_dsh_message' : 'steer_message', {
           conversationId,
           prompt,
         })
@@ -2174,7 +2408,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       }
       if (conversation) await invokeCommand('save_conversation', { conversation })
       const dispatch: RuntimeTurnDispatch = {
-        prompt,
+        prompt: outboundPrompt,
         attachments,
         scopeToken,
         productAction,
@@ -2575,6 +2809,13 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       s.runningIds = new Set(s.runningIds).add(conversationId)
     }
     try {
+      if (normalizeAgentKernel(conversation.kernel) === 'dsh') {
+        await invokeCommand('control_dsh_goal', {
+          conversationId,
+          action,
+        })
+        return
+      }
       await invokeCommand('send_message', {
         conversationId,
         prompt: `/goal ${action}`,
@@ -2692,6 +2933,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         reason,
         goal,
         subagentTasks,
+        jobs,
+        commands,
+        planMode,
         resumed,
         aborted,
         steering,
@@ -2832,6 +3076,39 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       if ((type === 'usage.recorded' && usage) || type === 'context.composition') {
         return
       }
+      if (type === 'runtime.dsh_jobs') {
+        const liveBefore = liveWorkingCountFor(sessionId)
+        s.conversations = s.conversations.map(conversation => (
+          conversation.id === sessionId
+            ? { ...conversation, dshJobs: normalizeDshJobs(jobs) }
+            : conversation
+        ))
+        const liveAfter = liveWorkingCountFor(sessionId)
+        reconcileParentRun(sessionId, {
+          workingJustEmptied: liveBefore > 0 && liveAfter === 0,
+        })
+        return
+      }
+      if (type === 'runtime.dsh_commands') {
+        s.conversations = s.conversations.map(conversation => (
+          conversation.id === sessionId
+            ? {
+                ...conversation,
+                dshCommands: normalizeDshCommands(commands),
+                dshCommandsError: error || undefined,
+              }
+            : conversation
+        ))
+        return
+      }
+      if (type === 'session.plan_updated') {
+        s.conversations = s.conversations.map(conversation => (
+          conversation.id === sessionId
+            ? { ...conversation, planMode: normalizePlanMode(planMode) }
+            : conversation
+        ))
+        return
+      }
       if (type === 'runtime.subagent_tasks') {
         const liveBefore = liveWorkingCountFor(sessionId)
         s.conversations = s.conversations.map(conversation => (
@@ -2914,6 +3191,18 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           )
           if (turnPolicyActive) activeTurnPolicies.add(sessionId)
           else activeTurnPolicies.delete(sessionId)
+          if (normalizeAgentKernel(conversation.kernel) === 'dsh') {
+            void refreshDshCommands(sessionId)
+            const pendingGoal = pendingDshGoals.get(sessionId)
+            if (pendingGoal) {
+              pendingDshGoals.delete(sessionId)
+              void invokeCommand('control_dsh_goal', {
+                conversationId: sessionId,
+                action: 'create',
+                objective: pendingGoal,
+              }).catch(() => undefined)
+            }
+          }
           return {
             ...conversation,
             agentTools: projectAgentTools(
@@ -3230,6 +3519,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get activeQueuedGuidanceStalled() { return activeQueuedGuidanceStalled() },
     get engineNotice() { return s.engineNotice },
     get engineNoticeRepeat() { return s.engineNoticeRepeat },
+    get busySend() { return s.busySend },
     get selectedKernel() { return selectedKernel() },
     get selectedModelMode() { return selectedModelMode() },
     get selectedModelProvider() { return selectedModelProvider() },
@@ -3238,6 +3528,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get selectedModelSourcePreference() { return selectedModelSourcePreference() },
     get selectedExecutionMode() { return selectedExecutionMode() },
     get selectedApprovalPolicy() { return selectedApprovalPolicy() },
+    get selectedMultitask() { return selectedMultitask() },
     get selectedMCPServers() { return selectedMCPServers() },
     get selectedMCPConfigDigest() { return selectedMCPConfigDigest() },
     get conversationActionError() { return s.conversationActionError },
@@ -3276,6 +3567,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     setWorkspace,
     clearWorkspace,
     setDefaultKernel,
+    setBusySend,
+    toggleDshPlanMode,
     setMultitask,
     abortWorkingItem,
     abortWorkingAll,

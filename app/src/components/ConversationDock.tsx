@@ -91,7 +91,7 @@ const DOCK_STYLES = `
 .conversation-dock__thread .composer-add-menu {
   z-index: 30;
   width: min(28rem, calc(100vw - 8rem));
-  max-height: min(22rem, 48vh);
+  max-height: min(22rem, var(--radix-dropdown-menu-content-available-height, 48vh));
 }
 .conversation-dock__resize {
   position: absolute;

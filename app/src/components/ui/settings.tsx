@@ -1,4 +1,8 @@
 import * as React from 'react'
+import { useState, type ReactNode } from 'react'
+import { Check, ChevronDown } from 'lucide-react'
+import { Button } from './button'
+import { Popover, PopoverContent, PopoverTrigger } from './popover'
 import { cn } from '@/lib/cn'
 
 function SettingsSection({
@@ -71,13 +75,13 @@ function SettingsRow({
       )}
       {...props}
     >
-      <div className="min-w-0">
+      <div className="min-w-0 overflow-hidden">
         {label ? <div className="text-[length:var(--text-label)] font-medium leading-[var(--text-label--line-height)]">{label}</div> : null}
-        {description ? <p className="mt-0.5 text-[length:var(--text-caption)] leading-[var(--text-caption--line-height)] text-muted-foreground">{description}</p> : null}
+        {description ? <p className="mt-0.5 break-words text-[length:var(--text-caption)] leading-[var(--text-caption--line-height)] text-muted-foreground">{description}</p> : null}
         {children}
       </div>
       {trailing ? (
-        <div className={cn('flex shrink-0 items-center justify-end gap-2', stack === 'always' && 'w-full justify-start')}>
+        <div className={cn('relative z-10 flex shrink-0 items-center justify-end gap-2', stack === 'always' && 'w-full justify-start')}>
           {trailing}
         </div>
       ) : null}
@@ -85,4 +89,55 @@ function SettingsRow({
   )
 }
 
-export { SettingsRow, SettingsSection }
+function SettingsGhostPicker({
+  value,
+  ariaLabel,
+  options,
+  onChange,
+}: {
+  value: string
+  ariaLabel: string
+  options: { value: string; label: string; leading?: ReactNode }[]
+  onChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const selected = options.find(option => option.value === value)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-label={ariaLabel}
+          className="settings-control h-7 justify-between gap-1.5 px-2"
+        >
+          <span className="inline-flex min-w-0 flex-1 items-center gap-2 truncate text-left">
+            {selected?.leading}
+            <span className="min-w-0 truncate">{selected?.label ?? ''}</span>
+          </span>
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[14rem] p-1">
+        {options.map(option => (
+          <button
+            key={option.value}
+            type="button"
+            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
+            onClick={() => {
+              onChange(option.value)
+              setOpen(false)
+            }}
+          >
+            {option.leading}
+            <span className="min-w-0 flex-1 truncate">{option.label}</span>
+            {value === option.value ? <Check className="size-3.5 shrink-0" /> : null}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+export { SettingsGhostPicker, SettingsRow, SettingsSection }

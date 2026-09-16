@@ -63,6 +63,7 @@ import {
   type UpdateResumeState,
 } from '@/lib/updateResumeState'
 import { updateStatusMessage } from '@/lib/updateStatus'
+import { FACTORY_DEFAULT_KERNEL } from '@/lib/agentKernel'
 import { withAppSettingsDefaults, type AccountStatus, type AppSettings, type CTFChatAction, type UpdateStatus } from '@/types'
 import type { ModelCatalogSnapshot } from '@/types'
 import { installAppModelSettings, installModelCatalog, loadModelCatalog } from '@/modelCatalog'
@@ -459,7 +460,8 @@ export default function App() {
     setSettings(normalized)
     installAppModelSettings(normalized)
     applyUiLocale(normalized.locale)
-    conversations.setDefaultKernel(normalized.default_kernel ?? 'pi')
+    conversations.setDefaultKernel(normalized.default_kernel ?? FACTORY_DEFAULT_KERNEL)
+    conversations.setBusySend(normalized.busy_send ?? 'interrupt')
   }
 
   async function loadSettings() {

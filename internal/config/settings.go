@@ -88,6 +88,8 @@ type AppSettings struct {
 	// DefaultKernel chooses Pi or DSH for a new conversation only.
 	// Existing conversations keep the kernel persisted on that row.
 	DefaultKernel           string                                    `json:"default_kernel,omitempty"`
+	// BusySend is the DSH parent-turn send policy: interrupt (followup) or queue (inbox).
+	BusySend string `json:"busy_send,omitempty"`
 	ModelVerified           *ModelVerification                        `json:"model_verification,omitempty"`
 	ModelRouting            ModelRoutingConfig                        `json:"model_routing"`
 	Relay                   *RelayConfig                              `json:"relay,omitempty"`
@@ -123,12 +125,23 @@ func defaultDeepSeekProvider() ProviderConfig {
 	}
 }
 
+func NormalizeBusySend(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "queue", "queued", "排队":
+		return "queue"
+	default:
+		return "interrupt"
+	}
+}
+
 func NormalizeDefaultKernel(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "dsh", "deepseek", "deepseek-harness":
 		return "dsh"
-	default:
+	case "pi":
 		return "pi"
+	default:
+		return "dsh"
 	}
 }
 
@@ -136,7 +149,8 @@ func DefaultSettings() AppSettings {
 	return AppSettings{
 		ActiveProvider: presetDeepSeekServiceID,
 		ActiveModel:    "deepseek-flash",
-		DefaultKernel:  "pi",
+		DefaultKernel:  "dsh",
+		BusySend:       "interrupt",
 		ModelRouting: ModelRoutingConfig{
 			SourceOrder:  []string{ModelSourceAccount, ModelSourcePersonal},
 			AutoFallback: boolPointer(false),
@@ -722,6 +736,7 @@ func withDefaults(value AppSettings) AppSettings {
 		value.ActiveModel = defaults.ActiveModel
 	}
 	value.DefaultKernel = NormalizeDefaultKernel(value.DefaultKernel)
+	value.BusySend = NormalizeBusySend(value.BusySend)
 	if value.Providers == nil {
 		value.Providers = make(map[string]ProviderConfig)
 	}

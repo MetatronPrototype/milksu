@@ -1,7 +1,8 @@
+import { isBackgroundDshJob } from '@/lib/dshHostSurface'
 import { formatSubagentYield } from '@/lib/subagentRoster'
 import type { Conversation, SubagentTask } from '@/types'
 
-export type WorkingItemKind = 'subagent' | 'child'
+export type WorkingItemKind = 'subagent' | 'child' | 'job'
 
 export type WorkingItem = {
   id: string
@@ -51,9 +52,8 @@ function childStatus(
   const last = [...conversation.messages].reverse().find(message => (
     message.role === 'assistant' || message.role === 'tool'
   ))
-  if (last?.status === 'running') return 'running'
-  if (last?.role === 'assistant' && last.status === 'done') return 'succeeded'
-  return 'running'
+  if (last?.status === 'running' || last?.status === 'queued') return 'running'
+  return 'succeeded'
 }
 
 export function workingItemsForConversation(
@@ -81,6 +81,18 @@ export function workingItemsForConversation(
       stoppable: kernel === 'dsh',
     }
   })
+  const jobs = (root.dshJobs ?? [])
+    .filter(job => isBackgroundDshJob(job))
+    .filter(job => !tasks.some(task => task.id === job.id))
+    .map((job): WorkingItem => ({
+      id: job.id,
+      title: job.label || job.id,
+      status: job.status === 'failed' || job.status === 'killed' ? 'failed' : 'running',
+      kind: 'job',
+      role: job.kind,
+      detail: job.detail,
+      stoppable: true,
+    }))
   const extraChildren = children
     .filter(child => !tasks.some(task => (
       task.id === child.id || task.conversationId === child.id
@@ -94,7 +106,7 @@ export function workingItemsForConversation(
       detail: child.messages.find(message => message.role === 'user')?.content,
       stoppable: true,
     }))
-  return [...tasks, ...extraChildren]
+  return [...tasks, ...jobs, ...extraChildren]
 }
 
 export function liveWorkingItems(items: readonly WorkingItem[]) {

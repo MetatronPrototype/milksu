@@ -3,8 +3,7 @@ import { Braces, Plus, Trash2 } from 'lucide-react'
 import {
   Button,
   Input,
-  NativeSelect,
-  NativeSelectOption,
+  SettingsGhostPicker,
   SettingsRow,
   SettingsSection,
   Switch,
@@ -199,7 +198,7 @@ export default function SettingsMCPPanel({
     setBuiltinEditorOpen(true)
   }
 
-  function buildInput(): AgentResourceMCPInput {
+  function buildInput(transport = formTransport): AgentResourceMCPInput {
     const env = parsePairs(formEnv)
     const headers = parsePairs(formHeaders)
     const removeEnv = editing
@@ -213,7 +212,7 @@ export default function SettingsMCPPanel({
     return {
       name: formName.trim(),
       enabled: formEnabled,
-      transport: formTransport,
+      transport,
       command: formCommand.trim(),
       args: parseArgs(formArgs),
       url: formURL.trim(),
@@ -248,18 +247,22 @@ export default function SettingsMCPPanel({
   }
 
   function persistServer() {
-    if (!formName.trim()) return
-    if (formTransport === 'command' && !formCommand.trim()) return
-    if (formTransport === 'url' && !formURL.trim()) return
-    if (formTransport === 'socket' && !formSocket.trim()) return
-    void saveServer()
+    persistTransport(formTransport)
   }
 
-  async function saveServer() {
+  function persistTransport(transport: AgentResourceMCPTransport) {
+    if (!formName.trim()) return
+    if (transport === 'command' && !formCommand.trim()) return
+    if (transport === 'url' && !formURL.trim()) return
+    if (transport === 'socket' && !formSocket.trim()) return
+    void saveServer(transport)
+  }
+
+  async function saveServer(transport = formTransport) {
     setSaving(true)
     setError('')
     try {
-      setCatalog(await invokeCommand<AgentResourceCatalog>('upsert_user_mcp_server', { input: buildInput() }))
+      setCatalog(await invokeCommand<AgentResourceCatalog>('upsert_user_mcp_server', { input: buildInput(transport) }))
       setEditingName(formName.trim())
     } catch (reason) {
       setError(desktopErrorMessage(reason))
@@ -571,16 +574,20 @@ export default function SettingsMCPPanel({
           <SettingsRow
             label={t('传输', 'Transport')}
             trailing={(
-              <NativeSelect
+              <SettingsGhostPicker
                 value={formTransport}
-                aria-label={t('传输方式', 'Transport')}
-                onChange={event => setFormTransport(event.target.value as AgentResourceMCPTransport)}
-                onBlur={persistServer}
-              >
-                <NativeSelectOption value="command">{t('本地进程', 'Local process')}</NativeSelectOption>
-                <NativeSelectOption value="url">{t('远程 HTTP', 'Remote HTTP')}</NativeSelectOption>
-                <NativeSelectOption value="socket">{t('本地 Socket', 'Local socket')}</NativeSelectOption>
-              </NativeSelect>
+                ariaLabel={t('传输方式', 'Transport')}
+                options={[
+                  { value: 'command', label: t('本地进程', 'Local process') },
+                  { value: 'url', label: t('远程 HTTP', 'Remote HTTP') },
+                  { value: 'socket', label: t('本地 Socket', 'Local socket') },
+                ]}
+                onChange={value => {
+                  const transport = value as AgentResourceMCPTransport
+                  setFormTransport(transport)
+                  persistTransport(transport)
+                }}
+              />
             )}
           />
           {formTransport === 'command' ? (

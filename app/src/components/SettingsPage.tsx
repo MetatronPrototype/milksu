@@ -1,9 +1,8 @@
 import { createStore, useStore, useStoreRuntime } from '@/lib/reactStore'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import {
   AlertCircle,
   Check,
-  ChevronDown,
   LogOut,
   Plus,
   Trash2,
@@ -20,19 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
-  NativeSelect,
-  NativeSelectOption,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectSeparator,
-  SelectTrigger,
-  SelectValue,
+  SettingsGhostPicker,
   SettingsRow,
   SettingsSection,
   Switch,
@@ -102,7 +89,6 @@ import {
 } from '@/agentResourceTypes'
 import {
   EXTERNAL_EDITORS,
-  externalEditorLabel,
   normalizePreferredExternalEditor,
 } from '@/lib/externalEditor'
 import ExternalEditorIcon from '@/components/ExternalEditorIcon'
@@ -191,50 +177,6 @@ const databaseStateVariants: Record<DatabaseCompatibilityState, 'secondary' | 'd
   newer: 'destructive',
   corrupt: 'destructive',
   remaining: 'outline',
-}
-
-function DefaultKernelPicker({
-  value,
-  ariaLabel,
-  onChange,
-}: {
-  value: 'pi' | 'dsh'
-  ariaLabel: string
-  onChange: (value: 'pi' | 'dsh') => void
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          aria-label={ariaLabel}
-          className="settings-control h-7 justify-between gap-1.5 px-2"
-        >
-          <span className="min-w-0 flex-1 truncate text-left">{value === 'dsh' ? 'DSH' : 'Pi'}</span>
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-[14rem] p-1">
-        {(['pi', 'dsh'] as const).map(id => (
-          <button
-            key={id}
-            type="button"
-            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
-            onClick={() => {
-              onChange(id)
-              setOpen(false)
-            }}
-          >
-            <span className="min-w-0 flex-1 truncate">{id === 'dsh' ? 'DSH' : 'Pi'}</span>
-            {value === id ? <Check className="size-3.5 shrink-0" /> : null}
-          </button>
-        ))}
-      </PopoverContent>
-    </Popover>
-  )
 }
 
 export default function SettingsPage({
@@ -423,15 +365,15 @@ export default function SettingsPage({
                   <SettingsRow
                     label={t('界面语言', 'Interface language')}
                     trailing={(
-                      <NativeSelect
-                        className="settings-control"
+                      <SettingsGhostPicker
                         value={working.locale ?? 'zh'}
-                        aria-label={t('界面语言', 'Interface language')}
-                        onChange={event => void store.changeLocale(event.target.value)}
-                      >
-                        <NativeSelectOption value="zh">{t('简体中文', 'Simplified Chinese')}</NativeSelectOption>
-                        <NativeSelectOption value="en">English</NativeSelectOption>
-                      </NativeSelect>
+                        ariaLabel={t('界面语言', 'Interface language')}
+                        options={[
+                          { value: 'zh', label: t('简体中文', 'Simplified Chinese') },
+                          { value: 'en', label: 'English' },
+                        ]}
+                        onChange={value => void store.changeLocale(value)}
+                      />
                     )}
                   />
                 </SettingsSection>
@@ -440,32 +382,19 @@ export default function SettingsPage({
                     label={t('打开文件', 'Open files')}
                     divider={false}
                     trailing={(
-                      <Select
+                      <SettingsGhostPicker
                         value={normalizePreferredExternalEditor(working.preferred_external_editor)}
-                        onValueChange={value => {
+                        ariaLabel={t('打开文件的编辑器', 'Editor for opening files')}
+                        options={EXTERNAL_EDITORS.map(editor => ({
+                          value: editor.id,
+                          label: editor.label,
+                          leading: <ExternalEditorIcon editor={editor.id} decorative />,
+                        }))}
+                        onChange={value => {
                           store.patchWorking(next => { next.preferred_external_editor = value })
                           void store.save()
                         }}
-                      >
-                        <SelectTrigger className="settings-control" aria-label={t('打开文件的编辑器', 'Editor for opening files')}>
-                          <SelectValue>
-                            <span className="inline-flex min-w-0 items-center gap-2">
-                              <ExternalEditorIcon editor={working.preferred_external_editor} decorative />
-                              <span className="min-w-0 truncate">{externalEditorLabel(working.preferred_external_editor)}</span>
-                            </span>
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {EXTERNAL_EDITORS.map(editor => (
-                            <SelectItem key={editor.id} value={editor.id}>
-                              <span className="inline-flex min-w-0 items-center gap-2">
-                                <ExternalEditorIcon editor={editor.id} decorative />
-                                <span className="min-w-0 truncate">{editor.label}</span>
-                              </span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      />
                     )}
                   />
                 </SettingsSection>
@@ -853,10 +782,29 @@ export default function SettingsPage({
                   <SettingsRow
                     label={t('默认运行时', 'Default runtime')}
                     trailing={(
-                      <DefaultKernelPicker
+                      <SettingsGhostPicker
                         value={working?.default_kernel === 'dsh' ? 'dsh' : 'pi'}
                         ariaLabel={t('默认运行时', 'Default runtime')}
+                        options={[
+                          { value: 'pi', label: 'Pi' },
+                          { value: 'dsh', label: 'DSH' },
+                        ]}
                         onChange={store.setDefaultKernel}
+                      />
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('忙碌时发送', 'Busy send')}
+                    description={t('仅 DeepSeek Harness', 'DeepSeek Harness only')}
+                    trailing={(
+                      <SettingsGhostPicker
+                        value={working?.busy_send === 'queue' ? 'queue' : 'interrupt'}
+                        ariaLabel={t('忙碌时发送', 'Busy send')}
+                        options={[
+                          { value: 'interrupt', label: t('插话', 'Interrupt') },
+                          { value: 'queue', label: t('排队', 'Queue') },
+                        ]}
+                        onChange={store.setBusySend}
                       />
                     )}
                   />
@@ -940,32 +888,20 @@ export default function SettingsPage({
                         : t('未启用', 'Off')}
                     trailing={(
                       <>
-                        <Select value={thinkingModelKey} onValueChange={value => { store.setThinkingModelKey(value) }}>
-                          <SelectTrigger className="settings-control" aria-label={t('配置思考层级的模型', 'Model for thinking levels')}>
-                            <SelectValue>
-                              <span className="inline-flex min-w-0 items-center gap-2">
-                                <ModelVendorIcon model={thinkingModelID} label={thinkingModelLabel} />
-                                <span className="min-w-0 truncate">{thinkingModelLabel}</span>
-                              </span>
-                            </SelectValue>
-                          </SelectTrigger>
-                          <SelectContent className="min-w-96">
-                            {availablePickerGroups.map((group, groupIndex) => (
-                              <SelectGroup key={`thinking:${group.key}`}>
-                                {groupIndex > 0 ? <SelectSeparator /> : null}
-                                <SelectLabel>{group.label}</SelectLabel>
-                                {group.models.map(model => (
-                                  <SelectItem key={`thinking:${group.key}:${model}`} value={encodePickerSelection(group.providerId, model, group.source)}>
-                                    <span className="inline-flex min-w-0 items-center gap-2">
-                                      <ModelVendorIcon model={model} label={store.availablePickerModelLabel(group, model)} />
-                                      <span className="min-w-0 truncate">{store.availablePickerModelLabel(group, model)}</span>
-                                    </span>
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <SearchableModelPicker
+                          value={thinkingModelKey}
+                          triggerClassName="settings-control h-7 px-2"
+                          ariaLabel={t('配置思考层级的模型', 'Model for thinking levels')}
+                          align="end"
+                          trigger={(
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              <ModelVendorIcon model={thinkingModelID} label={thinkingModelLabel} />
+                              <span className="min-w-0 truncate">{thinkingModelLabel}</span>
+                            </span>
+                          )}
+                          groups={searchablePickerGroups}
+                          onChange={value => store.setThinkingModelKey(value)}
+                        />
                         {thinkingOverride ? (
                           <button type="button" className="text-xs text-link hover:underline" onClick={() => store.resetModelThinkingOverride()}>
                             {t('恢复预设', 'Restore preset')}
@@ -999,18 +935,15 @@ export default function SettingsPage({
                               </button>
                             ))}
                           </div>
-                          <NativeSelect
-                            className="settings-control w-28"
-                            value={thinkingProfile.defaultLevel}
-                            aria-label={t('默认思考层级', 'Default thinking level')}
-                            onChange={event => store.setModelThinkingDefault(event.target.value)}
-                          >
-                            {thinkingProfile.levels.map(level => (
-                              <NativeSelectOption key={level} value={level}>
-                                {MODEL_THINKING_LEVEL_LABELS[level]}
-                              </NativeSelectOption>
-                            ))}
-                          </NativeSelect>
+                          <SettingsGhostPicker
+                            value={thinkingProfile.defaultLevel ?? ''}
+                            ariaLabel={t('默认思考层级', 'Default thinking level')}
+                            options={thinkingProfile.levels.map(level => ({
+                              value: level,
+                              label: MODEL_THINKING_LEVEL_LABELS[level],
+                            }))}
+                            onChange={store.setModelThinkingDefault}
+                          />
                         </>
                       )}
                     />
@@ -1021,32 +954,20 @@ export default function SettingsPage({
                     divider={false}
                     trailing={(
                       <>
-                        <Select value={windowModelKey} onValueChange={value => { store.setWindowModelKey(value) }}>
-                          <SelectTrigger className="settings-control" aria-label={t('配置上下文窗口的模型', 'Model for context window')}>
-                            <SelectValue>
-                              <span className="inline-flex min-w-0 items-center gap-2">
-                                <ModelVendorIcon model={windowModelID} label={windowModelLabel} />
-                                <span className="min-w-0 truncate">{windowModelLabel}</span>
-                              </span>
-                            </SelectValue>
-                          </SelectTrigger>
-                          <SelectContent className="min-w-96">
-                            {availablePickerGroups.map((group, groupIndex) => (
-                              <SelectGroup key={`window:${group.key}`}>
-                                {groupIndex > 0 ? <SelectSeparator /> : null}
-                                <SelectLabel>{group.label}</SelectLabel>
-                                {group.models.map(model => (
-                                  <SelectItem key={`window:${group.key}:${model}`} value={encodePickerSelection(group.providerId, model, group.source)}>
-                                    <span className="inline-flex min-w-0 items-center gap-2">
-                                      <ModelVendorIcon model={model} label={store.availablePickerModelLabel(group, model)} />
-                                      <span className="min-w-0 truncate">{store.availablePickerModelLabel(group, model)}</span>
-                                    </span>
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <SearchableModelPicker
+                          value={windowModelKey}
+                          triggerClassName="settings-control h-7 px-2"
+                          ariaLabel={t('配置上下文窗口的模型', 'Model for context window')}
+                          align="end"
+                          trigger={(
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              <ModelVendorIcon model={windowModelID} label={windowModelLabel} />
+                              <span className="min-w-0 truncate">{windowModelLabel}</span>
+                            </span>
+                          )}
+                          groups={searchablePickerGroups}
+                          onChange={value => store.setWindowModelKey(value)}
+                        />
                         {windowOverride ? (
                           <button type="button" className="text-xs text-link hover:underline" onClick={() => store.resetModelContextWindowOverride()}>
                             {t('恢复自动', 'Restore automatic')}
@@ -1157,34 +1078,36 @@ export default function SettingsPage({
                           <label className="provider-editor-field items-start">
                             <span className="pt-2">{t('可用模型', 'Available models')}</span>
                             <div className="min-w-0">
-                              <Select
+                              <SearchableModelPicker
                                 value={editingProviderModels.length
                                   ? store.modelSelectionKey(editingProviderInfo.id, editingProviderModel || editingProviderModels[0] || '')
                                   : ''}
-                                onValueChange={value => {
+                                disabled={!editingProviderModels.length}
+                                triggerClassName="h-7 min-w-72 px-2"
+                                ariaLabel={t('可用模型', 'Available models')}
+                                align="start"
+                                trigger={(
+                                  <span className="min-w-0 truncate">
+                                    {editingProviderModels.length
+                                      ? store.modelDisplayLabel(editingProviderInfo.id, editingProviderModel || editingProviderModels[0] || '')
+                                      : ''}
+                                  </span>
+                                )}
+                                groups={[{
+                                  key: editingProviderInfo.id,
+                                  label: store.providerServiceName(editingProviderInfo),
+                                  models: editingProviderModels.map(model => ({
+                                    value: store.modelSelectionKey(editingProviderInfo.id, model),
+                                    label: store.modelDisplayLabel(editingProviderInfo.id, model),
+                                    model,
+                                  })),
+                                }]}
+                                onChange={value => {
                                   const selection = store.parseModelSelectionKey(String(value ?? ''))
                                   if (!selection) return
                                   store.setEditingProviderModel(selection[1])
                                 }}
-                              >
-                                <SelectTrigger className="min-w-72" disabled={!editingProviderModels.length} aria-label={t('可用模型', 'Available models')}>
-                                  <SelectValue>
-                                    {editingProviderModels.length
-                                      ? store.modelDisplayLabel(editingProviderInfo.id, editingProviderModel || editingProviderModels[0] || '')
-                                      : ''}
-                                  </SelectValue>
-                                </SelectTrigger>
-                                <SelectContent className="min-w-96">
-                                  <SelectGroup>
-                                    <SelectLabel>{store.providerServiceName(editingProviderInfo)}</SelectLabel>
-                                    {editingProviderModels.map(model => (
-                                      <SelectItem key={store.modelSelectionKey(editingProviderInfo.id, model)} value={store.modelSelectionKey(editingProviderInfo.id, model)}>
-                                        {store.modelDisplayLabel(editingProviderInfo.id, model)}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectGroup>
-                                </SelectContent>
-                              </Select>
+                              />
                             </div>
                           </label>
                         ) : null}
@@ -1523,6 +1446,13 @@ function createSettingsStore(
   function setDefaultKernel(value: string) {
     patchWorking(working => {
       working.default_kernel = value === 'dsh' ? 'dsh' : 'pi'
+    })
+    persist()
+  }
+
+  function setBusySend(value: string) {
+    patchWorking(working => {
+      working.busy_send = value === 'queue' ? 'queue' : 'interrupt'
     })
     persist()
   }
@@ -3053,6 +2983,7 @@ function createSettingsStore(
     databaseStateLabels,
     defaultModelKey,
     setDefaultKernel,
+    setBusySend,
     defaultModelAvailable,
     availableModelCount,
     defaultModelLabel,

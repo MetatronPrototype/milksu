@@ -1361,6 +1361,30 @@ func (a *App) SteerMessage(conversationID, prompt string) error {
 	return a.engines.SteerMessage(conversationID, prompt)
 }
 
+func (a *App) QueueDshMessage(conversationID, prompt string) error {
+	return a.engines.QueueMessage(conversationID, prompt)
+}
+
+func (a *App) ListDshCommands(conversationID string) ([]engine.DshCommandDescriptor, error) {
+	return a.engines.ListDshCommands(conversationID)
+}
+
+func (a *App) ExecuteDshCommand(conversationID, line string) (engine.DshCommandResult, error) {
+	return a.engines.ExecuteDshCommand(conversationID, line)
+}
+
+func (a *App) SetDshPlanMode(conversationID string, active bool) (engine.DshPlanMode, error) {
+	return a.engines.SetDshPlanMode(conversationID, active)
+}
+
+func (a *App) ControlDshGoal(conversationID, action, objective string) error {
+	return a.engines.ControlDshGoal(conversationID, action, objective)
+}
+
+func (a *App) KillDshJob(conversationID, jobID string) error {
+	return a.engines.KillDshJob(conversationID, jobID)
+}
+
 func (a *App) RemoveQueuedMessage(
 	conversationID,
 	queue string,

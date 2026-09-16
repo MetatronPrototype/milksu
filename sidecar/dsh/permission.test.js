@@ -54,4 +54,8 @@ test("full-auto still blocks destructive and paid or external actions", () => {
     dshShouldAutoAllowPermission("full-auto", { title: "auth-start", server: "github" }),
     false,
   );
+  assert.equal(
+    dshShouldAutoAllowPermission("full-auto", { title: "exit_plan_mode" }),
+    false,
+  );
 });

@@ -63,11 +63,28 @@ function phaseFor(conversations: ConversationsRuntime, id: string) {
 describe('default kernel and DSH multitask children', () => {
   beforeEach(() => {
     handlers.clear()
-    invokeCommand.mockClear()
+    invokeCommand.mockReset()
+    invokeCommand.mockImplementation(async (command: string) => {
+      if (command === 'list_conversations') return []
+      if (command === 'get_coding_project_memory') return { recents: [], lastWorkspacePath: '' }
+      if (command === 'save_conversation') return null
+      if (command === 'send_message') return null
+      if (command === 'ensure_coding_artifact_workspace') return ''
+      return null
+    })
   })
 
   afterEach(() => {
     vi.resetModules()
+  })
+
+  it('uses DSH as the factory default kernel for a new conversation', async () => {
+    const { createConversationsRuntime } = await import('@/composables/useConversations')
+    const conversations = createConversationsRuntime()
+    conversations.startNew()
+    const id = conversations.ensureConversation('task')
+    expect(conversations.conversations.find(item => item.id === id)?.kernel).toBe('dsh')
+    conversations.dispose()
   })
 
   it('applies the settings default kernel only to new conversations', async () => {
@@ -81,6 +98,19 @@ describe('default kernel and DSH multitask children', () => {
     conversations.setKernel('pi')
     conversations.setDefaultKernel('dsh')
     expect(conversations.conversations.find(item => item.id === id)?.kernel).toBe('pi')
+    conversations.dispose()
+  })
+
+  it('enables Multitask on a new empty DSH canvas before the first message', async () => {
+    const { createConversationsRuntime } = await import('@/composables/useConversations')
+    const conversations = createConversationsRuntime()
+    conversations.startNew()
+    expect(conversations.activeId).toBeNull()
+    expect(conversations.selectedKernel).toBe('dsh')
+    conversations.setMultitask(true)
+    expect(conversations.selectedMultitask).toBe(true)
+    const id = conversations.ensureConversation('task')
+    expect(conversations.conversations.find(item => item.id === id)?.multitask).toBe(true)
     conversations.dispose()
   })
 
@@ -126,6 +156,129 @@ describe('default kernel and DSH multitask children', () => {
     conversations.dispose()
   })
 
+  it('queues a DSH parent message through inbox when busy-send is queue', async () => {
+    const { createConversationsRuntime } = await import('@/composables/useConversations')
+    const conversations = createConversationsRuntime()
+    conversations.setDefaultKernel('dsh')
+    conversations.setBusySend('queue')
+    conversations.startNew()
+    const parentId = conversations.ensureConversation('parent')
+    await conversations.send('first turn')
+    const sent = await conversations.send('after this turn')
+    expect(sent).toBe(true)
+    expect(invokeCommand).toHaveBeenCalledWith(
+      'queue_dsh_message',
+      expect.objectContaining({ conversationId: parentId, prompt: 'after this turn' }),
+    )
+    expect(invokeCommand).not.toHaveBeenCalledWith(
+      'steer_message',
+      expect.objectContaining({ conversationId: parentId, prompt: 'after this turn' }),
+    )
+    conversations.dispose()
+  })
+
+  it('executes listed DSH slash through host and rejects unknown slash', async () => {
+    invokeCommand.mockImplementation(async (command: string) => {
+      if (command === 'list_conversations') return []
+      if (command === 'get_coding_project_memory') return { recents: [], lastWorkspacePath: '' }
+      if (command === 'save_conversation') return null
+      if (command === 'send_message') return null
+      if (command === 'ensure_coding_artifact_workspace') return ''
+      if (command === 'execute_dsh_command') return { text: 'Plan mode on.', kind: 'success' }
+      return null
+    })
+    const { createConversationsRuntime } = await import('@/composables/useConversations')
+    const conversations = createConversationsRuntime()
+    conversations.setDefaultKernel('dsh')
+    conversations.startNew()
+    const parentId = conversations.ensureConversation('parent')
+    const current = conversations.conversations.find(item => item.id === parentId)
+    if (current) {
+      Object.assign(current, {
+        dshCommands: [{ name: 'plan', description: 'Enter or leave plan mode' }],
+      })
+    }
+    const planned = await conversations.send('/plan')
+    expect(planned).toBe(true)
+    expect(invokeCommand).toHaveBeenCalledWith(
+      'execute_dsh_command',
+      expect.objectContaining({ conversationId: parentId, line: '/plan' }),
+    )
+    expect(invokeCommand).not.toHaveBeenCalledWith(
+      'send_message',
+      expect.objectContaining({ prompt: '/plan' }),
+    )
+    invokeCommand.mockClear()
+    const rejected = await conversations.send('/not-real')
+    expect(rejected).toBe(false)
+    expect(invokeCommand).not.toHaveBeenCalledWith(
+      'send_message',
+      expect.objectContaining({ prompt: '/not-real' }),
+    )
+    const parent = conversations.conversations.find(item => item.id === parentId)
+    expect(parent?.messages.some(message => message.content.includes('未知命令：/not-real'))).toBe(true)
+    conversations.dispose()
+  })
+
+  it('sends DSH /goal through host execute, not as prompt text', async () => {
+    invokeCommand.mockImplementation(async (command: string) => {
+      if (command === 'list_conversations') return []
+      if (command === 'get_coding_project_memory') return { recents: [], lastWorkspacePath: '' }
+      if (command === 'save_conversation') return null
+      if (command === 'send_message') return null
+      if (command === 'ensure_coding_artifact_workspace') return ''
+      if (command === 'execute_dsh_command') return { text: 'Goal set.', kind: 'success' }
+      return null
+    })
+    const { createConversationsRuntime } = await import('@/composables/useConversations')
+    const conversations = createConversationsRuntime()
+    conversations.setDefaultKernel('dsh')
+    conversations.startNew()
+    const parentId = conversations.ensureConversation('parent')
+    const current = conversations.conversations.find(item => item.id === parentId)
+    if (current) {
+      Object.assign(current, {
+        dshCommands: [{ name: 'goal' }],
+      })
+    }
+    const sent = await conversations.send('/goal ship the dock')
+    expect(sent).toBe(true)
+    expect(invokeCommand).toHaveBeenCalledWith(
+      'execute_dsh_command',
+      expect.objectContaining({ conversationId: parentId, line: '/goal ship the dock' }),
+    )
+    expect(invokeCommand).not.toHaveBeenCalledWith(
+      'send_message',
+      expect.objectContaining({ prompt: '/goal ship the dock' }),
+    )
+    conversations.dispose()
+  })
+
+  it('stops a DSH background job from Working without aborting the parent', async () => {
+    const { createConversationsRuntime } = await import('@/composables/useConversations')
+    const conversations = createConversationsRuntime()
+    conversations.setDefaultKernel('dsh')
+    conversations.startNew()
+    const parentId = conversations.ensureConversation('parent')
+    const current = conversations.conversations.find(item => item.id === parentId)
+    if (current) {
+      Object.assign(current, {
+        kernel: 'dsh',
+        dshJobs: [{ id: 'bash-1', kind: 'bash', label: 'sleep 30', status: 'running' }],
+      })
+    }
+    await conversations.abortWorkingItem('bash-1')
+    expect(invokeCommand).toHaveBeenCalledWith(
+      'kill_dsh_job',
+      expect.objectContaining({ conversationId: parentId, jobId: 'bash-1' }),
+    )
+    expect(invokeCommand).not.toHaveBeenCalledWith(
+      'abort_message',
+      expect.objectContaining({ conversationId: parentId }),
+    )
+    conversations.dispose()
+  })
+
   it('follows up the DSH parent while it is running without opening Multitask', async () => {
     const { createConversationsRuntime } = await import('@/composables/useConversations')
     const conversations = createConversationsRuntime()
@@ -143,9 +296,31 @@ describe('default kernel and DSH multitask children', () => {
     conversations.dispose()
   })
 
+  it('keeps Pi /goal as a session prompt and still uses write-protect plan', async () => {
+    const { createConversationsRuntime } = await import('@/composables/useConversations')
+    const conversations = createConversationsRuntime()
+    conversations.setDefaultKernel('pi')
+    conversations.startNew()
+    const parentId = conversations.ensureConversation('parent')
+    conversations.setCodingPolicy('plan', 'workspace-auto')
+    expect(conversations.conversations.find(item => item.id === parentId)?.executionMode).toBe('plan')
+    const sent = await conversations.send('/goal ship the dock')
+    expect(sent).toBe(true)
+    expect(invokeCommand).toHaveBeenCalledWith(
+      'send_message',
+      expect.objectContaining({ conversationId: parentId, prompt: '/goal ship the dock' }),
+    )
+    expect(invokeCommand).not.toHaveBeenCalledWith(
+      'execute_dsh_command',
+      expect.anything(),
+    )
+    conversations.dispose()
+  })
+
   it('does not spawn a child on Pi', async () => {
     const { createConversationsRuntime } = await import('@/composables/useConversations')
     const conversations = createConversationsRuntime()
+    conversations.setDefaultKernel('pi')
     conversations.startNew()
     const parentId = conversations.ensureConversation('parent')
     conversations.setMultitask(true)
@@ -201,6 +376,7 @@ describe('default kernel and DSH multitask children', () => {
     const { createConversationsRuntime } = await import('@/composables/useConversations')
     const conversations = createConversationsRuntime()
     await conversations.listen()
+    conversations.setDefaultKernel('pi')
     conversations.startNew()
     const parentId = conversations.ensureConversation('parent')
     await conversations.send('delegate review')

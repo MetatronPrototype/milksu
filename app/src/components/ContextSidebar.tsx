@@ -566,7 +566,7 @@ export default function ContextSidebar({
     return (
       <div
         key={conversation.id}
-        className={`agent-sidebar-item group mx-2 flex h-9 items-center overflow-hidden rounded-[8px]${activeConversationId === conversation.id ? ' is-current' : ''}${pinnedDropTarget === conversation.id ? ' is-pinned-drop-target' : ''}${menuOpen ? ' is-menu-open' : ''}`}
+        className={`agent-sidebar-item group mx-2 flex h-9 items-center overflow-hidden rounded-[8px]${activeConversationId === conversation.id ? ' is-current' : ''}${conversation.pinned ? ' is-pinned-row' : ''}${pinnedDropTarget === conversation.id ? ' is-pinned-drop-target' : ''}${menuOpen ? ' is-menu-open' : ''}`}
         draggable={pinned}
         data-ui-selected={activeConversationId === conversation.id ? '' : undefined}
         data-active-conversation-row={activeConversationId === conversation.id ? '' : undefined}
@@ -1157,8 +1157,11 @@ const contextSidebarCss = `
 .agent-sidebar-item:hover .agent-sidebar-item__age,
 .agent-sidebar-item:focus-within .agent-sidebar-item__age,
 .agent-sidebar-item.is-menu-open .agent-sidebar-item__age { opacity: 0; }
-.agent-sidebar-item:has(.agent-sidebar-item__action.is-pinned) .agent-sidebar-row {
-  padding-right: 1.75rem;
+.agent-sidebar-item.is-pinned-row .agent-sidebar-row {
+  padding-right: 2rem;
+}
+.agent-sidebar-item:not(:hover):not(:focus-within):not(.is-menu-open) .agent-sidebar-item__action:not(.is-pinned) {
+  display: none;
 }
 .agent-sidebar-item__action {
   display: grid;
