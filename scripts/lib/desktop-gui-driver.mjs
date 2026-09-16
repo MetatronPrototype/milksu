@@ -156,10 +156,6 @@ export class CdpSession {
       this.closed = true
       this.rejectPending(new Error('CDP WebSocket closed'))
     })
-    this.ws.addEventListener('error', () => {
-      this.closed = true
-      this.rejectPending(new Error('CDP WebSocket failed'))
-    })
   }
 
   send(method, params = {}, timeoutMs = CDP_EVAL_TIMEOUT_MS) {
@@ -252,6 +248,10 @@ export class GuiDriver {
       )
       return false
     }
+    return this.bindRuntime()
+  }
+
+  async bindRuntime() {
     this.cdp = new CdpSession(this.target.webSocketDebuggerUrl)
     await this.cdp.open()
     const hasRuntime = await this.cdp.evaluate('Boolean(window.milksu && window.milksu.invoke)')
@@ -270,7 +270,21 @@ export class GuiDriver {
     return true
   }
 
+  cdpAlive() {
+    return Boolean(this.cdp && !this.cdp.closed && this.cdp.ws && this.cdp.ws.readyState === WebSocket.OPEN)
+  }
+
+  async ensureAttached() {
+    if (this.cdpAlive()) return true
+    this.target = await findDesktopCdpTarget()
+    if (!this.target) return false
+    return this.bindRuntime()
+  }
+
   async invoke(method, args) {
+    if (!await this.ensureAttached()) {
+      throw new Error('CDP WebSocket closed')
+    }
     const encoded = JSON.stringify(args ?? [])
     return this.cdp.evaluate(
       `window.milksu.invoke(${JSON.stringify(method)}, ${encoded})`,
@@ -279,6 +293,9 @@ export class GuiDriver {
   }
 
   async drainEvents(conversationId) {
+    if (!await this.ensureAttached()) {
+      throw new Error('CDP WebSocket closed')
+    }
     const raw = await this.cdp.evaluate(
       'window.__milksuProductLoop ? window.__milksuProductLoop.events.splice(0) : []',
     )

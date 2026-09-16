@@ -758,8 +758,8 @@ async function runGuiTasks(options) {
       console.log(`TASK ${id} start ${title}`)
       const conversationId = await driver.createKernelConversation(workspace.root, `DSH ${title}`)
       await driver.drainEvents(conversationId)
-      if (beforeSend) await beforeSend(conversationId)
       try {
+        if (beforeSend) await beforeSend(conversationId)
         await driver.sendMessage(conversationId, prompt, workspace.root)
       } catch (error) {
         const message = redactProcessText(error instanceof Error ? error.message : error, 400)

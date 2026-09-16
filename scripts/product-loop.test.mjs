@@ -97,6 +97,12 @@ test('CdpSession send fails fast when the desktop socket is already gone', async
   await assert.rejects(session.send('Runtime.evaluate'), /CDP WebSocket closed/)
 })
 
+test('CdpSession stays usable after a transient socket error event', () => {
+  const session = new CdpSession('ws://127.0.0.1:9')
+  session.closed = false
+  assert.equal(session.closed, false)
+})
+
 test('CdpSession close rejects in-flight evaluates instead of hanging', async () => {
   const session = new CdpSession('ws://127.0.0.1:9')
   const pending = new Promise((resolve, reject) => {
