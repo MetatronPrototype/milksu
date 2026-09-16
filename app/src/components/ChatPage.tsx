@@ -176,9 +176,14 @@ import { useConversations } from '@/stores/conversationsStore'
 import { composerDraftKey } from '@/lib/composerDraftStore'
 import { conversationWorkspaceHome } from '@/lib/workspaceSessionRouting'
 import {
+  liveWorkingItems,
   workingItemsForConversation,
   workingRootConversation,
 } from '@/lib/workingRoster'
+import {
+  composerRunPhase,
+  parentHasActiveTurnResidue,
+} from '@/lib/composerRunState'
 import {
   encodeComposerModelKey,
   modelServiceSourceLabel,
@@ -844,6 +849,22 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     conversations.conversations,
     conversations.runningConversationIds,
   )
+  const liveWorkingCount = liveWorkingItems(workingItems).length
+  const runPhase = composerRunPhase({
+    kernel: agentKernel,
+    parentMarkedRunning: running,
+    aborting,
+    compacting: Boolean(compacting),
+    liveWorkingCount,
+    parentHasActiveTurnResidue: parentHasActiveTurnResidue(
+      conversation?.messages ?? [],
+      agentKernel,
+      { liveWorkingCount },
+    ),
+    msSinceRunStart: turnStatus?.runStartedAt === undefined
+      ? 0
+      : Math.max(0, runClockNow - turnStatus.runStartedAt),
+  })
   const sessionTreeUnavailable = agentKernel === 'dsh'
   const rewindUnavailable = Boolean(compacting) || sessionTreeUnavailable
   const activeModelLabel = useMemo(() => {
@@ -2248,15 +2269,16 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   useEffect(() => {
     let clock = 0
     const waiting = waitingForModel && !compacting
+    const ticking = waiting || running
     if (!waiting) {
       setWaitingStartedAt(null)
-      return
     }
-    setWaitingStartedAt(Date.now())
+    if (!ticking) return
+    if (waiting) setWaitingStartedAt(Date.now())
     setWaitingNow(Date.now())
     clock = window.setInterval(() => setWaitingNow(Date.now()), 1000)
     return () => window.clearInterval(clock)
-  }, [waitingForModel, compacting])
+  }, [waitingForModel, compacting, running])
 
   const previousTranscriptLength = useRef(0)
   useEffect(() => {
@@ -2661,6 +2683,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             running={running}
             aborting={aborting}
             compacting={compacting}
+            runPhase={runPhase}
             queuedGuidance={messageQueue?.steering ?? []}
             queuedGuidanceAwaitingTool={queuedGuidanceAwaitingTool}
             queuedGuidanceStalled={messageQueue?.stalled === true}

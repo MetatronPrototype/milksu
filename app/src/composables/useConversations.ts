@@ -46,6 +46,15 @@ import { normalizeDomainTaskContext } from '@/lib/domainTaskContext'
 import { shouldRememberCodingProject } from '@/lib/codingProjectMemory'
 import { conversationWorkspaceHome, type WorkspaceHome } from '@/lib/workspaceSessionRouting'
 import { clearComposerDraft, composerDraftKey } from '@/lib/composerDraftStore'
+import {
+  isBackgroundWorkingTool,
+  parentHasActiveTurnResidue,
+  shouldClearParentRun,
+} from '@/lib/composerRunState'
+import {
+  liveWorkingItems,
+  workingItemsForConversation,
+} from '@/lib/workingRoster'
 import { modelContextWindowOverride, resolveModelContextWindow } from '@/lib/knownContextWindow'
 import { installedModelContextWindows } from '@/modelCatalog'
 import { MODEL_THINKING_LEVELS } from '@/lib/modelThinking'
@@ -587,7 +596,7 @@ export interface RemoteTurnStartedPayload {
 /** True when the text looks like MilkSU/Node internals, not a provider reply. */
 function isInternalAgentStack(message: string) {
   return (
-    /node:internal|node:events|Unhandled ['"]error['"] event|bridge\.js|Cannot find module|Uncaught Exception|TypeError:|ReferenceError:|SyntaxError:|internal module|stack trace|milksu-sidecar|at\s+\S+\.(?:js|cjs|mjs|ts|go):\d+/i
+    /node:internal|node:events|Unhandled ['"]error['"] event|bridge\.js|Cannot find module|Uncaught Exception|TypeError:|ReferenceError:|SyntaxError:|internal module|stack trace|milksu-sidecar|cannot create effect on inactive context|at\s+\S+\.(?:js|cjs|mjs|ts|go):\d+/i
       .test(message)
     || /Access to this API has been restricted|--allow-fs-(?:read|write)|ERR_ACCESS_DENIED/i
       .test(message)
@@ -806,8 +815,19 @@ const turnActivityEventTypes = new Set([
 // Any in-turn event proves the engine still owns this session. The running marker
 // must be recoverable from those events, not only from assistant.started, otherwise
 // one cleared marker hides the rest of a long turn.
-export function isTurnActivityEvent(type: string) {
-  return turnActivityEventTypes.has(type)
+export function isTurnActivityEvent(
+  type: string,
+  extras?: { kernel?: AgentKernel; toolName?: string },
+) {
+  if (!turnActivityEventTypes.has(type)) return false
+  if (
+    extras?.kernel === 'dsh'
+    && (type === 'tool.started' || type === 'tool.completed' || type === 'tool.progress')
+    && isBackgroundWorkingTool(extras.toolName)
+  ) {
+    return false
+  }
+  return true
 }
 
 // A session-less engine stop only proves that one engine instance went away. Scope
@@ -1263,6 +1283,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   }
 
   function finishRun(id: string) {
+    const finished = s.conversations.find(item => item.id === id)
+    const parentId = String(finished?.parentConversationId ?? '').trim()
+    const parentLiveBefore = parentId ? liveWorkingCountFor(parentId) : 0
     clearTurnRunClock(id)
     clearAbortStalled(id)
     const next = projectCodingRunFinished(
@@ -1272,6 +1295,46 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     )
     s.runningIds = next.running
     s.abortingIds = next.aborting
+    if (parentId && parentId !== id) {
+      reconcileParentRun(parentId, {
+        workingJustEmptied: parentLiveBefore > 0 && liveWorkingCountFor(parentId) === 0,
+      })
+    }
+  }
+
+  function liveWorkingCountFor(id: string) {
+    const conversation = s.conversations.find(item => item.id === id)
+    return liveWorkingItems(workingItemsForConversation(
+      conversation,
+      s.conversations,
+      s.runningIds,
+    )).length
+  }
+
+  function reconcileParentRun(id: string, extras?: { workingJustEmptied?: boolean }) {
+    const conversation = s.conversations.find(item => item.id === id)
+    if (!conversation) return
+    const kernel = normalizeAgentKernel(conversation.kernel)
+    const started = s.turnStatusById.get(id)?.runStartedAt
+    const liveWorkingCount = liveWorkingCountFor(id)
+    const workingJustEmptied = extras?.workingJustEmptied === true
+    if (!shouldClearParentRun({
+      parentMarkedRunning: s.runningIds.has(id),
+      compacting: s.continuity.compacting.has(id),
+      aborting: s.abortingIds.has(id),
+      liveWorkingCount,
+      parentHasActiveTurnResidue: parentHasActiveTurnResidue(conversation.messages, kernel, {
+        liveWorkingCount,
+        workingJustEmptied,
+      }),
+      workingJustEmptied,
+      msSinceRunStart: started === undefined ? Number.POSITIVE_INFINITY : Date.now() - started,
+    })) return
+    finishRun(id)
+    update(id, current => ({
+      ...current,
+      messages: settleRunningToolMessages(current.messages),
+    }))
   }
 
   const IDLE_RECONCILE_MS = 12_000
@@ -1289,6 +1352,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   function reconcileIdleConversations() {
     for (const conversation of s.conversations) {
       reconcileIdleConversation(conversation.id)
+      reconcileParentRun(conversation.id)
     }
   }
 
@@ -1986,7 +2050,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         productAction,
       )
     }
-    if (steering && activeKernel !== 'pi') return false
+    if (steering && activeKernel !== 'pi' && activeKernel !== 'dsh') return false
     if ((steering || answeringAsk) && attachments.length) return false
     const message: Message = {
       id: crypto.randomUUID(),
@@ -2725,7 +2789,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         return
       }
       if (!sessionId) return
-      if (isTurnActivityEvent(type)) {
+      const sessionKernel = normalizeAgentKernel(
+        s.conversations.find(item => item.id === sessionId)?.kernel,
+      )
+      if (isTurnActivityEvent(type, { kernel: sessionKernel, toolName })) {
         // The engine owns the truth: an in-turn event proves this session is still
         // running even if another engine's stop cleared the marker earlier.
         if (!s.runningIds.has(sessionId)) {
@@ -2766,11 +2833,16 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         return
       }
       if (type === 'runtime.subagent_tasks') {
+        const liveBefore = liveWorkingCountFor(sessionId)
         s.conversations = s.conversations.map(conversation => (
           conversation.id === sessionId
             ? { ...conversation, subagentTasks: normalizeSubagentTasks(subagentTasks) }
             : conversation
         ))
+        const liveAfter = liveWorkingCountFor(sessionId)
+        reconcileParentRun(sessionId, {
+          workingJustEmptied: liveBefore > 0 && liveAfter === 0,
+        })
         return
       }
       if (type === 'destructive.blocked') {
@@ -3122,6 +3194,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         return { ...conversation, messages }
       })
       scheduleSave(sessionId)
+      reconcileParentRun(sessionId)
     })
   }
 

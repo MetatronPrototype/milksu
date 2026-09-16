@@ -497,6 +497,56 @@ test("DSH send_message on different sessions is not serialized", async () => {
   }
 });
 
+test("DSH steer_message followups the parent without waiting for session/prompt", async () => {
+  const followups = [];
+  const server = createServer(socket => {
+    let buffer = "";
+    socket.on("data", chunk => {
+      buffer += chunk.toString("utf8");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message.method === "followup") followups.push(message.params?.prompt);
+        socket.write(`${JSON.stringify({ id: message.id, result: { queued: true } })}\n`);
+      }
+    });
+  });
+  const bridge = runBridge({ MILKSU_DSH_FAKE_PROMPT_MS: "400" });
+  try {
+    bridge.send({ action: "create_session", conversationId: "parent", cwd: here });
+    await bridge.waitFor("ready");
+    const hostPath = dshProductIpc(`host-${bridge.child.pid}`);
+    await new Promise((resolve, reject) => {
+      server.listen(hostPath, resolve);
+      server.on("error", reject);
+    });
+    const started = Date.now();
+    bridge.send({ action: "send_message", conversationId: "parent", prompt: "slow", cwd: here });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    bridge.send({ action: "steer_message", conversationId: "parent", prompt: "continue" });
+    const until = Date.now() + 1500;
+    while (Date.now() < until && !followups.includes("continue")) {
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+    assert.ok(followups.includes("continue"), `missing followup: ${JSON.stringify(followups)}`);
+    assert.ok(Date.now() - started < 300);
+    assert.equal(
+      bridge.events.some(event => event.type === "turn_settled" && event.id === "parent"),
+      false,
+    );
+  } finally {
+    bridge.child.kill();
+    server.close();
+  }
+});
+
 test("DSH native subagent ACP updates project into subagent_tasks", async () => {
   const bridge = runBridge({ MILKSU_DSH_FAKE_SUBAGENT: "1" });
   try {

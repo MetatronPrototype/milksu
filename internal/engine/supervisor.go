@@ -1939,9 +1939,10 @@ func (s *Supervisor) HandoffSession(sessionID string) (string, error) {
 	}
 }
 
-// SteerMessage delegates mid-run guidance to Pi's native steering queue. Pi
-// applies it after the current assistant tool-call batch and before the next
-// model call, so MilkSU does not maintain a second generic message loop.
+// SteerMessage delegates mid-run guidance to the live sidecar. Pi applies it
+// after the current tool-call batch. DSH uses Agent.followup on the same
+// parent session so the composer can keep talking while continuable children
+// run; it must not wait for ACP session/prompt idle.
 func (s *Supervisor) SteerMessage(sessionID, prompt string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	prompt = strings.TrimSpace(prompt)

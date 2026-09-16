@@ -90,6 +90,38 @@ func TestWithDefaults(t *testing.T) {
 	}
 }
 
+func TestStorePersistsLocaleKernelAndActiveModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	store, err := newStore(path, fakeSecretStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	locale := "en"
+	settings := store.Get()
+	settings.Locale = &locale
+	settings.DefaultKernel = "dsh"
+	settings.ActiveProvider = presetDeepSeekServiceID
+	settings.ActiveModel = "deepseek-v4-pro"
+	if err := store.Save(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := newStore(path, fakeSecretStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reloaded.Get()
+	if got.Locale == nil || *got.Locale != "en" {
+		t.Fatalf("locale did not persist: %#v", got.Locale)
+	}
+	if got.DefaultKernel != "dsh" {
+		t.Fatalf("default kernel did not persist: %q", got.DefaultKernel)
+	}
+	if got.ActiveProvider != presetDeepSeekServiceID || got.ActiveModel != "deepseek-v4-pro" {
+		t.Fatalf("active model did not persist: %s/%s", got.ActiveProvider, got.ActiveModel)
+	}
+}
+
 func TestResolveSubmittedUsesJustWrittenDeepSeekKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	store, err := newStore(path, fakeSecretStore{})

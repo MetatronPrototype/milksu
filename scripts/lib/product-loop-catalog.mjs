@@ -16,6 +16,15 @@ export const SUITES = {
     needsCredential: false,
     detail: '回收 Sidecar 的 engine.stopped 只打到它服务过的会话；没有 sessions 时不广播。',
   },
+  'composer-runtime': {
+    id: 'composer-runtime',
+    title: '作曲栏与配置往返',
+    from: 'Working / Multitask / settings persist',
+    modes: ['gui', 'bridge'],
+    needsDesktop: false,
+    needsCredential: false,
+    detail: '作曲栏 Stop/Send 相位、DSH Working followup、Pi 阻塞子代理、Multitask 子会话、默认运行时/模型/界面语言落盘。不启桌面。',
+  },
   'chat-pin': {
     id: 'chat-pin',
     title: '钉选落盘',
@@ -55,7 +64,7 @@ export const SUITES = {
   },
 }
 
-export const SUITE_RUN_ORDER = ['stop-scope', 'dsh', 'chat-pin', 'pi-files', 'desktop-surface']
+export const SUITE_RUN_ORDER = ['stop-scope', 'composer-runtime', 'dsh', 'chat-pin', 'pi-files', 'desktop-surface']
 export const DEFAULT_SUITES = [...SUITE_RUN_ORDER]
 
 export function orderSuites(ids) {

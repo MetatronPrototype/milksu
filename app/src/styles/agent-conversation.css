@@ -911,6 +911,163 @@
   margin: 0 auto 0.45rem;
 }
 
+[data-agent-conversation] .agent-working {
+  display: flex;
+  justify-content: center;
+  margin: 0 auto 0.45rem;
+  overflow: visible;
+}
+
+[data-agent-conversation] .agent-working__anchor {
+  position: relative;
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+}
+
+[data-agent-conversation] .agent-working__capsule {
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  height: 1.75rem;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--agent-hairline);
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: var(--agent-float-shadow);
+  padding: 0 0.7rem;
+  color: var(--foreground);
+  font-size: 0.78125rem;
+  font-weight: 550;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+[data-agent-conversation] .agent-working__capsule:hover,
+[data-agent-conversation] .agent-working__capsule[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--muted) 70%, var(--card));
+}
+
+[data-agent-conversation] .agent-working__panel {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 0.45rem);
+  z-index: 50;
+  width: min(20rem, calc(100vw - 2rem));
+  max-height: min(18rem, calc(100vh - 10rem));
+  transform: translateX(-50%);
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-overlay);
+  box-shadow: var(--agent-float-shadow);
+  padding: 0.25rem;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-agent-conversation] .agent-working__panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+}
+
+[data-agent-conversation] .agent-working__panel-title,
+[data-agent-conversation] .agent-working__action,
+[data-agent-conversation] .agent-working__row-title,
+[data-agent-conversation] .agent-working__row-status {
+  font-size: 0.78125rem;
+  font-weight: 550;
+  line-height: 1.25;
+}
+
+[data-agent-conversation] .agent-working__panel-title {
+  margin: 0;
+  color: var(--foreground);
+}
+
+[data-agent-conversation] .agent-working__panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+[data-agent-conversation] .agent-working__action {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0.2rem 0.45rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+[data-agent-conversation] .agent-working__action--icon {
+  display: inline-flex;
+  width: 1.5rem;
+  height: 1.5rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+[data-agent-conversation] .agent-working__action:hover:not(:disabled) {
+  background: var(--hover-2, var(--muted));
+  color: var(--foreground);
+}
+
+[data-agent-conversation] .agent-working__action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+[data-agent-conversation] .agent-working__row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+}
+
+[data-agent-conversation] .agent-working__row:hover {
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+[data-agent-conversation] .agent-working__row-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: baseline;
+  gap: 0.45rem;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-agent-conversation] .agent-working__row-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-agent-conversation] .agent-working__row-status {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
 [data-agent-conversation] .agent-status-capsule {
   position: relative;
   display: inline-flex;
@@ -1383,8 +1540,8 @@
   user-select: none;
 }
 
-[data-agent-conversation] [data-button]:not(.chat-composer__add):not(.chat-composer__send):not(.chat-composer__stop),
-[data-agent-conversation] button:not(.agent-chip):not(.agent-think__summary):not(.chat-composer__add):not(.chat-composer__send):not(.chat-composer__stop),
+[data-agent-conversation] [data-button]:not(.chat-composer__add):not(.chat-composer__send):not(.chat-composer__stop):not(.agent-working__capsule):not(.agent-working__action):not(.agent-working__row-main),
+[data-agent-conversation] button:not(.agent-chip):not(.agent-think__summary):not(.chat-composer__add):not(.chat-composer__send):not(.chat-composer__stop):not(.agent-working__capsule):not(.agent-working__action):not(.agent-working__row-main),
 [data-agent-conversation] .tactical-action {
   border-radius: var(--agent-control-radius);
 }

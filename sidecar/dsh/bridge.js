@@ -739,6 +739,16 @@ async function handoffSession(command) {
   });
 }
 
+async function followupParent(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  const prompt = String(command.prompt ?? "").trim();
+  if (!conversationId) throw new Error("conversationId is required");
+  if (!prompt) throw new Error("prompt is required");
+  const record = sessionRecord(conversationId);
+  if (!record?.acpSessionId) throw new Error("DeepSeek Harness session is not ready");
+  await callHost("followup", { sessionId: record.acpSessionId, prompt });
+}
+
 function enqueueSessionCommand(conversationId, work) {
   const key = String(conversationId ?? "").trim() || "_";
   const previous = sessionCommandQueues.get(key) ?? Promise.resolve();
@@ -781,6 +791,8 @@ async function handleCommand(command) {
       await respondWorkspaceAction(command);
       break;
     case "steer_message":
+      await followupParent(command);
+      break;
     case "remove_queued_message":
     case "background_task_control":
       break;
@@ -801,6 +813,12 @@ input.on("line", line => {
   }
   if (command.action === "abort_session") {
     void abortSession(command).catch(error => {
+      emit(command.conversationId ?? null, "error", { error: describeError(error) });
+    });
+    return;
+  }
+  if (command.action === "steer_message") {
+    void followupParent(command).catch(error => {
       emit(command.conversationId ?? null, "error", { error: describeError(error) });
     });
     return;

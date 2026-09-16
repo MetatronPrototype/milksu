@@ -108,7 +108,7 @@ function printHelp() {
   console.log(`MilkSU product-regression loop
 
   node scripts/verify-product-loop.mjs --list
-  node scripts/verify-product-loop.mjs --suite stop-scope,chat-pin
+  node scripts/verify-product-loop.mjs --suite stop-scope,composer-runtime,chat-pin
   node scripts/verify-product-loop.mjs --gui --suite all
   node scripts/verify-product-loop.mjs --bridge --suite dsh
 
@@ -128,6 +128,44 @@ function printList() {
   for (const id of DEFAULT_SUITES) {
     const suite = SUITES[id]
     console.log(`${suite.id}\t${suite.title}\t${suite.from}\t${suite.detail}`)
+  }
+}
+
+async function runComposerRuntime() {
+  const vitest = await runCommand(
+    'npx',
+    [
+      'vitest',
+      'run',
+      'src/lib/composerRunState.test.ts',
+      'src/composables/useConversationsKernelMultitask.test.ts',
+      'src/types.test.ts',
+      'src/lib/uiLocale.test.ts',
+    ],
+    { cwd: join(repositoryRoot, 'app') },
+  )
+  if (vitest.code !== 0) {
+    return {
+      result: 'FAIL',
+      detail: 'composer / Multitask / settings UI 状态机未过',
+      stdout: vitest.stdout.slice(-1_200),
+      stderr: vitest.stderr.slice(-800),
+    }
+  }
+  const settings = await runCommand(
+    'go',
+    ['test', './internal/config', '-count=1', '-run', 'TestWithDefaults|TestStorePersistsLocaleKernelAndActiveModel'],
+  )
+  if (settings.code !== 0) {
+    return {
+      result: 'FAIL',
+      detail: '默认运行时 / 模型 / 界面语言落盘未过',
+      stderr: settings.stderr.slice(-800),
+    }
+  }
+  return {
+    result: 'PASS',
+    detail: 'Stop/Send 相位、DSH Working followup、Pi 阻塞子代理、Multitask、locale/kernel/model 落盘通过',
   }
 }
 
@@ -463,6 +501,8 @@ async function main() {
         outcome = { result: 'SKIP', detail: runnable.reason }
       } else if (id === 'stop-scope') {
         outcome = await runStopScope()
+      } else if (id === 'composer-runtime') {
+        outcome = await runComposerRuntime()
       } else if (id === 'chat-pin') {
         const logic = await runChatPinLogic()
         if (logic.result !== 'PASS') {

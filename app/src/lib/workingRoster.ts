@@ -100,3 +100,11 @@ export function workingItemsForConversation(
 export function liveWorkingItems(items: readonly WorkingItem[]) {
   return items.filter(item => item.status === 'running')
 }
+
+export function workingCapsuleCopy(
+  liveCount: number,
+  t: (zh: string, en: string) => string,
+): string {
+  if (liveCount <= 1) return t('进行中', 'Working')
+  return t(`进行中 · ${liveCount}`, `Working · ${liveCount}`)
+}

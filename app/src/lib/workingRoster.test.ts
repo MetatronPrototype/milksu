@@ -4,6 +4,7 @@ import {
   childConversationsFor,
   isMultitaskChildConversation,
   liveWorkingItems,
+  workingCapsuleCopy,
   workingItemsForConversation,
   workingRootConversation,
 } from './workingRoster'
@@ -82,5 +83,14 @@ describe('working roster', () => {
       stoppable: true,
       conversationId: 'child',
     })])
+  })
+
+  it('keeps the collapsed capsule as one short line', () => {
+    const zh = (chinese: string) => chinese
+    const en = (_chinese: string, english: string) => english
+    expect(workingCapsuleCopy(0, zh)).toBe('进行中')
+    expect(workingCapsuleCopy(1, zh)).toBe('进行中')
+    expect(workingCapsuleCopy(4, zh)).toBe('进行中 · 4')
+    expect(workingCapsuleCopy(4, en)).toBe('Working · 4')
   })
 })

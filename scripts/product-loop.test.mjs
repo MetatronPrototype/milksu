@@ -23,9 +23,10 @@ import {
 test('catalog keeps product regression away from evalsuite', () => {
   assert.equal(PRODUCT_LOOP_SCHEMA, 'milksu-product-loop/v1')
   assert.equal(TOKENFLUX_BASE_URL, 'https://tokenflux.dev/v1')
-  assert.deepEqual(DEFAULT_SUITES, ['stop-scope', 'dsh', 'chat-pin', 'pi-files', 'desktop-surface'])
+  assert.deepEqual(DEFAULT_SUITES, ['stop-scope', 'composer-runtime', 'dsh', 'chat-pin', 'pi-files', 'desktop-surface'])
   assert.deepEqual(orderSuites(['pi-files', 'stop-scope', 'dsh']), ['stop-scope', 'dsh', 'pi-files'])
-  assert.deepEqual(SUITE_RUN_ORDER[1], 'dsh')
+  assert.deepEqual(SUITE_RUN_ORDER[2], 'dsh')
+  assert.equal(SUITES['composer-runtime'].needsDesktop, false)
   for (const id of DEFAULT_SUITES) {
     assert.equal(SUITES[id].id, id)
     assert.ok(SUITES[id].from)

@@ -29,7 +29,7 @@
 npm run test:product-loop -- --list
 
 # 改停会话 / 钉选：不启桌面也能跑逻辑
-npm run test:product-loop -- --bridge --suite stop-scope,chat-pin
+npm run test:product-loop -- --bridge --suite stop-scope,composer-runtime,chat-pin
 
 # 改 DSH / 隔离浏览器 / 审批
 npm run test:product-loop -- --gui --suite dsh
@@ -54,11 +54,12 @@ npm run test:product-loop-catalog
 
 ## 选哪一套
 
-协调器会按 `stop-scope → dsh → chat-pin → pi-files → desktop-surface` 排序。DSH 必须先于其它 GUI 套件，单独启停 Stable 窗口；叠在 Pi 会话上会把官方 Playwright MCP 弄坏。
+协调器会按 `stop-scope → composer-runtime → dsh → chat-pin → pi-files → desktop-surface` 排序。DSH 必须先于其它 GUI 套件，单独启停 Stable 窗口；叠在 Pi 会话上会把官方 Playwright MCP 弄坏。
 
 | 套件 | 改了什么时跑 | 断言 | 要桌面 | 要 Key / 账户 |
 | --- | --- | --- | --- | --- |
 | `stop-scope` | 引擎停会话、Sidecar 回收 | `engine.stopped` 只打到带 `sessions` 的对话；没有身份不广播 | 否 | 否 |
+| `composer-runtime` | 作曲栏 Stop/Send、Working、Multitask、设置落盘 | DSH Working 时 Send 不是 Stop；子代理跑完收掉 `runningIds`；Pi 子代理仍 Stop；compact/abort 仍 Stop；默认运行时 / 模型 / 界面语言 Save 后再读 | 否 | 否 |
 | `dsh` | DSH 内核、Messages 根、隔离浏览器、审批 | 文件循环、本机标记、工作区写入自动过、区外删除被拦 | DSH 自己拉 Stable | 是 |
 | `chat-pin` | 侧栏钉选、会话 store | 钉选顺序落盘；`--gui` 再走 `SaveConversation` / `ListConversations` | 仅 GUI 落盘 | 否 |
 | `pi-files` | 默认 Pi 工具循环 | 写出 `NOTES.md` 且出现文件工具 | 是 | 是 |

@@ -86,6 +86,12 @@ import type {
 } from '@/types'
 import type { CodingRecentProject } from '@/codingEnvironmentTypes'
 import type { ContextUsagePresentation } from '@/lib/sessionTurnStatus'
+import {
+  composerAllowsFollowupSend,
+  composerParentTurnActive,
+  composerShowsStop,
+  type ComposerRunPhase,
+} from '@/lib/composerRunState'
 import { CODING_SKILLS } from '@/codingSkills'
 import {
   clearComposerDraft,
@@ -378,6 +384,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   running: boolean
   aborting: boolean
   compacting?: boolean
+  runPhase?: ComposerRunPhase
   ctfSession: boolean
   goalMode: boolean
   goal?: CodingGoalState
@@ -442,7 +449,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
 }>(function ChatComposer(props, ref) {
   const t = useT()
   const {
-    running, aborting, compacting, ctfSession, goalMode, goal, executionMode,
+    running, aborting, compacting, runPhase, ctfSession, goalMode, goal, executionMode,
     approvalPolicy, approvalLabel, modelKey, automaticModelLabel, compactModelLabel,
     thinkingLevels, thinkingLevel, kernel, kernelLocked, multitask, contextUsage, workspaceReady,
     workspaceLocked, workspaceName, workspacePath, gitRepository, gitBranch, gitBranches,
@@ -651,13 +658,24 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     { id: 'computer-use', label: 'Computer Use', description: t('把一个外部 App 窗口加入本轮输入', 'Add an external app window to this turn'), keywords: ['app', '窗口', '电脑'], icon: MousePointer2 },
   ] as const
 
+  const resolvedRunPhase = runPhase ?? (
+    compacting ? 'compacting'
+      : aborting && running ? 'aborting'
+        : running ? 'parent'
+          : 'idle'
+  )
+  const showStop = composerShowsStop(resolvedRunPhase)
+  const parentTurnActive = composerParentTurnActive(resolvedRunPhase)
+  const allowFollowupSend = composerAllowsFollowupSend(resolvedRunPhase)
+  const composerBusy = !allowFollowupSend
+
   function slashCommandDisabled(id: typeof slashCommandCatalog[number]['id']) {
-    if (id === 'goal') return running || hasUnfinishedGoal
+    if (id === 'goal') return composerBusy || hasUnfinishedGoal
     if (id === 'compact') return Boolean(compacting)
     if (id === 'rewind') return Boolean(compacting) || kernel === 'dsh'
-    if (id === 'handoff') return running || Boolean(compacting)
-    if (id === 'new' || id === 'plan' || id === 'model' || id === 'permissions') return running
-    if (['understand', 'test', 'review', 'fix', 'summary'].includes(id)) return running || !workspaceReady
+    if (id === 'handoff') return composerBusy || Boolean(compacting)
+    if (id === 'new' || id === 'plan' || id === 'model' || id === 'permissions') return composerBusy
+    if (['understand', 'test', 'review', 'fix', 'summary'].includes(id)) return composerBusy || !workspaceReady
     if (['diff', 'mcp'].includes(id)) return !workspaceReady
     return false
   }
@@ -680,7 +698,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     ))
     if (slashQuery) commands.sort((left, right) => Number(right.id === slashQuery) - Number(left.id === slashQuery))
     return commands
-  }, [slashQuery, hasUnfinishedGoal, kernel, running, compacting, workspaceReady, t])
+  }, [slashQuery, hasUnfinishedGoal, kernel, composerBusy, compacting, workspaceReady, t])
 
   const slashMenuOpen = !slashMenuDismissed && slashCommands.length > 0
   const activeSlashCommand = slashCommands[activeSlashCommandIndex] ?? slashCommands[0]
@@ -742,7 +760,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }
 
   function startCodingAttachmentChooser(event?: Event) {
-    if (running) return
+    if (parentTurnActive) return
     if (event instanceof PointerEvent && event.button !== 0) return
     if (event instanceof PointerEvent) {
       event.preventDefault()
@@ -763,7 +781,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }
 
   async function chooseCodingAttachments() {
-    if (running) return
+    if (parentTurnActive) return
     setAttachmentError('')
     try {
       const selected = await invokeCommand<CodingAttachment[]>('choose_coding_attachments')
@@ -774,7 +792,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }
 
   async function attachFromAtMention() {
-    if (running || attachmentImporting) return
+    if (parentTurnActive || attachmentImporting) return
     const now = Date.now()
     if (now - attachmentChooserStartedAt.current < 500) return
     attachmentChooserStartedAt.current = now
@@ -929,7 +947,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     }
     window.addEventListener(COMMAND_PANEL_SLASH_EVENT, onCommandPanelSlash)
     return () => window.removeEventListener(COMMAND_PANEL_SLASH_EVENT, onCommandPanelSlash)
-  }, [running, compacting, workspaceReady, kernel, hasUnfinishedGoal, t])
+  }, [composerBusy, compacting, workspaceReady, kernel, hasUnfinishedGoal, t])
 
   function rememberComposerSnapshot() {
     if (applyingComposerHistory.current || composingRef.current) return
@@ -1193,13 +1211,14 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     const text = textValue.trim() || (attachments.length ? t('请检查这些附件并完成我接下来需要处理的任务。', 'Please review these attachments and complete the task I need next.') : '')
     if (!text) return
     const parallelSend = kernel === 'dsh' && Boolean(multitask)
-    if (running && attachments.length && !parallelSend) {
+    const treatAsSteer = parentTurnActive && !parallelSend
+    if (treatAsSteer && attachments.length) {
       setAttachmentError(t('运行中引导暂不支持附件；请等待当前回合结束后再发送附件。', 'Steering while a turn is running does not support attachments. Wait until this turn finishes.'))
       return
     }
     const activeSkillToken = skillToken ?? undefined
-    const prompt = running && !parallelSend ? text : goalMode ? `/goal ${text}` : activeSkillToken ? `/skill:${activeSkillToken} ${text}` : text
-    const visiblePrompt = !(running && !parallelSend) && activeSkillToken && !goalMode
+    const prompt = treatAsSteer ? text : goalMode ? `/goal ${text}` : activeSkillToken ? `/skill:${activeSkillToken} ${text}` : text
+    const visiblePrompt = !treatAsSteer && activeSkillToken && !goalMode
       ? t(`使用 ${skillOption(activeSkillToken)?.label ?? activeSkillToken}\n${text}`, `Use ${skillOption(activeSkillToken)?.label ?? activeSkillToken}\n${text}`)
       : text
     const activeScopeToken = scopeToken ?? undefined
@@ -1217,7 +1236,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     setAttachmentError('')
     if (activeScopeToken) props.onSend?.(prompt, visiblePrompt, attachments, activeScopeToken)
     else props.onSend?.(prompt, visiblePrompt, attachments)
-    if (!running) props.onConsumeGoal?.()
+    if (!parentTurnActive) props.onConsumeGoal?.()
   }
 
   function openComposerChooser(ariaLabel: string) {
@@ -1293,7 +1312,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
 
   function toggleCatalogMcpServer(server: { name: string; reviewReady: boolean; scope?: string }) {
     if (server.scope === 'user') return
-    if (running || !server.reviewReady || !mcpConfigDigest) return
+    if (parentTurnActive || !server.reviewReady || !mcpConfigDigest) return
     const selection = new Set(selectedMcpServers ?? [])
     if (selection.has(server.name)) selection.delete(server.name)
     else selection.add(server.name)
@@ -1344,7 +1363,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
       if (event.key === 'Enter') event.preventDefault()
       return
     }
-    if (event.key === 'Escape' && (running || compacting)) {
+    if (event.key === 'Escape' && showStop) {
       event.preventDefault()
       props.onAbort?.()
       return
@@ -1387,7 +1406,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }, [draft])
 
   useEffect(() => {
-    if (!computerUseReady || running || pendingScopeSubmit.current !== 'computer-use' || scopeToken !== 'computer-use') return
+    if (!computerUseReady || parentTurnActive || pendingScopeSubmit.current !== 'computer-use' || scopeToken !== 'computer-use') return
     pendingScopeSubmit.current = null
     queueMicrotask(() => submit())
   }, [computerUseReady])
@@ -1532,12 +1551,12 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
             />
             {contextUsage ? (
               <div className="chat-composer__context-strip flex min-w-0 items-center justify-end gap-3 px-1 pb-0.5" data-testid="composer-context-strip">
-                <ContextUsageMeter usage={contextUsage} size="sm" running={running} compacting={Boolean(compacting)} onCompactContext={() => props.onRunSlashCommand?.('compact')} onHandoffContext={() => props.onRunSlashCommand?.('handoff')} />
+                <ContextUsageMeter usage={contextUsage} size="sm" running={parentTurnActive} compacting={Boolean(compacting)} onCompactContext={() => props.onRunSlashCommand?.('compact')} onHandoffContext={() => props.onRunSlashCommand?.('handoff')} />
               </div>
             ) : null}
             <div className="chat-composer__toolbar">
               <CodingComposerControls
-                running={running}
+                running={parentTurnActive}
                 ctfSession={ctfSession}
                 approvalPolicy={approvalPolicy}
                 approvalLabel={approvalLabel}
@@ -1557,7 +1576,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                   <span className="inline-flex items-center gap-1">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button type="button" variant="ghost" size="icon" className="chat-composer__add" disabled={running && kernel !== 'dsh'} aria-label={t('添加内容与工具', 'Add content and tools')} title={t('添加附件、工作方式或交互范围', 'Add attachments, a working mode, or an interaction scope')}>
+                      <Button type="button" variant="ghost" size="icon" className="chat-composer__add" disabled={parentTurnActive && kernel !== 'dsh'} aria-label={t('添加内容与工具', 'Add content and tools')} title={t('添加附件、工作方式或交互范围', 'Add attachments, a working mode, or an interaction scope')}>
                         <Plus className="size-4" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -1567,7 +1586,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                         <Paperclip className="size-4 shrink-0" />
                         <span className="min-w-0 flex-1"><span className="block text-label font-medium">{t('本机文件或图片', 'Local files or images')}</span></span>
                       </DropdownMenuItem>
-                      <DropdownMenuItem className="composer-add-option app-no-drag cursor-pointer" disabled={running} onSelect={() => void attachFromAtMention()}>
+                      <DropdownMenuItem className="composer-add-option app-no-drag cursor-pointer" disabled={parentTurnActive} onSelect={() => void attachFromAtMention()}>
                         <AtSign className="size-4 shrink-0" />
                         <span className="min-w-0 flex-1"><span className="block text-label font-medium">{t('提及文件', 'Mention a file')}</span></span>
                       </DropdownMenuItem>
@@ -1577,7 +1596,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                           <span className="min-w-0 flex-1"><span className="block text-label font-medium">{t('项目目录', 'Project folder')}</span></span>
                         </DropdownMenuItem>
                       ) : null}
-                      <DropdownMenuItem className="composer-add-option" disabled={running || goalMode || hasUnfinishedGoal} onSelect={startGoalFromPlus}>
+                      <DropdownMenuItem className="composer-add-option" disabled={parentTurnActive || goalMode || hasUnfinishedGoal} onSelect={startGoalFromPlus}>
                         <Target className="size-4 shrink-0" />
                         <span className="min-w-0 flex-1">
                           <span className="block text-label font-medium">{t('目标', 'Goal')}</span>
@@ -1651,7 +1670,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                       <DropdownMenuSeparator />
                       <DropdownMenuLabel className="px-3 pb-1.5 pt-2 text-caption">MCP</DropdownMenuLabel>
                       {(mcpCatalog ?? []).map(server => (
-                        <DropdownMenuItem key={server.name} className="composer-add-option" disabled={running || (server.scope !== 'user' && (!server.reviewReady || !mcpConfigDigest))} onSelect={() => toggleCatalogMcpServer(server)}>
+                        <DropdownMenuItem key={server.name} className="composer-add-option" disabled={parentTurnActive || (server.scope !== 'user' && (!server.reviewReady || !mcpConfigDigest))} onSelect={() => toggleCatalogMcpServer(server)}>
                           <Plug className="size-4 shrink-0" />
                           <span className="min-w-0 flex-1">
                             <span className="block text-label font-medium">{server.name}</span>
@@ -1717,11 +1736,11 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                                 </Button>
                               ) : null}
                               {goal && resumableGoal ? (
-                                <Button type="button" variant="ghost" size="icon-sm" disabled={running} aria-label={t('继续目标', 'Resume goal')} title={t('继续持续目标', 'Resume the ongoing goal')} onClick={() => props.onControlGoal?.('resume')}>
+                                <Button type="button" variant="ghost" size="icon-sm" disabled={parentTurnActive} aria-label={t('继续目标', 'Resume goal')} title={t('继续持续目标', 'Resume the ongoing goal')} onClick={() => props.onControlGoal?.('resume')}>
                                   <Play className="size-3.5" />
                                 </Button>
                               ) : null}
-                              {goal && !running ? (
+                              {goal && !parentTurnActive ? (
                                 <Button type="button" variant="ghost" size="icon-sm" aria-label={t('清除当前目标', 'Clear current goal')} title={t('清除当前目标', 'Clear current goal')} onClick={() => props.onControlGoal?.('clear')}>
                                   <Trash2 className="size-3.5" />
                                 </Button>
@@ -1753,7 +1772,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                   <>
                     <div className={`chat-composer__workspace${workspaceFixed ? ' chat-composer__workspace--locked' : ''}`}>
                       {!workspaceFixed ? (
-                        <button type="button" className={`chat-composer__chip chat-composer__chip--workspace${!hasSelectedWorkspace ? ' chat-composer__chip--workspace-empty' : ''}${hasSelectedWorkspace ? ' chat-composer__chip--workspace-split' : ''}`} disabled={running} aria-label={hasSelectedWorkspace ? t(`会话目录：${workspaceChipLabel}`, `Session folder: ${workspaceChipLabel}`) : t('选择项目', 'Choose a project')} title={workspaceChipTitle} onClick={() => props.onChooseWorkspace?.()}>
+                        <button type="button" className={`chat-composer__chip chat-composer__chip--workspace${!hasSelectedWorkspace ? ' chat-composer__chip--workspace-empty' : ''}${hasSelectedWorkspace ? ' chat-composer__chip--workspace-split' : ''}`} disabled={parentTurnActive} aria-label={hasSelectedWorkspace ? t(`会话目录：${workspaceChipLabel}`, `Session folder: ${workspaceChipLabel}`) : t('选择项目', 'Choose a project')} title={workspaceChipTitle} onClick={() => props.onChooseWorkspace?.()}>
                           <FolderOpen className="size-3.5 shrink-0" />
                           <span className="chat-composer__chip__label">{workspaceChipLabel}</span>
                         </button>
@@ -1764,7 +1783,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                         </span>
                       )}
                       {hasSelectedWorkspace && !workspaceFixed ? (
-                        <button type="button" className="chat-composer__workspace-clear" disabled={running} aria-label={t('清空项目', 'Clear project')} title={t('清空项目', 'Clear project')} onClick={event => { event.stopPropagation(); props.onClearWorkspace?.() }}>
+                        <button type="button" className="chat-composer__workspace-clear" disabled={parentTurnActive} aria-label={t('清空项目', 'Clear project')} title={t('清空项目', 'Clear project')} onClick={event => { event.stopPropagation(); props.onClearWorkspace?.() }}>
                           <X className="size-3.5" />
                         </button>
                       ) : null}
@@ -1773,7 +1792,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                       <ComposerBranchMenu
                         branch={gitBranch}
                         branches={gitBranches ?? []}
-                        disabled={running}
+                        disabled={parentTurnActive}
                         onCheckout={props.onCheckoutBranch}
                         onCreate={props.onCreateBranch}
                       />
@@ -1781,12 +1800,12 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                   </>
                 ) : undefined}
               />
-              {running || compacting ? (
+              {showStop ? (
                 <Button type="button" variant="destructive" size="icon" className="chat-composer__stop" disabled={aborting} aria-label={aborting ? t('正在停止 Agent', 'Stopping agent') : abortStalled ? t('重试停止 Agent', 'Retry stopping the agent') : compacting ? t('停止整理上下文', 'Stop compacting context') : t('停止 Agent', 'Stop agent')} title={aborting ? t('正在等待 Agent 安全停止', 'Waiting for the agent to stop safely') : abortStalled ? t('停止请求未确认，点击重试', 'The stop request is not confirmed. Click to retry.') : compacting ? t('取消当前上下文整理', 'Cancel the current context compaction') : t('停止当前 Agent 回合', 'Stop the current agent turn')} onPointerDown={event => { event.preventDefault(); event.stopPropagation(); props.onAbort?.() }} onClick={event => { event.preventDefault(); event.stopPropagation(); props.onAbort?.() }}>
                   {aborting ? <LoaderCircle className="size-3.5 animate-spin" /> : <Square className="size-3.5 fill-current" />}
                 </Button>
               ) : null}
-              {!compacting && (!running || kernel === 'dsh' && multitask || draft.trim() || pendingAttachments.length) ? (
+              {!compacting && (allowFollowupSend || kernel === 'dsh' || draft.trim() || pendingAttachments.length) ? (
                 <Button
                   type="submit"
                   variant="brand"
@@ -1795,10 +1814,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                   disabled={
                     attachmentImporting
                     || (!draft.trim() && !pendingAttachments.length)
-                    || (running && kernel === 'dsh' && !multitask)
                   }
-                  aria-label={running && kernel === 'pi' ? t('发送引导', 'Send steering') : t('发送', 'Send')}
-                  title={running && kernel === 'pi' ? sendSteeringTitle : t('发送', 'Send')}
+                  aria-label={parentTurnActive && kernel === 'pi' ? t('发送引导', 'Send steering') : t('发送', 'Send')}
+                  title={parentTurnActive && kernel === 'pi' ? sendSteeringTitle : t('发送', 'Send')}
                 >
                   <ArrowUp className="size-4" />
                 </Button>

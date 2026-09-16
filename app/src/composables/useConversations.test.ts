@@ -4,6 +4,7 @@ import {
   agentErrorMessage,
   agentRuntimeErrorMessage,
   agentToolResultMessage,
+  isTurnActivityEvent,
   normalizeConversation,
   projectAgentTools,
   projectAgentTurnPolicy,
@@ -423,6 +424,11 @@ describe('Coding approval conversation recovery', () => {
       'AbortError',
     ],
     [
+      'Internal error: cannot create effect on inactive context',
+      '本地 Agent 运行异常',
+      'cannot create effect',
+    ],
+    [
       'Connection error.',
       '模型或 Agent 网络连接失败',
       'Connection error',
@@ -684,6 +690,14 @@ describe('Coding approval conversation recovery', () => {
     expect(conversationsSource).toContain('contextComposition?: ContextComposition')
     expect(conversationsSource).toContain('readContextCompositionFromEvent')
     expect(conversationsSource).toContain('applySessionContextComposition')
+  })
+
+  it('does not treat DSH subagent tool events as parent turn activity', () => {
+    expect(isTurnActivityEvent('assistant.delta')).toBe(true)
+    expect(isTurnActivityEvent('tool.started', { kernel: 'dsh', toolName: 'bash' })).toBe(true)
+    expect(isTurnActivityEvent('tool.completed', { kernel: 'dsh', toolName: 'subagent' })).toBe(false)
+    expect(isTurnActivityEvent('tool.started', { kernel: 'dsh', toolName: 'subagent:reviewer' })).toBe(false)
+    expect(isTurnActivityEvent('tool.started', { kernel: 'pi', toolName: 'subagent' })).toBe(true)
   })
 
   it('rewinds visible messages to the last assistant before the latest user turn', () => {
