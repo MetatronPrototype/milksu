@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
@@ -12,4 +13,11 @@ test("host plugin loads as an ES module from a .mjs path", async () => {
   assert.deepEqual(loaded.inject, ["compaction", "agents"]);
   assert.ok(loaded.optionalInject.includes("permissionPresets"));
   assert.equal(typeof loaded.apply, "function");
+});
+
+test("Sidecar package bundles the host plugin so DSH can load it from a CommonJS tree", () => {
+  const packager = readFileSync(join(here, "..", "..", "scripts", "package-sidecar.mjs"), "utf8");
+  assert.match(packager, /bundleDshHostPlugin/);
+  assert.match(packager, /host-plugin\.mjs/);
+  assert.match(packager, /format: 'esm'/);
 });

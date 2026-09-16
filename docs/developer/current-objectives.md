@@ -49,7 +49,7 @@
 - 新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。
 - Computer Use 已改为模型列窗 / 认窗 / 锁定；选窗器仍是可选人工面。宽作业走 `recon-authorized-target` Skill，不造 typed sweep。均未进安装包。
 - DSH `bash` 没有 MilkSU 侧超时上界（工具在 harness 进程内，不要在客户端复刻第二套循环）。
-- DSH `0.1.6-alpha.1`、产品回归 `npm run test:product-loop`、`desktop-surface`（Computer Use 优先，不可用降级隔离浏览器）均未进安装包。不要把 `test:dsh-complete-loop` 当主入口。
+- DSH `0.1.6-alpha.1`、产品回归 `npm run test:product-loop`、`desktop-surface`（Computer Use 优先，不可用降级隔离浏览器）均未进安装包。不要把 `test:dsh-complete-loop` 当主入口。安装包里的 DSH host plugin 必须打成独立 ESM（Sidecar `package.json` 是 CommonJS，不能只拷 `host-plugin.mjs` 再去 import `permission.js`）。
 - 准备 writer 时按停止，有时同时出现「本轮已停止。」和「Agent 运行失败」。合同只留前者。
 - macOS OTA ZIP 须先把 sidecar 许可证改成属主可写，否则 ShipIt 可能装完仍是旧版。已装的 26.912.3 在下一包装进包前仍用 GitHub DMG。
 

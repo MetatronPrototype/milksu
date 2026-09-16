@@ -17,7 +17,7 @@ import { createServer as createHttpServer } from 'node:http'
 import { createConnection, createServer as createNetServer } from 'node:net'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { ensureOwnerWritable } from './lib/bundle-owner-writable.mjs'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { build } from 'esbuild'
 import { firstPartyCodingSkillNames, optionalCodingSkillNames } from '../sidecar/pi/bridge-skills.js'
@@ -705,6 +705,19 @@ async function copyDshRuntime(output) {
   await sanitizePackagedNodeModules(join(output, 'node_modules'))
 }
 
+async function bundleDshHostPlugin(outfile) {
+  await build({
+    entryPoints: [join(repositoryRoot, 'sidecar', 'dsh', 'host-plugin.mjs')],
+    outfile,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node24',
+    legalComments: 'eof',
+    logLevel: 'info',
+  })
+}
+
 async function bundleBridge(entry, outfile) {
   await build({
     entryPoints: [join(repositoryRoot, entry)],
@@ -729,6 +742,26 @@ function packagedDshCliEnv(output, workspace, dshHome) {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
     NODE_PATH: join(output, 'node_modules'),
   }
+}
+
+async function smokePackagedDshHostPlugin(node, output, workspace) {
+  await runWithInput(
+    node,
+    [
+      '--input-type=module',
+      '-e',
+      `import ${JSON.stringify(pathToFileURL(join(output, 'host-plugin.mjs')).href)}`,
+    ],
+    '',
+    {
+      cwd: workspace,
+      env: {
+        HOME: workspace,
+        TMPDIR: workspace,
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+      },
+    },
+  )
 }
 
 async function smokePackagedDshCli(node, output, workspace, dshHome) {
@@ -1470,10 +1503,7 @@ async function buildSidecar(platform) {
     bundleBridge('sidecar/pi/bridge.js', chatOutput),
     bundleBridge('sidecar/dsh/bridge.js', dshOutput),
     bundleBridge('sidecar/dsh/product-mcp.js', dshProductMcpOutput),
-    copyFile(
-      join(repositoryRoot, 'sidecar', 'dsh', 'host-plugin.mjs'),
-      join(output, 'host-plugin.mjs'),
-    ),
+    bundleDshHostPlugin(join(output, 'host-plugin.mjs')),
     bundleBridge('sidecar/computer-use/computer-use-proxy.js', computerUseProxyOutput),
     bundleBridge(
       'node_modules/@earendil-works/pi-coding-agent/dist/cli.js',
@@ -1824,6 +1854,7 @@ async function smokeSidecar(platform) {
   ]
   const dshHome = join(workspace, 'dsh-home')
   await mkdir(dshHome, { recursive: true, mode: 0o700 })
+  await smokePackagedDshHostPlugin(node, output, workspace)
   await smokePackagedDshCli(node, output, workspace, dshHome)
   await smokePackagedDshBridge(node, output, workspace, dshHome)
   const computerUseProxyRun = await runWithInput(
