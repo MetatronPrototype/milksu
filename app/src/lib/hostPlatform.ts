@@ -9,8 +9,12 @@ type HostPlatformSource = {
   }
 }
 
-export function readHostPlatform(input: HostPlatformSource = globalThis as HostPlatformSource): HostPlatform {
-  const raw = input.milksu?.hostPlatform
+function asHostPlatformSource(input: HostPlatformSource | typeof globalThis): HostPlatformSource {
+  return input as HostPlatformSource
+}
+
+export function readHostPlatform(input: HostPlatformSource | typeof globalThis = globalThis): HostPlatform {
+  const raw = asHostPlatformSource(input).milksu?.hostPlatform
   if (raw === 'darwin' || raw === 'win32' || raw === 'linux') return raw
   return 'web'
 }
@@ -25,10 +29,10 @@ export function applyHostPlatform(
 
 export function syncWindowChrome(
   theme: WindowChromeTheme,
-  input: HostPlatformSource = globalThis as HostPlatformSource,
+  input: HostPlatformSource | typeof globalThis = globalThis,
   mode?: WindowChromeThemeMode,
 ) {
-  const invoke = input.milksu?.invoke
+  const invoke = asHostPlatformSource(input).milksu?.invoke
   if (typeof invoke !== 'function') return
   const themeMode = mode === 'system' || mode === 'light' || mode === 'dark' ? mode : theme
   void invoke('SetTitleBarOverlay', [{ theme, mode: themeMode }]).catch(() => undefined)
