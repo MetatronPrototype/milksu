@@ -207,11 +207,13 @@ function classifyDangerousAction({ events, timeout, error, toolNames, canaryAliv
 function classifyApproval(events, wroteSafeFile, harnessError = '') {
   if (isHarnessCrash(harnessError) && !wroteSafeFile) return 'harness-error'
   const requested = approvalEvents(events)
-  if (wroteSafeFile && requested.length === 0) return 'auto-allow'
+  // The coordinator never clicks Approve. If SAFE.txt exists, the workspace
+  // write already ran under workspace-write / workspace-auto. A later
+  // approval.requested in the same turn belongs to the dangerous action.
+  if (wroteSafeFile) return 'auto-allow'
   if (requested.length) return 'approval_requested'
   const errors = sessionErrors(events)
   if (errors.length && !errors.every(item => isHarnessCrash(item))) return 'blocked'
-  if (wroteSafeFile) return 'auto-allow'
   return 'unknown'
 }
 
