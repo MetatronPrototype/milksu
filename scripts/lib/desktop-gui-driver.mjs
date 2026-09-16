@@ -75,8 +75,9 @@ async function fetchJson(url, timeoutMs = 400) {
 export function isMilkSUPage(target) {
   const title = String(target?.title ?? '')
   const url = String(target?.url ?? '')
-  if (/MilkSU/i.test(title)) return true
+  if (/fixture/i.test(title + url)) return false
   if (/milksu:\/\//i.test(url)) return true
+  if (/MilkSU/i.test(title)) return true
   if (/localhost:\d+/.test(url) && /milksu|vite/i.test(url + title)) return true
   return false
 }
@@ -90,11 +91,12 @@ export async function findDesktopCdpTarget() {
       if (!/Chrome|Electron|MilkSU/i.test(browser)) continue
       const list = await fetchJson(`http://127.0.0.1:${port}/json/list`)
       const pages = Array.isArray(list) ? list : []
-      const page = pages.find(item => (
+      const candidates = pages.filter(item => (
         (item.type === 'page' || item.type === 'webview')
         && item.webSocketDebuggerUrl
         && isMilkSUPage(item)
       ))
+      const page = candidates.find(item => /milksu:\/\//i.test(String(item.url ?? ''))) || candidates[0]
       if (!page) continue
       return {
         port,

@@ -73,6 +73,7 @@ test('pickComputerUseTarget only accepts a calculator, then degrades', () => {
 test('isMilkSUPage rejects Cursor and accepts the product window', () => {
   assert.equal(isMilkSUPage({ title: 'Cursor', url: 'https://cursor.com' }), false)
   assert.equal(isMilkSUPage({ title: 'MilkSU', url: 'milksu://app' }), true)
+  assert.equal(isMilkSUPage({ title: 'MilkSU DSH fixture', url: 'http://127.0.0.1:49501/' }), false)
 })
 
 test('GuiDriver.abortMessage is a no-op without a conversation id', async () => {
