@@ -25,7 +25,9 @@ describe('hostPlatform', () => {
   it('syncs the desktop overlay without throwing when the host is missing', () => {
     const invoke = vi.fn().mockResolvedValue(true)
     syncWindowChrome('dark', { milksu: { invoke } })
-    expect(invoke).toHaveBeenCalledWith('SetTitleBarOverlay', [{ theme: 'dark' }])
+    expect(invoke).toHaveBeenCalledWith('SetTitleBarOverlay', [{ theme: 'dark', mode: 'dark' }])
+    syncWindowChrome('dark', { milksu: { invoke } }, 'system')
+    expect(invoke).toHaveBeenCalledWith('SetTitleBarOverlay', [{ theme: 'dark', mode: 'system' }])
     expect(() => syncWindowChrome('light', {})).not.toThrow()
   })
 })

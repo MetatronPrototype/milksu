@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 @import "./styles/agent-conversation.css";
 @source ".";
 
@@ -222,7 +223,7 @@
   --secondary-foreground: #141414;
   --muted: #ededed;
   --muted-foreground: #6b6b6b;
-  --accent: #ededed;
+  --accent: #e5e5e5;
   --accent-foreground: #141414;
   --border: #e5e5e5;
   --border-soft: #d8d8d8;
@@ -231,12 +232,12 @@
   --border-menu-elevated: #d8d8d8;
   --input: #e8e8e8;
   --ring: #141414;
-  --hover: #ededed;
-  --hover-2: #e5e5e5;
+  --hover: #e5e5e5;
+  --hover-2: #d6d6d6;
   --sidebar: rgb(243 243 243 / 0.70);
   --sidebar-foreground: #141414;
   --sidebar-border: #e5e5e5;
-  --sidebar-accent: #e8e8e8;
+  --sidebar-accent: #d6d6d6;
   --sidebar-accent-foreground: #141414;
   --scrollbar-thumb: rgb(20 20 20 / 0.22);
   --scrollbar-thumb-hover: rgb(20 20 20 / 0.36);
@@ -277,9 +278,9 @@
 
   --overlay-hover-light: var(--hover);
   --overlay-hover: var(--hover-2);
-  --overlay-hover-strong: #e5e5e5;
-  --overlay-active: #e5e5e5;
-  --overlay-active-strong: #d8d8d8;
+  --overlay-hover-strong: #d6d6d6;
+  --overlay-active: #d6d6d6;
+  --overlay-active-strong: #c8c8c8;
   --action-card-hover: rgb(20 20 20 / 0.04);
   --action-card-active: rgb(20 20 20 / 0.07);
   --segment-track: #ededed;
@@ -338,7 +339,7 @@
   --tactical-shadow: 0 12px 32px rgb(20 20 20 / 0.1);
 
   --settings-field-fill: rgb(243 243 243 / 0.82);
-  --settings-field-fill-hover: #ededed;
+  --settings-field-fill-hover: #d6d6d6;
 }
 
 @theme inline {

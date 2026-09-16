@@ -439,8 +439,9 @@ export default function App() {
   }), [settings, conv])
 
   function applyCurrentTheme() {
-    applyThemeMode(themeModeRef.current)
-    syncWindowChrome(resolveThemeMode(themeModeRef.current))
+    const mode = themeModeRef.current
+    applyThemeMode(mode)
+    syncWindowChrome(resolveThemeMode(mode), globalThis, mode)
   }
 
   function persistWorkspaceViewState() {

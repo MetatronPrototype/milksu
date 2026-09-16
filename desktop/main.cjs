@@ -57,7 +57,7 @@ const {
   linuxUserAgent,
   linuxWindowIconPath,
 } = require('./linux-desktop.cjs')
-const { applyWindowChrome, browserWindowChrome } = require('./window-chrome.cjs')
+const { applyWindowChrome, browserWindowChrome, nativeThemeSource } = require('./window-chrome.cjs')
 const {
   desktopBackendEnvironment,
   electronNodeEnvironment,
@@ -851,9 +851,12 @@ ipcMain.handle('milksu:invoke', async (event, request) => {
   if (method === 'GetBuildTracking') return loadBuildTracking()
   if (method === 'SetTitleBarOverlay') {
     const payload = Array.isArray(request?.args) ? request.args[0] : request?.args
+    const theme = payload?.theme === 'dark' ? 'dark' : 'light'
+    const source = nativeThemeSource(payload?.mode, theme)
+    if (nativeTheme.themeSource !== source) nativeTheme.themeSource = source
     return applyWindowChrome(mainWindow, {
       platform: process.platform,
-      theme: payload?.theme === 'dark' ? 'dark' : 'light',
+      theme,
     })
   }
   if (method === 'GetAccountStatus') {

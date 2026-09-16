@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   THEME_MODE_STORAGE_KEY,
@@ -9,6 +11,10 @@ import {
   readThemeMode,
   writeThemeMode,
 } from './themeMode'
+
+const themeBootSource = readFileSync(join(process.cwd(), 'public/theme-boot.js'), 'utf8')
+const indexHtmlSource = readFileSync(join(process.cwd(), 'index.html'), 'utf8')
+const mainSource = readFileSync(join(process.cwd(), 'src/main.tsx'), 'utf8')
 
 describe('themeMode', () => {
   beforeEach(() => {
@@ -47,6 +53,47 @@ describe('themeMode', () => {
     applyThemeMode('light', document.documentElement, true)
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.documentElement.classList.contains('dark')).toBe(false)
+  })
+
+  it('treats stored light and dark as the appearance, not an inverted class toggle', () => {
+    const storage = createMemoryStorage()
+    writeThemeMode('light', storage)
+    expect(readThemeMode(storage)).toBe('light')
+    applyThemeMode(readThemeMode(storage), document.documentElement, true)
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+    expect(document.documentElement.style.colorScheme).toBe('light')
+
+    writeThemeMode('dark', storage)
+    applyThemeMode(readThemeMode(storage), document.documentElement, false)
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+    expect(document.documentElement.style.colorScheme).toBe('dark')
+  })
+
+  it('boots the stored theme from a classic script before packaged CSS', () => {
+    expect(indexHtmlSource).toContain('src="/theme-boot.js"')
+    expect(indexHtmlSource).not.toContain('data-theme="light"')
+    expect(themeBootSource).toContain(THEME_MODE_STORAGE_KEY)
+    expect(themeBootSource).toContain("root.dataset.theme = resolved")
+    expect(themeBootSource).toContain("root.classList.toggle('dark', resolved === 'dark')")
+    expect(mainSource).toContain('applyThemeMode(initialThemeMode)')
+    expect(mainSource).toContain("syncWindowChrome(resolveThemeMode(initialThemeMode), globalThis, initialThemeMode)")
+
+    const values = new Map<string, string>([[THEME_MODE_STORAGE_KEY, 'dark']])
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem(key: string) { return values.get(key) ?? null },
+        setItem(key: string, value: string) { values.set(key, value) },
+        removeItem(key: string) { values.delete(key) },
+      },
+    })
+    window.eval(themeBootSource)
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(document.documentElement.dataset.themeMode).toBe('dark')
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+    expect(document.documentElement.style.colorScheme).toBe('dark')
   })
 })
 

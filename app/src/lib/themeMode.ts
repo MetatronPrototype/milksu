@@ -3,6 +3,8 @@ export const THEME_MODE_STORAGE_KEY = 'milksu.theme-mode'
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type ResolvedThemeMode = 'light' | 'dark'
 
+/** Stored `light` / `dark` are the appearance, shared with official Vue. */
+
 export function normalizeThemeMode(value: unknown): ThemeMode {
   return value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
 }

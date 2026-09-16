@@ -52,6 +52,7 @@
 - DSH `0.1.6-alpha.1`、产品回归 `npm run test:product-loop`、`desktop-surface`（Computer Use 优先，不可用降级隔离浏览器）均未进安装包。不要把 `test:dsh-complete-loop` 当主入口。工作树打包已把 DSH host plugin 打成独立 ESM（`bundleDshHostPlugin`；Sidecar `package.json` 是 CommonJS，不能只拷 `host-plugin.mjs` 再 import `permission.js`），下一包装才会进安装包。产品回归 CDP 只附着产品主窗，不附着标题带 fixture 的隔离浏览器页。
 - DSH host plugin 不再 required-inject `agents` / `compaction`（会话回收会卸 fiber，`ctx.effect` / `ctx.on` 在 inactive context 上炸成 ACP `Internal error: cannot create effect on inactive context`）。IPC listen 与 subagent 订阅只在 fiber 还能挂 effect 时注册；dispatch 用 `ctx.get()`。工作树已修，本地 adhoc `desktop:build` 已打进 `MilkSU.app`；GitHub 安装包尚未含此修复。
 - 设置占用原侧栏并即时落盘、居中命令面板、作曲栏模型/Git 芯片已进 `main`，未进安装包。
+- 正式版与同通道 adhoc Stable 共用 Electron userData；主题 `light` / `dark` 就是外观。工作树已用阻塞 `theme-boot.js` 在打包 CSS 前套存储值，并把 `nativeTheme.themeSource` 钉到同一 mode，避免设置页跟系统 `prefers-color-scheme` 反转；亮色 `--hover-2` 加深以便能看见。未进安装包。未改 AGENTS.md 设计语言。
 - 新对话未发送前，作曲栏草稿和模型/运行时/项目芯片跟空会话走：去设置或其他页再回来仍在。未进安装包。
 - DSH 发送消息只复用已打开的隔离浏览器，不再 Ensure；问候 / 闲聊不会弹右栏。未进安装包。
 - 设置 → 模型「默认运行时」；作曲栏加号 Multitask（仅 DSH 可开并行）；对话下方 Working 短胶囊（折叠「进行中」或「进行中 · N」，不拉满作曲栏；点开才是 overlay 列表；Pi 与 DSH 同一套，主 thread 不再内嵌 sub-agent 大方板）。DSH 模型自己拉起的 `subagent` 经 ACP `tool_call` 与 host `ctx.subagents` 投影进同一 roster，可停单个/全部。未进安装包。

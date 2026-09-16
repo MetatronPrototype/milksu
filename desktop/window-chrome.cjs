@@ -9,6 +9,12 @@ function normalizeChromeTheme(theme) {
   return theme === 'dark' ? 'dark' : 'light'
 }
 
+function nativeThemeSource(mode, theme) {
+  if (mode === 'system') return 'system'
+  if (mode === 'light' || mode === 'dark') return mode
+  return normalizeChromeTheme(theme)
+}
+
 function windowChromeColors(theme) {
   return TITLE_BAR_COLORS[normalizeChromeTheme(theme)]
 }
@@ -81,6 +87,7 @@ function applyWindowChrome(window, { platform, theme } = {}) {
 module.exports = {
   applyWindowChrome,
   browserWindowChrome,
+  nativeThemeSource,
   titleBarOverlayOptions,
   windowChromeColors,
 }

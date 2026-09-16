@@ -1,5 +1,6 @@
 export type HostPlatform = 'darwin' | 'win32' | 'linux' | 'web'
 export type WindowChromeTheme = 'light' | 'dark'
+export type WindowChromeThemeMode = 'system' | 'light' | 'dark'
 
 type HostPlatformSource = {
   milksu?: {
@@ -25,10 +26,12 @@ export function applyHostPlatform(
 export function syncWindowChrome(
   theme: WindowChromeTheme,
   input: HostPlatformSource = globalThis as HostPlatformSource,
+  mode?: WindowChromeThemeMode,
 ) {
   const invoke = input.milksu?.invoke
   if (typeof invoke !== 'function') return
-  void invoke('SetTitleBarOverlay', [{ theme }]).catch(() => undefined)
+  const themeMode = mode === 'system' || mode === 'light' || mode === 'dark' ? mode : theme
+  void invoke('SetTitleBarOverlay', [{ theme, mode: themeMode }]).catch(() => undefined)
 }
 
 function safeDocumentRoot(): HTMLElement | null {

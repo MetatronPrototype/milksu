@@ -7,6 +7,7 @@ const test = require('node:test')
 const {
   applyWindowChrome,
   browserWindowChrome,
+  nativeThemeSource,
   titleBarOverlayOptions,
   windowChromeColors,
 } = require('./window-chrome.cjs')
@@ -91,5 +92,14 @@ test('desktop window creation uses the shared chrome helper', () => {
   const source = readFileSync(join(__dirname, 'main.cjs'), 'utf8')
   assert.match(source, /browserWindowChrome/)
   assert.match(source, /SetTitleBarOverlay/)
+  assert.match(source, /nativeTheme\.themeSource/)
   assert.doesNotMatch(source, /titleBarStyle: 'hiddenInset'/)
+})
+
+test('nativeTheme source follows the stored mode, not an inverted class', () => {
+  assert.equal(nativeThemeSource('system', 'dark'), 'system')
+  assert.equal(nativeThemeSource('light', 'light'), 'light')
+  assert.equal(nativeThemeSource('dark', 'dark'), 'dark')
+  assert.equal(nativeThemeSource(undefined, 'dark'), 'dark')
+  assert.equal(nativeThemeSource('unknown', 'light'), 'light')
 })

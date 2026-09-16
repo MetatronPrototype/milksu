@@ -5,10 +5,14 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import { ConversationsProvider } from '@/stores/conversationsStore'
 import { LabJobsProvider } from '@/stores/labJobsStore'
-import { applyHostPlatform } from '@/lib/hostPlatform'
+import { applyHostPlatform, syncWindowChrome } from '@/lib/hostPlatform'
+import { applyThemeMode, readThemeMode, resolveThemeMode } from '@/lib/themeMode'
 import './index.css'
 
+const initialThemeMode = readThemeMode()
 applyHostPlatform()
+applyThemeMode(initialThemeMode)
+syncWindowChrome(resolveThemeMode(initialThemeMode), globalThis, initialThemeMode)
 document.documentElement.dataset.colorScheme = 'memoh'
 
 class BootErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null; stack: string }> {
