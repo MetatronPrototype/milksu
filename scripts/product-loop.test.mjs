@@ -18,6 +18,7 @@ import {
   TOKENFLUX_BASE_URL,
   parseProductLoopArgs,
   parseSuiteList,
+  finalizeProductLoopResult,
   suiteRunnable,
 } from './lib/product-loop-catalog.mjs'
 
@@ -52,6 +53,16 @@ test('parseProductLoopArgs selects mode and suite list', () => {
   )
 })
 
+test('finalizeProductLoopResult fails a dropped suite instead of passing 5 of 6', () => {
+  const five = DEFAULT_SUITES.slice(0, 5).map(id => ({ id, result: 'PASS' }))
+  assert.equal(finalizeProductLoopResult(five, DEFAULT_SUITES), 'FAIL')
+  assert.equal(finalizeProductLoopResult([], DEFAULT_SUITES, ['CDP WebSocket closed']), 'FAIL')
+  assert.equal(
+    finalizeProductLoopResult(DEFAULT_SUITES.map(id => ({ id, result: 'PASS' })), DEFAULT_SUITES),
+    'PASS',
+  )
+})
+
 test('pi-files and desktop-surface are GUI-only; stop-scope runs in both modes', () => {
   assert.equal(suiteRunnable(SUITES['pi-files'], 'bridge').ok, false)
   assert.equal(suiteRunnable(SUITES['desktop-surface'], 'bridge').ok, false)
@@ -80,6 +91,20 @@ test('isMilkSUPage rejects Cursor and accepts the product window', () => {
   assert.equal(isMilkSUPage({ title: 'MilkSU', url: 'milksu://app' }), true)
   assert.equal(isMilkSUPage({ title: 'MilkSU DSH fixture', url: 'http://127.0.0.1:49501/' }), false)
   assert.equal(isMilkSUPage({ title: 'MilkSU', url: 'about:blank' }), false)
+})
+
+test('waitForTurn keeps polling after a transient CDP close', async () => {
+  const driver = new GuiDriver()
+  let calls = 0
+  driver.drainEvents = async () => {
+    calls += 1
+    if (calls === 1) throw new Error('CDP WebSocket closed')
+    return [{ type: 'assistant.settled' }]
+  }
+  driver.ensureAttached = async () => true
+  const turn = await driver.waitForTurn('conversation-1', 2_000)
+  assert.equal(turn.timeout, false)
+  assert.ok(calls >= 2)
 })
 
 test('GuiDriver.abortMessage is a no-op without a conversation id', async () => {

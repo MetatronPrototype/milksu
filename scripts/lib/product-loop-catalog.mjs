@@ -122,3 +122,13 @@ export function suiteRunnable(suite, mode) {
   }
   return { ok: true, reason: '' }
 }
+
+export function finalizeProductLoopResult(suites, requestedIds, humanReview = []) {
+  const rows = suites ?? []
+  const failed = rows.filter(item => item.result === 'FAIL')
+  const recorded = new Set(rows.map(item => item.id))
+  const missing = (requestedIds ?? []).filter(id => !recorded.has(id))
+  if (failed.length || missing.length) return 'FAIL'
+  if (!rows.length && (humanReview ?? []).length) return 'FAIL'
+  return 'PASS'
+}

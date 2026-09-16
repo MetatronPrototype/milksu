@@ -29,6 +29,7 @@ import {
   SUITES,
   TOKENFLUX_BASE_URL,
   parseProductLoopArgs,
+  finalizeProductLoopResult,
   suiteRunnable,
 } from './lib/product-loop-catalog.mjs'
 
@@ -529,8 +530,10 @@ async function main() {
 
   try {
     async function ensureDriver() {
-      if (driver?.cdp || options.mode !== 'gui') return driver
-      driver = new GuiDriver()
+      if (options.mode !== 'gui') return driver
+      if (driver?.cdpAlive()) return driver
+      if (driver && await driver.ensureAttached()) return driver
+      driver = driver || new GuiDriver()
       const attached = await driver.attachOrStart(options.desktopReadyMs)
       if (!attached) receipt.gaps.push(...driver.gaps)
       return driver
@@ -541,6 +544,7 @@ async function main() {
       const runnable = suiteRunnable(suite, options.mode)
       process.stdout.write(`SUITE ${id} start ${suite.title}\n`)
       let outcome
+      try {
       if (!runnable.ok) {
         outcome = { result: 'SKIP', detail: runnable.reason }
       } else if (id === 'stop-scope') {
@@ -553,7 +557,7 @@ async function main() {
           outcome = logic
         } else if (options.mode === 'gui') {
           await ensureDriver()
-          if (driver?.cdp) {
+          if (driver?.cdpAlive()) {
             const persist = await runChatPinPersist(driver)
             outcome = persist.result === 'PASS'
               ? { result: 'PASS', detail: `${logic.detail}；${persist.detail}` }
@@ -572,7 +576,7 @@ async function main() {
         }
       } else if (id === 'pi-files') {
         await ensureDriver()
-        if (!driver?.cdp) {
+        if (!driver?.cdpAlive()) {
           outcome = { result: 'SKIP', detail: '需要 --gui 且已附着产品窗口' }
         } else {
           const creds = await driver.credentialPresent()
@@ -584,7 +588,7 @@ async function main() {
         }
       } else if (id === 'desktop-surface') {
         await ensureDriver()
-        if (!driver?.cdp) {
+        if (!driver?.cdpAlive()) {
           outcome = { result: 'SKIP', detail: '需要 --gui 且已附着产品窗口' }
         } else {
           const creds = await driver.credentialPresent()
@@ -604,6 +608,11 @@ async function main() {
       } else {
         outcome = { result: 'FAIL', detail: `no runner for ${id}` }
       }
+      } catch (error) {
+        const message = redactProcessText(error instanceof Error ? error.message : error, 400)
+        receipt.humanReview.push(message)
+        outcome = { result: 'FAIL', detail: message }
+      }
 
       const record = {
         id,
@@ -619,15 +628,26 @@ async function main() {
       process.stdout.write(`SUITE ${id} ${record.result} ${record.detail}\n`)
     }
   } catch (error) {
-    receipt.humanReview.push(redactProcessText(error instanceof Error ? error.message : error, 400))
+    const message = redactProcessText(error instanceof Error ? error.message : error, 400)
+    receipt.humanReview.push(message)
+    for (const id of options.suites) {
+      if (receipt.suites.some(row => row.id === id)) continue
+      const suite = SUITES[id]
+      receipt.suites.push({
+        id,
+        title: suite.title,
+        from: suite.from,
+        result: 'FAIL',
+        detail: message,
+      })
+      process.stdout.write(`SUITE ${id} FAIL ${message}\n`)
+    }
   } finally {
     if (driver) await driver.close()
   }
 
   receipt.finishedAt = new Date().toISOString()
-  const failed = receipt.suites.filter(item => item.result === 'FAIL')
-  receipt.result = failed.length ? 'FAIL' : 'PASS'
-  if (!receipt.suites.length && receipt.humanReview.length) receipt.result = 'FAIL'
+  receipt.result = finalizeProductLoopResult(receipt.suites, options.suites, receipt.humanReview)
   await writeReceipt(receipt)
   console.log(`${receipt.result} mode=${options.mode} suites=${receipt.suites.length}`)
   console.log(`receipt ${resultPath}`)

@@ -326,12 +326,22 @@ export class GuiDriver {
   }
 
   async drainEvents(conversationId) {
+    const run = () => this.cdp.evaluate(
+      'window.__milksuProductLoop ? window.__milksuProductLoop.events.splice(0) : []',
+    )
     if (!await this.ensureAttached()) {
       throw new Error('CDP WebSocket closed')
     }
-    const raw = await this.cdp.evaluate(
-      'window.__milksuProductLoop ? window.__milksuProductLoop.events.splice(0) : []',
-    )
+    let raw
+    try {
+      raw = await run()
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error)
+      if (!/CDP WebSocket closed|CDP Runtime\.evaluate timed out/i.test(text)) throw error
+      this.cdp.closed = true
+      if (!await this.ensureAttached()) throw error
+      raw = await run()
+    }
     const events = Array.isArray(raw) ? raw : []
     if (!conversationId) return events
     return events.filter(event => {
@@ -344,8 +354,17 @@ export class GuiDriver {
     const collected = []
     const started = Date.now()
     while (Date.now() - started < timeoutMs) {
-      const batch = await this.drainEvents(conversationId)
-      collected.push(...batch)
+      try {
+        const batch = await this.drainEvents(conversationId)
+        collected.push(...batch)
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error)
+        if (!/CDP WebSocket closed|CDP Runtime\.evaluate timed out/i.test(text)) throw error
+        if (this.cdp) this.cdp.closed = true
+        await this.ensureAttached()
+        await delay(400)
+        continue
+      }
       if (collected.some(event => {
         const type = String(event?.type ?? event?.Type ?? '')
         return type === 'assistant.settled'
