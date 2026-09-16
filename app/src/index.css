@@ -4,9 +4,50 @@
 @source ".";
 
 :root {
-  --font-sans: "Inter Variable", "Noto Sans SC Variable", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif;
+  --font-stack-cjk: "Noto Sans SC Variable", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif;
+  --font-stack-product: "Inter Variable", var(--font-stack-cjk);
+  --font-stack-inter: "Inter Variable", var(--font-stack-cjk);
+  --font-stack-noto-sc: var(--font-stack-cjk);
+  --font-stack-ibm-plex: "IBM Plex Sans Variable", var(--font-stack-cjk);
+  --font-stack-source-sans: "Source Sans 3 Variable", var(--font-stack-cjk);
+  --font-stack-geist: "Geist Variable", var(--font-stack-cjk);
+  --font-stack-nunito-sans: "Nunito Sans Variable", var(--font-stack-cjk);
+  --font-stack-noto-serif-sc: "Noto Serif SC Variable", "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --font-stack-zcool-xiaowei: "ZCOOL XiaoWei", var(--font-stack-cjk);
+  --font-stack-zcool-qingke: "ZCOOL QingKe HuangYou", var(--font-stack-cjk);
+  --font-stack-system: system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif;
+  --font-sans: var(--font-stack-product);
+  --font-conversation: var(--font-stack-product);
   --font-display: var(--font-sans);
+  --ui-font-size: 13px;
+  --conversation-font-size: 13px;
   font-family: var(--font-sans);
+}
+
+html[data-ui-font='product'] { --font-sans: var(--font-stack-product); }
+html[data-ui-font='inter'] { --font-sans: var(--font-stack-inter); }
+html[data-ui-font='noto-sc'] { --font-sans: var(--font-stack-noto-sc); }
+html[data-ui-font='ibm-plex'] { --font-sans: var(--font-stack-ibm-plex); }
+html[data-ui-font='source-sans'] { --font-sans: var(--font-stack-source-sans); }
+html[data-ui-font='geist'] { --font-sans: var(--font-stack-geist); }
+html[data-ui-font='nunito-sans'] { --font-sans: var(--font-stack-nunito-sans); }
+html[data-ui-font='noto-serif-sc'] { --font-sans: var(--font-stack-noto-serif-sc); }
+html[data-ui-font='zcool-xiaowei'] { --font-sans: var(--font-stack-zcool-xiaowei); }
+html[data-ui-font='zcool-qingke'] { --font-sans: var(--font-stack-zcool-qingke); }
+html[data-ui-font='system'] { --font-sans: var(--font-stack-system); }
+html[data-conversation-font='product'] { --font-conversation: var(--font-stack-product); }
+html[data-conversation-font='inter'] { --font-conversation: var(--font-stack-inter); }
+html[data-conversation-font='noto-sc'] { --font-conversation: var(--font-stack-noto-sc); }
+html[data-conversation-font='ibm-plex'] { --font-conversation: var(--font-stack-ibm-plex); }
+html[data-conversation-font='source-sans'] { --font-conversation: var(--font-stack-source-sans); }
+html[data-conversation-font='geist'] { --font-conversation: var(--font-stack-geist); }
+html[data-conversation-font='nunito-sans'] { --font-conversation: var(--font-stack-nunito-sans); }
+html[data-conversation-font='noto-serif-sc'] { --font-conversation: var(--font-stack-noto-serif-sc); }
+html[data-conversation-font='zcool-xiaowei'] { --font-conversation: var(--font-stack-zcool-xiaowei); }
+html[data-conversation-font='zcool-qingke'] { --font-conversation: var(--font-stack-zcool-qingke); }
+html[data-conversation-font='system'] { --font-conversation: var(--font-stack-system); }
+
+:root {
   color-scheme: dark;
 
   /*
@@ -21,24 +62,24 @@
   --font-weight-bold: 700;
 
   --radius: 8px;
-  --text-caption: 0.6875rem;
-  --text-caption--line-height: 1rem;
+  --text-caption: calc(var(--ui-font-size) * 11 / 13);
+  --text-caption--line-height: calc(var(--ui-font-size) * 16 / 13);
   --text-caption--letter-spacing: 0;
-  --text-body: 0.75rem;
-  --text-body--line-height: 1rem;
+  --text-body: calc(var(--ui-font-size) * 12 / 13);
+  --text-body--line-height: calc(var(--ui-font-size) * 16 / 13);
   --text-body--letter-spacing: 0;
-  --text-label: 0.8125rem;
-  --text-label--line-height: 1.125rem;
+  --text-label: var(--ui-font-size);
+  --text-label--line-height: calc(var(--ui-font-size) * 18 / 13);
   --text-label--letter-spacing: 0;
-  --text-control: 0.875rem;
-  --text-control--line-height: 1.25rem;
+  --text-control: calc(var(--ui-font-size) * 14 / 13);
+  --text-control--line-height: calc(var(--ui-font-size) * 20 / 13);
   --text-control--letter-spacing: 0;
-  --text-title: 1rem;
-  --text-title--line-height: 1.4rem;
-  --text-heading: 1.125rem;
-  --text-heading--line-height: 1.55rem;
-  --text-display: 1.5rem;
-  --text-display--line-height: 1.85rem;
+  --text-title: calc(var(--ui-font-size) * 16 / 13);
+  --text-title--line-height: calc(var(--ui-font-size) * 22.4 / 13);
+  --text-heading: calc(var(--ui-font-size) * 18 / 13);
+  --text-heading--line-height: calc(var(--ui-font-size) * 24.8 / 13);
+  --text-display: calc(var(--ui-font-size) * 24 / 13);
+  --text-display--line-height: calc(var(--ui-font-size) * 29.6 / 13);
 
   --background: rgb(24 24 24 / 0.90);
   --background-chrome: rgb(20 20 20 / 0.82);
@@ -388,14 +429,14 @@
   --radius-md: 8px;
   --radius-lg: 8px;
   --radius-xl: 8px;
-  --text-caption: 0.6875rem;
-  --text-caption--line-height: 1rem;
-  --text-body: 0.75rem;
-  --text-body--line-height: 1rem;
-  --text-label: 0.8125rem;
-  --text-label--line-height: 1.125rem;
-  --text-control: 0.875rem;
-  --text-control--line-height: 1.25rem;
+  --text-caption: calc(var(--ui-font-size) * 11 / 13);
+  --text-caption--line-height: calc(var(--ui-font-size) * 16 / 13);
+  --text-body: calc(var(--ui-font-size) * 12 / 13);
+  --text-body--line-height: calc(var(--ui-font-size) * 16 / 13);
+  --text-label: var(--ui-font-size);
+  --text-label--line-height: calc(var(--ui-font-size) * 18 / 13);
+  --text-control: calc(var(--ui-font-size) * 14 / 13);
+  --text-control--line-height: calc(var(--ui-font-size) * 20 / 13);
 }
 
 html,

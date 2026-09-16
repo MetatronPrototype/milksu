@@ -45,6 +45,28 @@ describe('model provider catalog', () => {
     expect(settings.active_model).toBe('deepseek-flash')
     expect(settings.default_kernel).toBe('dsh')
     expect(settings.busy_send).toBe('interrupt')
+    expect(settings.ui_font).toBe('product')
+    expect(settings.conversation_font).toBe('product')
+    expect(settings.ui_font_size).toBe('13')
+    expect(settings.conversation_font_size).toBe('13')
+  })
+
+  it('normalizes invalid font sizes to 13px', () => {
+    const settings = withAppSettingsDefaults({
+      ui_font_size: 'large',
+      conversation_font_size: '9',
+    } as AppSettings)
+    expect(settings.ui_font_size).toBe('13')
+    expect(settings.conversation_font_size).toBe('13')
+  })
+
+  it('keeps an explicit px font size', () => {
+    const settings = withAppSettingsDefaults({
+      ui_font_size: '16',
+      conversation_font_size: '12',
+    } as AppSettings)
+    expect(settings.ui_font_size).toBe('16')
+    expect(settings.conversation_font_size).toBe('12')
   })
 
   it('normalizes default_kernel without rewriting other settings', () => {

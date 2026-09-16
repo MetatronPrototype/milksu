@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,26 +88,32 @@ type AppSettings struct {
 	ActiveModel    string `json:"active_model"`
 	// DefaultKernel chooses Pi or DSH for a new conversation only.
 	// Existing conversations keep the kernel persisted on that row.
-	DefaultKernel           string                                    `json:"default_kernel,omitempty"`
+	DefaultKernel string `json:"default_kernel,omitempty"`
 	// BusySend is the DSH parent-turn send policy: interrupt (followup) or queue (inbox).
-	BusySend string `json:"busy_send,omitempty"`
-	ModelVerified           *ModelVerification                        `json:"model_verification,omitempty"`
-	ModelRouting            ModelRoutingConfig                        `json:"model_routing"`
-	Relay                   *RelayConfig                              `json:"relay,omitempty"`
-	NSSCTFArena             *NSSCTFArenaConfig                        `json:"nssctf_arena,omitempty"`
-	Locale                  *string                                   `json:"locale,omitempty"`
-	DisabledSkills          []string                                  `json:"disabled_skills"`
-	EnabledOptionalSkills   []string                                  `json:"enabled_optional_skills,omitempty"`
-	WorkerProvider          string                                    `json:"worker_provider,omitempty"`
-	WorkerModel             string                                    `json:"worker_model,omitempty"`
-	WorkerSource            string                                    `json:"worker_source,omitempty"`
-	PreferredExternalEditor string                                    `json:"preferred_external_editor,omitempty"`
-	SecurityTools           map[string]SecurityToolPreference         `json:"security_tools,omitempty"`
-	ModelThinking           map[string]map[string]ModelThinkingConfig `json:"model_thinking,omitempty"`
-	ModelContextWindows     map[string]map[string]int                 `json:"model_context_windows,omitempty"`
-	Lab                     *LabConfig                                `json:"lab,omitempty"`
-	Providers               map[string]ProviderConfig                 `json:"providers"`
-	RemovedPresetServices   []string                                  `json:"removed_preset_services,omitempty"`
+	BusySend                string             `json:"busy_send,omitempty"`
+	ModelVerified           *ModelVerification `json:"model_verification,omitempty"`
+	ModelRouting            ModelRoutingConfig `json:"model_routing"`
+	Relay                   *RelayConfig       `json:"relay,omitempty"`
+	NSSCTFArena             *NSSCTFArenaConfig `json:"nssctf_arena,omitempty"`
+	Locale                  *string            `json:"locale,omitempty"`
+	DisabledSkills          []string           `json:"disabled_skills"`
+	EnabledOptionalSkills   []string           `json:"enabled_optional_skills,omitempty"`
+	WorkerProvider          string             `json:"worker_provider,omitempty"`
+	WorkerModel             string             `json:"worker_model,omitempty"`
+	WorkerSource            string             `json:"worker_source,omitempty"`
+	PreferredExternalEditor string             `json:"preferred_external_editor,omitempty"`
+	// UiFont and ConversationFont are preset ids from app/src/lib/uiFonts.ts.
+	// UiFontSize and ConversationFontSize are concrete px strings such as "13".
+	UiFont                string                                    `json:"ui_font,omitempty"`
+	ConversationFont      string                                    `json:"conversation_font,omitempty"`
+	UiFontSize            string                                    `json:"ui_font_size,omitempty"`
+	ConversationFontSize  string                                    `json:"conversation_font_size,omitempty"`
+	SecurityTools         map[string]SecurityToolPreference         `json:"security_tools,omitempty"`
+	ModelThinking         map[string]map[string]ModelThinkingConfig `json:"model_thinking,omitempty"`
+	ModelContextWindows   map[string]map[string]int                 `json:"model_context_windows,omitempty"`
+	Lab                   *LabConfig                                `json:"lab,omitempty"`
+	Providers             map[string]ProviderConfig                 `json:"providers"`
+	RemovedPresetServices []string                                  `json:"removed_preset_services,omitempty"`
 	// RuntimeModelCatalogPath is injected only into resolved settings so Pi can
 	// read the same refreshed public model metadata as the desktop UI. It is
 	// never persisted or returned across Desktop RPC.
@@ -132,6 +139,48 @@ func NormalizeBusySend(value string) string {
 	default:
 		return "interrupt"
 	}
+}
+
+func NormalizeUiFont(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "inter":
+		return "inter"
+	case "noto-sc", "noto", "noto-sans-sc":
+		return "noto-sc"
+	case "ibm-plex", "ibm", "ibm-plex-sans":
+		return "ibm-plex"
+	case "source-sans", "source", "source-sans-3":
+		return "source-sans"
+	case "geist":
+		return "geist"
+	case "nunito-sans", "nunito":
+		return "nunito-sans"
+	case "noto-serif-sc", "noto-serif":
+		return "noto-serif-sc"
+	case "zcool-xiaowei", "xiaowei":
+		return "zcool-xiaowei"
+	case "zcool-qingke", "qingke", "huangyou":
+		return "zcool-qingke"
+	case "system", "system-ui":
+		return "system"
+	default:
+		return "product"
+	}
+}
+
+const (
+	factoryUiFontSizePx = 13
+	minUiFontSizePx     = 11
+	maxUiFontSizePx     = 18
+)
+
+func NormalizeUiFontSize(value string) string {
+	raw := strings.TrimSpace(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), "px"))
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < minUiFontSizePx || n > maxUiFontSizePx {
+		return strconv.Itoa(factoryUiFontSizePx)
+	}
+	return strconv.Itoa(n)
 }
 
 func NormalizeDefaultKernel(value string) string {
@@ -778,6 +827,10 @@ func withDefaults(value AppSettings) AppSettings {
 	value.EnabledOptionalSkills = normalizeEnabledOptionalSkills(value.EnabledOptionalSkills)
 	value = normalizeWorkerModel(value)
 	value.PreferredExternalEditor = externaleditor.Normalize(value.PreferredExternalEditor)
+	value.UiFont = NormalizeUiFont(value.UiFont)
+	value.ConversationFont = NormalizeUiFont(value.ConversationFont)
+	value.UiFontSize = NormalizeUiFontSize(value.UiFontSize)
+	value.ConversationFontSize = NormalizeUiFontSize(value.ConversationFontSize)
 	value.SecurityTools = normalizeSecurityToolPreferences(value.SecurityTools)
 	value.ModelThinking = normalizeModelThinkingOverrides(value.ModelThinking, value.Providers)
 	value.ModelContextWindows = normalizeModelContextWindowOverrides(value.ModelContextWindows, value.Providers)

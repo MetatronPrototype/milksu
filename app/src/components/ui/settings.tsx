@@ -96,11 +96,13 @@ function SettingsGhostPicker({
   ariaLabel,
   options,
   onChange,
+  wide = false,
 }: {
   value: string
   ariaLabel: string
   options: { value: string; label: string; leading?: ReactNode }[]
   onChange: (value: string) => void
+  wide?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const selected = options.find(option => option.value === value)
@@ -110,6 +112,7 @@ function SettingsGhostPicker({
         <button
           type="button"
           aria-label={ariaLabel}
+          title={selected?.label}
           className={cn(
             'settings-control inline-flex h-7 items-center justify-between gap-1.5 rounded-md px-2 text-left text-foreground hover:bg-accent',
             settingsControlTypeClass,
@@ -122,13 +125,16 @@ function SettingsGhostPicker({
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="settings-picker-menu w-[14rem] p-1">
+      <PopoverContent
+        align="end"
+        className={cn('settings-picker-menu p-1', wide ? 'w-[20rem]' : 'w-[14rem]')}
+      >
         {options.map(option => (
           <button
             key={option.value}
             type="button"
             className={cn(
-              'flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-foreground hover:bg-accent',
+              'flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-foreground hover:bg-accent',
               settingsControlTypeClass,
             )}
             onClick={() => {
@@ -137,7 +143,9 @@ function SettingsGhostPicker({
             }}
           >
             {option.leading}
-            <span className="min-w-0 flex-1 truncate">{option.label}</span>
+            <span className={cn('min-w-0 flex-1', wide ? 'whitespace-normal' : 'truncate')}>
+              {option.label}
+            </span>
             {value === option.value ? <Check className="size-3.5 shrink-0" /> : null}
           </button>
         ))}

@@ -96,6 +96,14 @@ import { buildDiagnosticText, isDebugMode, setDebugMode } from '@/lib/debugMode'
 import { explainModelVerificationFailure } from '@/lib/tokenFluxError'
 import { applyUiLocale, normalizeUiLocale, t } from '@/lib/uiLocale'
 import {
+  applyUiFonts,
+  normalizeUiFontPreset,
+  normalizeUiFontSize,
+  UI_FONT_PRESET_IDS,
+  UI_FONT_SIZE_IDS,
+  type UiFontPreset,
+} from '@/lib/uiFonts'
+import {
   builtInModelThinking,
   MODEL_THINKING_LEVEL_LABELS,
   MODEL_THINKING_LEVELS,
@@ -111,6 +119,33 @@ import {
   type NormalizedSettingsCategory,
   type SettingsCategory,
 } from '@/lib/settingsNavigation'
+
+function uiFontPresetLabel(id: UiFontPreset) {
+  switch (id) {
+    case 'inter':
+      return t('Inter', 'Inter')
+    case 'noto-sc':
+      return t('Noto Sans SC（思源黑体）', 'Noto Sans SC')
+    case 'ibm-plex':
+      return t('IBM Plex Sans', 'IBM Plex Sans')
+    case 'source-sans':
+      return t('Source Sans 3', 'Source Sans 3')
+    case 'geist':
+      return t('Geist', 'Geist')
+    case 'nunito-sans':
+      return t('Nunito Sans', 'Nunito Sans')
+    case 'noto-serif-sc':
+      return t('Noto Serif SC（思源宋体）', 'Noto Serif SC')
+    case 'zcool-xiaowei':
+      return t('站酷小薇', 'ZCOOL XiaoWei')
+    case 'zcool-qingke':
+      return t('站酷庆科黄油体', 'ZCOOL QingKe HuangYou')
+    case 'system':
+      return t('操作系统界面（苹方 / 微软雅黑）', 'OS interface (PingFang / YaHei / system UI)')
+    default:
+      return t('Inter + Noto Sans SC（产品默认）', 'Inter + Noto Sans SC (product default)')
+  }
+}
 
 type SettingsNotice = { tone: 'ok' | 'error'; text: string }
 type PendingCustomRelay = { id: string; config: ProviderConfig }
@@ -373,6 +408,67 @@ export default function SettingsPage({
                           { value: 'en', label: 'English' },
                         ]}
                         onChange={value => void store.changeLocale(value)}
+                      />
+                    )}
+                  />
+                </SettingsSection>
+                <SettingsSection title={t('字体', 'Fonts')}>
+                  <SettingsRow
+                    label={t('界面字体', 'Interface font')}
+                    trailing={(
+                      <SettingsGhostPicker
+                        value={normalizeUiFontPreset(working.ui_font)}
+                        ariaLabel={t('界面字体', 'Interface font')}
+                        wide
+                        options={UI_FONT_PRESET_IDS.map(id => ({
+                          value: id,
+                          label: uiFontPresetLabel(id),
+                        }))}
+                        onChange={value => void store.changeUiFont(value)}
+                      />
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('界面字号', 'Interface size')}
+                    trailing={(
+                      <SettingsGhostPicker
+                        value={normalizeUiFontSize(working.ui_font_size)}
+                        ariaLabel={t('界面字号', 'Interface size')}
+                        options={UI_FONT_SIZE_IDS.map(id => ({
+                          value: id,
+                          label: id,
+                        }))}
+                        onChange={value => void store.changeUiFontSize(value)}
+                      />
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('对话字体', 'Conversation font')}
+                    trailing={(
+                      <SettingsGhostPicker
+                        value={normalizeUiFontPreset(working.conversation_font)}
+                        ariaLabel={t('对话字体', 'Conversation font')}
+                        wide
+                        options={UI_FONT_PRESET_IDS.map(id => ({
+                          value: id,
+                          label: uiFontPresetLabel(id),
+                        }))}
+                        onChange={value => void store.changeConversationFont(value)}
+                      />
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('对话字号', 'Conversation size')}
+                    divider={false}
+                    trailing={(
+                      <SettingsGhostPicker
+                        value={normalizeUiFontSize(working.conversation_font_size)}
+                        ariaLabel={t('对话字号', 'Conversation size')}
+                        options={UI_FONT_SIZE_IDS.map(id => ({
+                          value: id,
+                          label: id,
+                        }))}
+                        onChange={value => void store.changeConversationFontSize(value)}
                       />
                     )}
                   />
@@ -1385,6 +1481,12 @@ function createSettingsStore(
       ensureAccountRoute()
       alignDefaultModelToEnabledServices()
       applyUiLocale(s.working.locale)
+      applyUiFonts({
+        uiFont: s.working.ui_font,
+        conversationFont: s.working.conversation_font,
+        uiFontSize: s.working.ui_font_size,
+        conversationFontSize: s.working.conversation_font_size,
+      })
     }
   }
 
@@ -2851,6 +2953,34 @@ function createSettingsStore(
     await save()
   }
 
+  async function changeUiFont(value: unknown) {
+    const uiFont = normalizeUiFontPreset(value)
+    patchWorking(working => { working.ui_font = uiFont })
+    applyUiFonts({ uiFont })
+    await save()
+  }
+
+  async function changeConversationFont(value: unknown) {
+    const conversationFont = normalizeUiFontPreset(value)
+    patchWorking(working => { working.conversation_font = conversationFont })
+    applyUiFonts({ conversationFont })
+    await save()
+  }
+
+  async function changeUiFontSize(value: unknown) {
+    const uiFontSize = normalizeUiFontSize(value)
+    patchWorking(working => { working.ui_font_size = uiFontSize })
+    applyUiFonts({ uiFontSize })
+    await save()
+  }
+
+  async function changeConversationFontSize(value: unknown) {
+    const conversationFontSize = normalizeUiFontSize(value)
+    patchWorking(working => { working.conversation_font_size = conversationFontSize })
+    applyUiFonts({ conversationFontSize })
+    await save()
+  }
+
   async function loadUserArtifactDirectory() {
     if (!hasDesktopRuntime()) return
     try {
@@ -2922,6 +3052,10 @@ function createSettingsStore(
     setCustomModelInput,
     selectCategory,
     changeLocale,
+    changeUiFont,
+    changeConversationFont,
+    changeUiFontSize,
+    changeConversationFontSize,
     formatBytes,
     databaseVersionText,
     formatBuildTrackingText,

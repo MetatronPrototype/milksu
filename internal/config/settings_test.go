@@ -110,6 +110,10 @@ func TestStorePersistsLocaleKernelAndActiveModel(t *testing.T) {
 	settings.Locale = &locale
 	settings.DefaultKernel = "dsh"
 	settings.BusySend = "queue"
+	settings.UiFont = "geist"
+	settings.ConversationFont = "noto-serif-sc"
+	settings.UiFontSize = "15"
+	settings.ConversationFontSize = "12"
 	settings.ActiveProvider = presetDeepSeekServiceID
 	settings.ActiveModel = "deepseek-v4-pro"
 	if err := store.Save(settings); err != nil {
@@ -130,8 +134,32 @@ func TestStorePersistsLocaleKernelAndActiveModel(t *testing.T) {
 	if got.BusySend != "queue" {
 		t.Fatalf("busy send did not persist: %q", got.BusySend)
 	}
+	if got.UiFont != "geist" || got.ConversationFont != "noto-serif-sc" {
+		t.Fatalf("fonts did not persist: %q / %q", got.UiFont, got.ConversationFont)
+	}
+	if got.UiFontSize != "15" || got.ConversationFontSize != "12" {
+		t.Fatalf("font sizes did not persist: %q / %q", got.UiFontSize, got.ConversationFontSize)
+	}
 	if got.ActiveProvider != presetDeepSeekServiceID || got.ActiveModel != "deepseek-v4-pro" {
 		t.Fatalf("active model did not persist: %s/%s", got.ActiveProvider, got.ActiveModel)
+	}
+}
+
+func TestNormalizeUiFontSizeUsesConcretePixels(t *testing.T) {
+	if got := NormalizeUiFontSize("15px"); got != "15" {
+		t.Fatalf("15px: %q", got)
+	}
+	if got := NormalizeUiFontSize("16"); got != "16" {
+		t.Fatalf("16: %q", got)
+	}
+	if got := NormalizeUiFontSize("large"); got != "13" {
+		t.Fatalf("invalid preset: %q", got)
+	}
+	if got := NormalizeUiFontSize("10"); got != "13" {
+		t.Fatalf("below range: %q", got)
+	}
+	if got := NormalizeUiFontSize("19"); got != "13" {
+		t.Fatalf("above range: %q", got)
 	}
 }
 

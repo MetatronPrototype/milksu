@@ -52,6 +52,7 @@
 - DSH `0.1.6-alpha.1`、产品回归 `npm run test:product-loop`、`desktop-surface`（Computer Use 优先，不可用降级隔离浏览器）均未进安装包。不要把 `test:dsh-complete-loop` 当主入口。工作树打包已把 DSH host plugin 打成独立 ESM（`bundleDshHostPlugin`；Sidecar `package.json` 是 CommonJS，不能只拷 `host-plugin.mjs` 再 import `permission.js`），下一包装才会进安装包。产品回归 CDP 只附着产品主窗，不附着标题带 fixture 的隔离浏览器页。
 - DSH host plugin 不再 required-inject `agents` / `compaction`（会话回收会卸 fiber，`ctx.effect` / `ctx.on` 在 inactive context 上炸成 ACP `Internal error: cannot create effect on inactive context`）。IPC listen 与 subagent 订阅只在 fiber 还能挂 effect 时注册；dispatch 用 `ctx.get()`。工作树已修，本地 adhoc `desktop:build` 已打进 `MilkSU.app`；GitHub 安装包尚未含此修复。
 - 设置占用原侧栏并即时落盘、居中命令面板、作曲栏模型/Git 芯片已进 `main`，未进安装包。
+- 设置 → 通用「界面字体 / 界面字号 / 对话字体 / 对话字号」：出厂仍是 Inter + Noto Sans SC、字号 13px。字族另可选 Inter、Noto Sans SC、IBM Plex Sans、Source Sans 3、Geist、Nunito Sans、Noto Serif SC、站酷小薇、站酷庆科黄油体、操作系统界面（苹方 / 微软雅黑）。字号是 11–18 的具体 px，不是小/中/大；界面和对话各自可调。改完即时套到 `--font-sans` / `--font-conversation` 和 `--ui-font-size` / `--conversation-font-size`，并落盘。未进安装包。
 - 正式版与同通道 adhoc Stable 共用 Electron userData；主题 `light` / `dark` 就是外观。工作树已用阻塞 `theme-boot.js` 在打包 CSS 前套存储值，并把 `nativeTheme.themeSource` 钉到同一 mode，避免设置页跟系统 `prefers-color-scheme` 反转；亮色 `--hover-2` 加深以便能看见。未进安装包。未改 AGENTS.md 设计语言。
 - 新对话未发送前，作曲栏草稿和模型/运行时/项目芯片跟空会话走：去设置或其他页再回来仍在。未进安装包。
 - DSH 发送消息只复用已打开的隔离浏览器，不再 Ensure；问候 / 闲聊不会弹右栏。未进安装包。
