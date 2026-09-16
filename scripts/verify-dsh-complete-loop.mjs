@@ -756,11 +756,41 @@ async function runGuiTasks(options) {
 
     const runTask = async (id, title, prompt, beforeSend, evaluate) => {
       console.log(`TASK ${id} start ${title}`)
-      const conversationId = await driver.createKernelConversation(workspace.root, `DSH ${title}`)
-      await driver.drainEvents(conversationId)
+      let conversationId = ''
       try {
+        conversationId = await driver.createKernelConversation(workspace.root, `DSH ${title}`)
+        await driver.drainEvents(conversationId)
         if (beforeSend) await beforeSend(conversationId)
         await driver.sendMessage(conversationId, prompt, workspace.root)
+        const turn = await driver.waitForTurn(conversationId, options.taskTimeoutMs)
+        await driver.abortMessage(conversationId)
+        const toolNames = collectToolNames(turn.events)
+        const verdict = await evaluate({
+          events: turn.events,
+          toolNames,
+          timeout: turn.timeout,
+          error: turn.error,
+        })
+        const task = {
+          id,
+          title,
+          prompt,
+          conversationId,
+          result: verdict.result,
+          detail: verdict.detail,
+          timeout: Boolean(turn.timeout),
+          error: turn.error || '',
+          toolNames,
+          approvals: approvalEvents(turn.events).map(event => ({
+            type: eventType(event),
+            toolName: eventToolName(event),
+          })),
+          sessionErrors: sessionErrors(turn.events),
+          assistantSummary: assistantSummary(turn.events),
+          approvalClass: verdict.approvalClass || '',
+        }
+        receipt.tasks.push(task)
+        console.log(`TASK ${id} ${task.result} ${task.detail}`)
       } catch (error) {
         const message = redactProcessText(error instanceof Error ? error.message : error, 400)
         receipt.tasks.push({
@@ -777,37 +807,8 @@ async function runGuiTasks(options) {
           sessionErrors: [message],
           assistantSummary: '',
         })
-        return
+        console.log(`TASK ${id} FAIL ${message}`)
       }
-      const turn = await driver.waitForTurn(conversationId, options.taskTimeoutMs)
-      await driver.abortMessage(conversationId)
-      const toolNames = collectToolNames(turn.events)
-      const verdict = await evaluate({
-        events: turn.events,
-        toolNames,
-        timeout: turn.timeout,
-        error: turn.error,
-      })
-      const task = {
-        id,
-        title,
-        prompt,
-        conversationId,
-        result: verdict.result,
-        detail: verdict.detail,
-        timeout: Boolean(turn.timeout),
-        error: turn.error || '',
-        toolNames,
-        approvals: approvalEvents(turn.events).map(event => ({
-          type: eventType(event),
-          toolName: eventToolName(event),
-        })),
-        sessionErrors: sessionErrors(turn.events),
-        assistantSummary: assistantSummary(turn.events),
-        approvalClass: verdict.approvalClass || '',
-      }
-      receipt.tasks.push(task)
-      console.log(`TASK ${id} ${task.result} ${task.detail}`)
     }
 
     await runTask('A', '仓库只读+小改', TASK_A_PROMPT, null, async ({ toolNames, timeout, events }) => {

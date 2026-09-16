@@ -276,20 +276,33 @@ export class GuiDriver {
 
   async ensureAttached() {
     if (this.cdpAlive()) return true
-    this.target = await findDesktopCdpTarget()
-    if (!this.target) return false
-    return this.bindRuntime()
+    const deadline = Date.now() + 8_000
+    while (Date.now() <= deadline) {
+      this.target = await findDesktopCdpTarget()
+      if (this.target && await this.bindRuntime()) return true
+      await delay(400)
+    }
+    return false
   }
 
   async invoke(method, args) {
-    if (!await this.ensureAttached()) {
-      throw new Error('CDP WebSocket closed')
-    }
     const encoded = JSON.stringify(args ?? [])
-    return this.cdp.evaluate(
+    const run = () => this.cdp.evaluate(
       `window.milksu.invoke(${JSON.stringify(method)}, ${encoded})`,
       true,
     )
+    if (!await this.ensureAttached()) {
+      throw new Error('CDP WebSocket closed')
+    }
+    try {
+      return await run()
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error)
+      if (!/CDP WebSocket closed|CDP Runtime\.evaluate timed out/i.test(text)) throw error
+      this.cdp.closed = true
+      if (!await this.ensureAttached()) throw error
+      return run()
+    }
   }
 
   async drainEvents(conversationId) {
