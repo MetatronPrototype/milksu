@@ -63,3 +63,5 @@ export function useDossierSplit(storageKey: string, defaultWidth = 400) {
     startResize,
   }
 }
+
+export { useDossierSplit as createDossierSplit }

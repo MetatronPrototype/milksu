@@ -32,11 +32,11 @@ import WorkspaceModuleTopBar from '@/components/WorkspaceModuleTopBar'
 import { invokeCommand } from '@/desktop'
 import { labScopeLabel, type LabJob, type LabScope } from '@/composables/useLabJobs'
 import { useLabJobs } from '@/stores/labJobsStore'
-import { toStripLease, useEnvLease } from '@/composables/useEnvLease'
+import { createEnvLease, toStripLease } from '@/composables/useEnvLease'
 import type { EnvChallenge, EnvLease, EnvPackage } from '@/envbroker'
 import EnvironmentStrip from '@/components/lab-env/EnvironmentStrip'
 import TargetLivePane from '@/components/lab-env/TargetLivePane'
-import { useDossierSplit } from '@/lib/useDossierSplit'
+import { createDossierSplit } from '@/lib/useDossierSplit'
 import { groupLabPackages, type LabPackageCategory } from '@/lib/labPackageCategory'
 import type { CodingAgentSendArgs, CodingAgentSurfaceBind } from '@/lib/codingAgentSurface'
 import { useT } from '@/hooks/useUiLocale'
@@ -206,12 +206,12 @@ export default function LabPage({
   const selectedId = jobsStore.selectedId
   const selected = jobsStore.selected
   const lab = useStoreRuntime(() => {
-    const env = useEnvLease(
+    const env = createEnvLease(
       () => 'lab',
       () => jobsStore.selected?.id ?? '',
       () => jobsStore.selected?.packageId,
     )
-    const split = useDossierSplit('milksu.lab-split.v1', 400)
+    const split = createDossierSplit('milksu.lab-split.v1', 400)
     return {
       store: env.store,
       jobsStore,

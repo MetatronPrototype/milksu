@@ -617,6 +617,8 @@ export function useModelCatalog(scope?: ModelCatalogScopeInput) {
   }
 }
 
+export { useModelCatalog as createModelCatalog }
+
 export function useLiveModelCatalog(scope?: ModelCatalogScopeInput) {
   useStore(modelCatalogStore)
   return useModelCatalog(scope)

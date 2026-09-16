@@ -34,7 +34,7 @@ import WorkspaceModuleTopBar from '@/components/WorkspaceModuleTopBar'
 import EnvironmentStrip from '@/components/lab-env/EnvironmentStrip'
 import TargetLivePane from '@/components/lab-env/TargetLivePane'
 import { invokeCommand } from '@/desktop'
-import { toStripLease, useEnvLease } from '@/composables/useEnvLease'
+import { createEnvLease, toStripLease } from '@/composables/useEnvLease'
 import type { EnvPackage } from '@/envbroker'
 import { useVulnerabilityDashboard, type VulnerabilityCodingTask, type VulnerabilityDashboard, type VulnerabilitySearchCandidate } from '@/composables/useVulnerabilityDashboard'
 import type { Conversation } from '@/types'
@@ -43,7 +43,7 @@ import { vulnerabilityStatusLabel, type VulnerabilityIntel, type VulnerabilitySe
 import { ALL_COLLECTIONS_ID, createItemCollectionStore } from '@/lib/itemCollections'
 import { conversationActivityAt } from '@/lib/workspaceSessionRouting'
 import { presentVulnerabilityVendorProduct } from '@/lib/vulnerabilityFeedImport'
-import { useDossierSplit } from '@/lib/useDossierSplit'
+import { createDossierSplit } from '@/lib/useDossierSplit'
 import { useT } from '@/hooks/useUiLocale'
 
 export default function VulnPage({
@@ -154,7 +154,7 @@ export default function VulnPage({
   onOpenLabSettings?: () => void
 }) {
   const t = useT()
-  const localDashboard = useStoreRuntime(() => useVulnerabilityDashboard())
+  const localDashboard = useStoreRuntime(useVulnerabilityDashboard)
   const dashboard = dashboardProp ?? localDashboard
   const tracked = dashboard.tracked
   const query = dashboard.query
@@ -165,8 +165,8 @@ export default function VulnPage({
   const env = useStoreRuntime(() => {
     let ownerId = ''
     let packageId: string | undefined
-    const lease = useEnvLease(() => 'cve', () => ownerId, () => packageId)
-    const split = useDossierSplit('milksu.cve-split.v1', 400)
+    const lease = createEnvLease(() => 'cve', () => ownerId, () => packageId)
+    const split = createDossierSplit('milksu.cve-split.v1', 400)
     return {
       store: lease.store,
       get ownerId() { return ownerId },

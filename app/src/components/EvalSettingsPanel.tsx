@@ -18,7 +18,7 @@ import {
   encodePickerSelection,
   modelCatalogStore,
   parsePickerSelection,
-  useModelCatalog,
+  createModelCatalog,
 } from '@/modelCatalog'
 import { useT } from '@/hooks/useUiLocale'
 import type { AppSettings } from '@/types'
@@ -115,7 +115,7 @@ export default function EvalSettingsPanel({
         store.setState({ error: value })
       },
     }
-    const catalog = useModelCatalog(() => ({
+    const catalog = createModelCatalog(() => ({
       providers: s.settingsRef?.providers ?? {},
       relay: s.settingsRef?.relay ?? null,
     }))

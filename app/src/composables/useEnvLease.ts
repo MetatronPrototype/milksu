@@ -192,3 +192,5 @@ export function useEnvLease(
     unmount,
   }
 }
+
+export { useEnvLease as createEnvLease }

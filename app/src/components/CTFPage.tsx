@@ -222,14 +222,14 @@ export default function CTFPage({
   onEditQueuedGuidance?: (index: number) => void
 }) {
   const t = useT()
-  const backend = useStoreRuntime(() => useCTFWorkspace())
-  const platformRegistry = useStoreRuntime(() => useCTFTrainingPlatforms())
-  const publicProblems = useStoreRuntime(() => useNSSCTFChallenges())
-  const arena = useStoreRuntime(() => useNSSCTFArena())
-  const webBridge = useStoreRuntime(() => useNSSCTFWebBridge())
-  const training = useStoreRuntime(() => useNSSCTFTraining())
-  const publicCatalog = useStoreRuntime(() => useNSSCTFCatalog())
-  const ctfshow = useStoreRuntime(() => useCTFShowCatalog())
+  const backend = useStoreRuntime(useCTFWorkspace)
+  const platformRegistry = useStoreRuntime(useCTFTrainingPlatforms)
+  const publicProblems = useStoreRuntime(useNSSCTFChallenges)
+  const arena = useStoreRuntime(useNSSCTFArena)
+  const webBridge = useStoreRuntime(useNSSCTFWebBridge)
+  const training = useStoreRuntime(useNSSCTFTraining)
+  const publicCatalog = useStoreRuntime(useNSSCTFCatalog)
+  const ctfshow = useStoreRuntime(useCTFShowCatalog)
   const ctfCollections = useStoreRuntime(() => createItemCollectionStore('milksu.ctf.collections.v1'))
 
   const jobs = backend.jobs

@@ -24,7 +24,7 @@ import type { EnvironmentLease, TargetSurfaceKind } from '@/lib/environmentTypes
 import type { AccountStatus } from '@/types'
 import type { ThemeMode } from '@/lib/themeMode'
 import { groupLabPackages } from '@/lib/labPackageCategory'
-import { useDossierSplit } from '@/lib/useDossierSplit'
+import { createDossierSplit } from '@/lib/useDossierSplit'
 import type { AppSection, WorkspaceSection } from '@/lib/workspaceNavigation'
 import { useT } from '@/hooks/useUiLocale'
 
@@ -83,7 +83,7 @@ function juiceReadyLease(t: (zh: string, en: string) => string): EnvironmentLeas
 
 export default function LabEnvironmentPreview() {
   const t = useT()
-  const split = useStoreRuntime(() => useDossierSplit('milksu.preview-split.v1', 400))
+  const split = useStoreRuntime(() => createDossierSplit('milksu.preview-split.v1', 400))
   const briefWidth = split.width
 
   const [themeMode, setThemeMode] = useState<ThemeMode>('dark')

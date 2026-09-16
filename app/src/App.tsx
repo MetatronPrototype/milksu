@@ -187,7 +187,7 @@ export default function App() {
     && new URLSearchParams(location.search).get('open-settings') === 'plugins',
   ).current
   const conversations = useConversations()
-  const vulnerabilityDashboard = useStoreRuntime(() => useVulnerabilityDashboard())
+  const vulnerabilityDashboard = useStoreRuntime(useVulnerabilityDashboard)
   const labJobs = useLabJobs()
   useStore(labJobs.store)
 
