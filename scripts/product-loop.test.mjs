@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { EventEmitter } from 'node:events'
-import { GuiDriver, isMilkSUPage, killProcessGroup } from './lib/desktop-gui-driver.mjs'
+import { CdpSession, GuiDriver, isMilkSUPage, killProcessGroup } from './lib/desktop-gui-driver.mjs'
 import {
   pickComputerUseTarget,
   usedComputerUseTools,
@@ -89,6 +89,22 @@ test('GuiDriver.abortMessage is a no-op without a conversation id', async () => 
   }
   await driver.abortMessage('conversation-1')
   assert.equal(called, 'AbortMessage:conversation-1')
+})
+
+test('CdpSession send fails fast when the desktop socket is already gone', async () => {
+  const session = new CdpSession('ws://127.0.0.1:9')
+  session.closed = true
+  await assert.rejects(session.send('Runtime.evaluate'), /CDP WebSocket closed/)
+})
+
+test('CdpSession close rejects in-flight evaluates instead of hanging', async () => {
+  const session = new CdpSession('ws://127.0.0.1:9')
+  const pending = new Promise((resolve, reject) => {
+    session.pending.set(1, { resolve, reject })
+  })
+  session.close()
+  await assert.rejects(pending, /CDP WebSocket closed/)
+  assert.equal(session.pending.size, 0)
 })
 
 test('killProcessGroup is a no-op for an already-exited child', () => {

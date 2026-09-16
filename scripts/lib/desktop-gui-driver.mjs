@@ -112,12 +112,22 @@ export async function findDesktopCdpTarget() {
   return null
 }
 
+export const CDP_EVAL_TIMEOUT_MS = 15_000
+export const CDP_INVOKE_TIMEOUT_MS = 60_000
+
 export class CdpSession {
   constructor(webSocketDebuggerUrl) {
     this.url = webSocketDebuggerUrl
     this.ws = null
     this.nextId = 1
     this.pending = new Map()
+    this.closed = false
+  }
+
+  rejectPending(error) {
+    const pending = [...this.pending.values()]
+    this.pending.clear()
+    for (const waiter of pending) waiter.reject(error)
   }
 
   async open() {
@@ -142,23 +152,53 @@ export class CdpSession {
       if (payload.error) waiter.reject(new Error(payload.error.message || 'CDP error'))
       else waiter.resolve(payload.result)
     })
+    this.ws.addEventListener('close', () => {
+      this.closed = true
+      this.rejectPending(new Error('CDP WebSocket closed'))
+    })
+    this.ws.addEventListener('error', () => {
+      this.closed = true
+      this.rejectPending(new Error('CDP WebSocket failed'))
+    })
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = CDP_EVAL_TIMEOUT_MS) {
     const id = this.nextId
     this.nextId += 1
     return new Promise((resolveSend, rejectSend) => {
-      this.pending.set(id, { resolve: resolveSend, reject: rejectSend })
+      if (this.closed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        rejectSend(new Error('CDP WebSocket closed'))
+        return
+      }
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return
+        this.pending.delete(id)
+        rejectSend(new Error(`CDP ${method} timed out`))
+      }, timeoutMs)
+      this.pending.set(id, {
+        resolve: value => {
+          clearTimeout(timer)
+          resolveSend(value)
+        },
+        reject: error => {
+          clearTimeout(timer)
+          rejectSend(error)
+        },
+      })
       this.ws.send(JSON.stringify({ id, method, params }))
     })
   }
 
   async evaluate(expression, awaitPromise = false) {
-    const result = await this.send('Runtime.evaluate', {
-      expression,
-      awaitPromise,
-      returnByValue: true,
-    })
+    const result = await this.send(
+      'Runtime.evaluate',
+      {
+        expression,
+        awaitPromise,
+        returnByValue: true,
+      },
+      awaitPromise ? CDP_INVOKE_TIMEOUT_MS : CDP_EVAL_TIMEOUT_MS,
+    )
     if (result?.exceptionDetails) {
       throw new Error(result.exceptionDetails.text || 'renderer evaluate failed')
     }
@@ -166,6 +206,8 @@ export class CdpSession {
   }
 
   close() {
+    this.closed = true
+    this.rejectPending(new Error('CDP WebSocket closed'))
     try {
       this.ws?.close()
     } catch {
