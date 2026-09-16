@@ -214,6 +214,7 @@ function createMockConversations() {
     branchFromAssistant: vi.fn(),
     setKernel: vi.fn(),
     setDefaultKernel: vi.fn(),
+    setBusySend: vi.fn(),
     setModelSelection: vi.fn(),
     setThinkingLevel: vi.fn(),
     setModelSourcePreference: vi.fn(),
