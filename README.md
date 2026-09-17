@@ -9,14 +9,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.1"><img src="https://img.shields.io/badge/latest_release-26.917.1-f3f0e8?style=flat-square&labelColor=20211f" alt="Latest GitHub Release 26.917.1"></a>
+  <a href="https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.3"><img src="https://img.shields.io/badge/latest_release-26.917.3-f3f0e8?style=flat-square&labelColor=20211f" alt="Latest GitHub Release 26.917.3"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square&labelColor=20211f" alt="AGPL-3.0-only"></a>
   <img src="https://img.shields.io/badge/platform-macOS_Windows_Linux-f3f0e8?style=flat-square&labelColor=20211f" alt="macOS, Windows and Linux">
   <img src="https://img.shields.io/badge/desktop-Electron_%2B_React_%2B_Go-f3f0e8?style=flat-square&labelColor=20211f" alt="Electron, React and Go">
 </p>
 
 <p align="center">
-  <a href="https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.1">下载 26.917.1</a>
+  <a href="https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.3">下载 26.917.3</a>
   ·
   <a href="https://github.com/MilkSU-Official/milksu/releases">全部发行</a>
   ·
@@ -27,15 +27,15 @@
 
 ![MilkSU Coding 工作台](docs/media/readme-coding.png)
 
-MilkSU 把 Coding、CTF、CVE 和实验室放进同一个桌面。Agent 读项目、改文件、跑测试；也可以对着一道题、一个 CVE 或一次实验室作业，把题面、材料、过程和产物留在同一条可回看的任务里。
+MilkSU 把 Coding、CTF、CVE 和实验室放进同一个桌面。界面是 React + shadcn。Agent 读项目、改文件、跑测试；也可以对着一道题、一个 CVE 或一次实验室作业，把题面、材料、过程和产物留在同一条可回看的任务里。
 
-它不是只有输入框的聊天客户端。项目文件、内置浏览器、你选定的真实浏览器标签页、外部桌面应用，都可以成为当前任务的一部分。你可以随时看、补一句、接管或停掉。
+它不是只有输入框的聊天客户端。项目文件、内置浏览器、你选定的真实浏览器标签页、外部桌面应用，都可以成为当前任务的一部分。你可以随时看、补一句、接管或停掉。新对话默认用 Pi，也可以选 DeepSeek Harness。已登录后侧栏「更新」会打开进度框；下完并校验后，再点安装并重启。
 
 ## 能做什么
 
 ### Coding
 
-打开仓库，让 Agent 改代码、构建、测试、审阅。会话能改名、归档、恢复；回到 Coding 接着上次，不必每次从空白草稿开始。输入框旁有上下文用量；接近窗口约 80% 且空闲时会自动整理。执行范围用 Plan / Go，以及只读、请求批准、替我审批、完全访问。
+打开仓库，让 Agent 改代码、构建、测试、审阅。会话能改名、归档、恢复；回到 Coding 接着上次，不必每次从空白草稿开始。输入框旁有上下文用量；接近窗口约 80% 且空闲时会自动整理。整理上下文或接到新会话时，短会话不再报错；新会话铺上一会话原文或 harness 摘要。执行范围用 Plan / Go，以及只读、请求批准、替我审批、完全访问。
 
 ### CTF
 
@@ -85,7 +85,7 @@ MilkSU 把 Coding、CTF、CVE 和实验室放进同一个桌面。Agent 读项�
 
 ## 安装
 
-当前安装包是 **[26.917.1](https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.1)**：macOS ARM64 DMG（Developer ID 签名并公证）、Windows x64 EXE、Linux x64 `.deb` 与 `.tar.gz`。Windows 安装器尚未代码签名，可能被 SmartScreen 拦住。已登录后可从侧栏下载本机更新。
+当前安装包是 **[26.917.3](https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.3)**：macOS ARM64 DMG（Developer ID 签名并公证，安装引导图为 Retina @2x）、Windows x64 EXE、Linux x64 `.deb` 与 `.tar.gz`。Windows 安装器尚未代码签名，可能被 SmartScreen 拦住。已登录后侧栏「更新」打开进度框下载，下完后点安装并重启。
 
 | 系统 | 安装包 | Computer Use | Browser Use |
 | --- | --- | --- | --- |
@@ -98,7 +98,7 @@ Linux 只发两份包：Ubuntu / Debian 用 `.deb`，Omarchy / Arch / NixOS 用�
 
 ```bash
 # Ubuntu / Debian
-sudo apt install ./MilkSU-Linux-x64-26.917.1.deb
+sudo apt install ./MilkSU-Linux-x64-26.917.3.deb
 
 # Omarchy / Arch：用仓库 packaging/linux/PKGBUILD.in，填版本与 sha256 后
 makepkg -si

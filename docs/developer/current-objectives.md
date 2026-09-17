@@ -26,23 +26,23 @@
 | 阶段 | 内测迭代 / Agent Runtime 与跨平台发行收敛。不再按 M3/M4 组织。 |
 | 历史基线 | M3 product-loop 已在 `108e0e3`（2026-08-05）合并，仅供追溯。 |
 | 当前开发 | 新对话可选 Pi 或 DeepSeek Harness；设置 → 模型「默认运行时」只改新对话 kernel，不改写旧会话。出厂默认官方 DeepSeek Flash、默认运行时 Pi。工作树 DSH 钉 `0.1.6-alpha.1`（内核，不是 UI 参考；原厂 GUI 是 `dsh web`）。Pi 子 Agent 默认主工作区、父回合阻塞；DSH 可在 Multitask 下用 ACP `session/new` 开子会话并继续主对话。Working 短胶囊对 Pi / DSH 同一套信息架构。Computer Use 由模型列窗 / 认窗 / 锁定。产品回归入口 `npm run test:product-loop`。产品 UI 语言和工作树 renderer 是 React + shadcn，见 `AGENTS.md`。未做：新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。宽作业用 `recon-authorized-target` Skill，不造 typed sweep。 |
-| 平台边界 | macOS DMG 签名公证；Windows 安装器未代码签名，打入 CUA Driver `0.27.0`；Linux 发共用 DEB 与 tarball，GNOME Portal 已进包，无 Secret Service / 本地 OCR；Hyprland/Xorg Computer Use 不可用。Windows/Linux 窗口铬尚未真机验收。安装包见 README。 |
+| 平台边界 | macOS DMG 签名公证，安装引导图为 1x + @2x HiDPI TIFF；Windows 安装器未代码签名，打入 CUA Driver `0.27.0`；Linux 发共用 DEB 与 tarball，GNOME Portal 已进包，无 Secret Service / 本地 OCR；Hyprland/Xorg Computer Use 不可用。Windows/Linux 窗口铬尚未真机验收。安装包见 README。 |
 | 发行流水 | 干净已推送的 `main` 上跑一次 canonical 验证；三端走 GitHub-hosted。`macos-release` 仅限 `main`，dispatch 后立即签名。正式包装 OTA 到私有 R2 并发布 current pointer；GitHub Release 不上 updater ZIP。 |
 
 ## 已发行
 
 更早的 tag 见 [GitHub Releases](https://github.com/MilkSU-Official/milksu/releases)，本页不复述。
 
-最近一次正式包装源 `bd3199c7`（`26.917.1`）：整理上下文 / 接到新会话短会话不再失败，新会话铺原文或 harness 摘要；DSH 打 TokenFlux 保留厂商前缀；出厂默认运行时 Pi；Windows 上 DSH 操作内置浏览器不再把进程打死。Windows 安装器仍未代码签名。
+最近一次正式包装源 `d3ee32bd`（`26.917.3`）：侧栏「更新」打开进度框下载，下完后用户点安装并重启；macOS DMG 安装引导图为 Retina @2x。一并打进：整理上下文 / 接到新会话短会话不再失败；DSH 打 TokenFlux 保留厂商前缀；出厂默认运行时 Pi。Windows 安装器仍未代码签名。`26.917.2` 没有 GitHub Release。
 
-发行页：<https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.1>
+发行页：<https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.3>
 
 | 平台 | Workflow | 安装包 | 大小 | SHA-256 |
 | --- | --- | --- | ---: | --- |
-| macOS ARM64 | `35197857407` | `MilkSU-macOS-arm64-26.917.1.dmg` | 329,034,308 B | `077881adaf9658eee2aa3faeadc4fc0af45daf4be9f6f66fa43d1da1fbd75771` |
-| Windows x64 | `35197861113` | `MilkSU-Windows-x64-26.917.1-Setup.exe` | 263,090,915 B | `5d8b0b8abaf4139e2e8c23868be7ebb272ff09b70300a54c9f1c062592cc7ad5` |
-| Linux x64 DEB | `35197870733` | `MilkSU-Linux-x64-26.917.1.deb` | 236,970,528 B | `143a8135e1058438382edea68f37909af686dd37f06ff462a3fea36012d507e7` |
-| Linux x64 tarball | `35197870733` | `MilkSU-Linux-x64-26.917.1.tar.gz` | 290,171,751 B | `2fc9837153c3b583422c32525c2d8df79d9c115435665441257acb29df44a79e` |
+| macOS ARM64 | `35205819724` | `MilkSU-macOS-arm64-26.917.3.dmg` | 329,693,780 B | `fc24f9bf907bfdbddccda796072c84cf013b5f1683df9ae6f0055af0c26ae792` |
+| Windows x64 | `35205823589` | `MilkSU-Windows-x64-26.917.3-Setup.exe` | 263,093,940 B | `7db65b8dd7dbaa8638a3bbfee54253039e3531720aa3db58fa59ac7325fb1104` |
+| Linux x64 DEB | `35205827853` | `MilkSU-Linux-x64-26.917.3.deb` | 236,968,756 B | `67e539cdee66fe798ebb05fae4eb75efb5d311d4f3f525a2adfdb6d89df66fcf` |
+| Linux x64 tarball | `35205827853` | `MilkSU-Linux-x64-26.917.3.tar.gz` | 290,175,038 B | `c2ae0a3ea47b9ece37fe0da7a0475afec0dbd55a3546f573199ffa8bc793da73` |
 
 ## 未打进 GitHub 安装包
 
