@@ -889,6 +889,16 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const chatTranscript = useMemo(() => (
     buildChatTranscript(conversation?.messages ?? [], running)
   ), [conversation?.messages, running])
+  // 跟随输出增长用的康价指纹。一轮里的正文和工具块都挂在**同一条** assistant 消息下，
+  // 所以 messages.length 不变而内容在涨；只看条数的话视图会停在原处，
+  // 读者看到一片空白，会以为“它没动静”（用户实测就是这个现象）。
+  const transcriptContentRevision = useMemo(() => (
+    chatTranscript.map(block => (
+      block.kind === 'message'
+        ? `${block.message.id}:${block.message.content?.length ?? 0}`
+        : block.kind
+    )).join('|')
+  ), [chatTranscript])
   chatTranscriptLengthRef.current = chatTranscript.length
   const recoverableFailureId = useMemo(() => (
     recoverableAgentFailureId(conversation?.messages ?? [], running)
@@ -2347,6 +2357,13 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   useEffect(() => {
     void scrollChatToBottom()
   }, [conversation?.messages.length, conversation?.id, ctfSession, vulnerabilitySession])
+
+  // 内容增长（不只是消息条数变化）也要跟随。不跟随的话，输出在往下长、视图不动，
+  // 中间那段空白看起来就像“引擎没响应”。scrollChatToBottom 自己会先判断是否
+  // 还贴着底部（chatAutoScrollPinned），用户手动往上滚之后不会把他拽回去。
+  useEffect(() => {
+    void scrollChatToBottom()
+  }, [transcriptContentRevision])
 
   const skipDomainPanelReset = useRef(true)
   useEffect(() => {
