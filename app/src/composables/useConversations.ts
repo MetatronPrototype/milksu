@@ -1233,6 +1233,45 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     const at = heartbeatAtByConversation.get(id) ?? 0
     return at > 0 && Date.now() - at < ENGINE_HEARTBEAT_GRACE_MS
   })
+
+  // ---- E 队列可见性（搬运自本地分支）----
+  // 一个 sidecar 是每 (内核, 工作区) 一个进程：两个对话共用同一个 sidecar 就不能同时跑回合，
+  // 后到的那个是在排队——那不是“连接丢了”。
+  function sidecarKeyOf(conversation: Conversation): string {
+    const workspace = String(conversation.workspacePath ?? '').trim().replace(/\/+$/, '')
+    if (!workspace) return ''
+    return `${normalizeAgentKernel(conversation.kernel)}\u0000${workspace}`
+  }
+  // 引擎真的开始答这个对话派发的回合了：至少有一个事件落在 runStartedAt 之后。
+  // 派发了但还没有事件，就是还在等 sidecar —— 排队的特征。
+  function turnOwnsSidecar(conversationId: string): boolean {
+    const startedAt = s.turnStatusById.get(conversationId)?.runStartedAt
+    if (startedAt === undefined) return false
+    return lastEventForConversation(conversationId) > startedAt
+  }
+  // 正在占着这个对话的 sidecar 的兄弟对话。只有“真的在产生事件”的兄弟才算：
+  // 光有一个 running 标记可能是本地过时的猜测。
+  function engineHolderFor(conversationId: string): Conversation | null {
+    const conversation = s.conversations.find(item => item.id === conversationId)
+    if (!conversation) return null
+    const key = sidecarKeyOf(conversation)
+    if (!key) return null
+    return s.conversations.find(other => (
+      other.id !== conversationId
+      && s.runningIds.has(other.id)
+      && sidecarKeyOf(other) === key
+      && turnOwnsSidecar(other.id)
+    )) ?? null
+  }
+  // 当前对话排在谁后面；不在排队时为空串。
+  const activeQueuedBehind = (() => {
+    const id = s.activeId
+    if (!id || !s.runningIds.has(id)) return ''
+    if (turnOwnsSidecar(id)) return ''
+    const holder = engineHolderFor(id)
+    if (!holder) return ''
+    return String(holder.title ?? '').trim() || holder.id
+  })
   const activeResumed = (() => (
     s.activeId ? s.continuity.resumed.has(s.activeId) : false
   ))
@@ -3621,6 +3660,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get streamStaleSeconds() { return streamStaleSeconds() },
     get activeToolRunning() { return activeToolRunning() },
     get activeEngineAlive() { return activeEngineAlive() },
+    get activeQueuedBehind() { return activeQueuedBehind() },
     get engineNotice() { return s.engineNotice },
     get engineNoticeRepeat() { return s.engineNoticeRepeat },
     get busySend() { return s.busySend },

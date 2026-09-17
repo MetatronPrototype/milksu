@@ -938,13 +938,21 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const streamStaleSeconds = conversations.streamStaleSeconds
   const runningToolActive = conversations.activeToolRunning
   const engineAlive = conversations.activeEngineAlive
+  // E 队列可见性：当前对话排在谁后面（空串=没排队）。
+  const queuedBehindLabel = conversations.activeQueuedBehind
   const STUCK_TURN_EXIT_SECONDS = 45
   const stuckTurn = streamStale
     && !runningToolActive
+    && !queuedBehindLabel
     && engineAlive === false
     && streamStaleSeconds >= STUCK_TURN_EXIT_SECONDS
   /** “等待”必须说清在等什么；无声地计数就是在说“模型正在回复”——那和连接断了一模一样。 */
   const waitingLabel = (() => {
+    // 排在同一个 sidecar 的另一个对话后面是「排队」，不是「停滞」：
+    // 在这里说“连接丢了”就是横幅以前撒的那个谎。
+    if (queuedBehindLabel) {
+      return t('排队中（同工作区另一个会话在跑）', 'Queued (another conversation in this workspace is running)')
+    }
     if (streamStale) {
       if (runningToolActive) return t('工具执行中…', 'Tool running…')
       if (stuckTurn) return t('引擎没有响应…', 'The engine is not responding…')
@@ -2524,7 +2532,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
             onScroll={handleChatScroll}
           >
-            {streamStale ? (
+            {streamStale || queuedBehindLabel ? (
               <div
                 className={cn(
                   'mx-auto mb-2 w-[72%] rounded-xl border px-3 py-1.5 text-caption',
@@ -2534,7 +2542,14 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                 )}
                 data-testid="stream-stale"
               >
-                {runningToolActive ? (
+                {queuedBehindLabel ? (
+                  <span data-testid="queued-behind">
+                    {t(
+                      `排队中：同工作区「${queuedBehindLabel}」正在运行。`,
+                      `Queued: "${queuedBehindLabel}" in this workspace is running.`,
+                    )}
+                  </span>
+                ) : runningToolActive ? (
                   t(
                     `工具执行中…（已 ${streamStaleSeconds}s 无输出）`,
                     `Tool running… (${streamStaleSeconds}s without output)`,

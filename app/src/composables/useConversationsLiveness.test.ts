@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-// 搬运自本地分支的存活/卡住指示（B）：把"有进展"和"引擎还在"分开验证。
+// 搬运自本地分支的存活/卡住/排队指示（B + E）：把"有进展"、"引擎还在"和"在排队"分开验证。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 type EventHandler = (event: { payload: unknown }) => void
@@ -22,22 +22,12 @@ vi.mock('@/desktop', () => ({
   }),
 }))
 
-function storedConversation(id: string) {
-  return { id, title: id, createdAt: 1, messages: [] }
+function storedConversation(id: string, workspacePath = '') {
+  return { id, title: id, createdAt: 1, workspacePath, messages: [] }
 }
 
 function emit(sessionId: string, payload: Record<string, unknown>) {
   handlers.get('engine-event')?.({ payload: { sessionId, ...payload } })
-}
-
-async function boot() {
-  const { useConversations } = await import('@/composables/useConversations')
-  const conversations = useConversations()
-  stored = [storedConversation('conversation-1')]
-  await conversations.load()
-  await conversations.listen()
-  conversations.activeId = 'conversation-1'
-  return conversations
 }
 
 describe('useConversations liveness', () => {
@@ -53,7 +43,13 @@ describe('useConversations liveness', () => {
   })
 
   it('a heartbeat keeps saying the engine is alive without counting as progress', async () => {
-    const conversations = await boot()
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    stored = [storedConversation('conversation-1')]
+    await conversations.load()
+    await conversations.listen()
+    conversations.activeId = 'conversation-1'
+
     emit('conversation-1', { type: 'assistant.started' })
     expect(conversations.activeRunning).toBe(true)
     expect(conversations.streamStale).toBe(false)
@@ -62,7 +58,7 @@ describe('useConversations liveness', () => {
     vi.advanceTimersByTime(20_000)
     expect(conversations.streamStale).toBe(true)
     expect(conversations.streamStaleSeconds).toBeGreaterThanOrEqual(18)
-    // 心跳只在 5 秒一次时才会来；这里一个都没有，所以引擎不算"活着"。
+    // 心跳是 5 秒一次才会来；这里一个都没有，所以引擎不算"活着"。
     expect(conversations.activeEngineAlive).toBe(false)
 
     // 心跳只能说"引擎还在"，不能说"有进展"：停滞时钟不许被它清零。
@@ -78,13 +74,19 @@ describe('useConversations liveness', () => {
   })
 
   it('tracks running tools per conversation so a tool is never read as a dead stream', async () => {
-    const conversations = await boot()
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    stored = [storedConversation('conversation-1'), storedConversation('conversation-2')]
+    await conversations.load()
+    await conversations.listen()
+    conversations.activeId = 'conversation-1'
+
     emit('conversation-1', { type: 'assistant.started' })
     expect(conversations.activeToolRunning).toBe(false)
 
     emit('conversation-1', { type: 'tool.started', toolCallId: 'call-1', toolName: 'bash' })
     expect(conversations.activeToolRunning).toBe(true)
-    // 另一个对话的工具不能影响当前对话。
+    // 另一个对话的工具不影响当前对话。
     emit('conversation-2', { type: 'tool.started', toolCallId: 'call-2', toolName: 'bash' })
     expect(conversations.activeToolRunning).toBe(true)
 
@@ -95,8 +97,14 @@ describe('useConversations liveness', () => {
     expect(conversations.activeToolRunning).toBe(false)
   })
 
-  it('never reports a running tool as stalled, and only the long silence becomes a stuck turn', async () => {
-    const conversations = await boot()
+  it('never reports a running tool as stalled, and only a long silence becomes a stuck turn', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    stored = [storedConversation('conversation-1')]
+    await conversations.load()
+    await conversations.listen()
+    conversations.activeId = 'conversation-1'
+
     emit('conversation-1', { type: 'assistant.started' })
     emit('conversation-1', { type: 'tool.started', toolCallId: 'call-1', toolName: 'bash' })
 
@@ -105,5 +113,32 @@ describe('useConversations liveness', () => {
     expect(conversations.streamStale).toBe(true)
     expect(conversations.activeToolRunning).toBe(true)
     expect(conversations.streamStaleSeconds).toBeGreaterThanOrEqual(45)
+  })
+
+  // E 队列可见性：两个对话共用同一个 sidecar 时，后到的那个是在排队，不是连接丢了。
+  it('names the sibling that holds the shared sidecar instead of calling it stalled', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    stored = [
+      { ...storedConversation('holder', '/workspace/a'), title: '正在跑的会话' },
+      storedConversation('waiting', '/workspace/a'),
+    ]
+    await conversations.load()
+    await conversations.listen()
+    conversations.activeId = 'waiting'
+
+    // 兄弟对话已经在产生事件 → 它确实占着这个 sidecar。
+    // runStartedAt 是派发时刻，所以“事件晚于它”才证明引擎真的在答这个回合。
+    emit('holder', { type: 'assistant.started' })
+    vi.advanceTimersByTime(1000)
+    emit('holder', { type: 'assistant.started' })
+    // 当前对话已派发但还没有事件 → 正在排队。
+    emit('waiting', { type: 'assistant.started' })
+    expect(conversations.activeQueuedBehind).toBe('正在跑的会话')
+
+    // 自己的回合开始产生事件后，就不再算排队。
+    vi.advanceTimersByTime(1000)
+    emit('waiting', { type: 'assistant.started' })
+    expect(conversations.activeQueuedBehind).toBe('')
   })
 })
