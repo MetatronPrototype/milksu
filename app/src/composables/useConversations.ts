@@ -100,6 +100,7 @@ import type {
   DshJob,
   DshPlanMode,
   Message,
+  MessageOrigin,
   ModelThinkingLevel,
   SubagentTask,
 } from '@/types'
@@ -2479,12 +2480,16 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     scopeToken?: ComposerScopeToken,
     productAction?: CodingProductActionRequest,
     branchFromUserOccurrence = -1,
+    // 搬运自本地分支（C）：跨对话投递需要能指定“发给哪个对话”并带上来源。
+    // 两个参数都可选：不传时行为和以前完全一样（发给当前打开的对话、消息没有来源）。
+    targetConversationId?: string,
+    origin?: MessageOrigin,
   ) {
     const prompt = text.trim()
     if (!prompt) return false
     let outboundPrompt = prompt
     let outboundVisible = visibleText.trim() || prompt
-    const runningConversationId = s.activeId
+    const runningConversationId = targetConversationId ?? s.activeId
     const activeConversation = s.conversations.find(item => item.id === runningConversationId)
     const pendingAsk = pendingAskMessage(activeConversation?.messages)
     const answeringAsk = Boolean(pendingAsk?.approvalRequestId)
@@ -2560,9 +2565,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       timestamp: Date.now(),
       status: steering ? 'queued' : undefined,
       attachments: attachments.length ? attachments : undefined,
+      origin,
     }
     const fallbackTitle = fallbackConversationTitle(visiblePrompt)
-    let conversationId = s.activeId
+    // 跨对话投递指定了目标对话（后端已校验它存在），所以永远不会走到“新建对话”那一支。
+    let conversationId = targetConversationId ?? s.activeId
     if (!conversationId) {
       conversationId = crypto.randomUUID()
       const conversation: Conversation = {
