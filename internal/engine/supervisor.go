@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -442,6 +443,11 @@ type childProcess struct {
 	// lastActivity is the last time this sidecar wrote a line, so a process that is plainly
 	// still talking to us (slow model, long tool) is never read as idle. 搬运自本地分支。
 	lastActivity atomic.Int64
+	// stopReason records why the sidecar was stopped (parked-reap, retired, credential-revoked,
+	// shutdown, hard-stop). It travels with the sidecar lifecycle event so the renderer and the
+	// log can tell idle housekeeping apart from a turn that really died; without it every
+	// reclaim reads as a bare "Agent stopped". 搬运自本地分支。
+	stopReason atomic.Value
 }
 
 type sidecarStderrBuffer struct {
@@ -709,12 +715,38 @@ func (s *Supervisor) rememberForkedSessionLocked(parentID, forkedID string) {
 	s.bindSessionWorkspaceLocked(forkedID, s.sessionWorkspaces[parentID])
 }
 
-func stopChildProcess(process *childProcess) {
+// stoppedReason reads the recorded stop cause; a sidecar that died on its own has none.
+// 搬运自本地分支。
+func stoppedReason(process *childProcess) string {
+	if process == nil {
+		return ""
+	}
+	if value, ok := process.stopReason.Load().(string); ok {
+		return value
+	}
+	return ""
+}
+
+func stopChildProcess(process *childProcess, reason string) {
 	if process == nil {
 		return
 	}
+	pid := 0
+	if process.command != nil && process.command.Process != nil {
+		pid = process.command.Process.Pid
+	}
+	log.Printf(
+		"[engine] stopping sidecar reason=%s pid=%d workspace=%q stale=%t retired=%t",
+		reason,
+		pid,
+		process.workspace,
+		process.stale.Load(),
+		process.retired.Load(),
+	)
+	process.stopReason.Store(reason)
 	_ = process.stdin.Close()
-	if process.command.Process != nil {
+	// A process that was never started has no command; stopping it must still be safe.
+	if process.command != nil && process.command.Process != nil {
 		_ = process.command.Process.Kill()
 	}
 }
@@ -915,7 +947,7 @@ func (s *Supervisor) stopParkedLocked(kernel, key string, process *childProcess)
 	delete(s.parkedAt, key)
 	interrupted := s.dropWorkspaceSessionsLocked(kernel, process.workspace)
 	process.retired.Store(true)
-	stopChildProcess(process)
+	stopChildProcess(process, "parked-reap")
 	s.reportInterruptedSessions(kernel, interrupted)
 }
 
@@ -1141,7 +1173,7 @@ func (s *Supervisor) stopRetiredProcessLocked(process *childProcess) []string {
 		s.forgetSessionLocked(id)
 	}
 	process.retired.Store(true)
-	stopChildProcess(process)
+	stopChildProcess(process, "retired")
 	return interrupted
 }
 
@@ -1192,7 +1224,7 @@ func (s *Supervisor) StopStaleSidecars() int {
 	stopped := 0
 	stop := func(kernel string, process *childProcess, interrupted []string) {
 		process.retired.Store(true)
-		stopChildProcess(process)
+		stopChildProcess(process, "credential-revoked")
 		s.reportInterruptedSessions(kernel, interrupted)
 		stopped++
 	}
@@ -2930,13 +2962,13 @@ func (s *Supervisor) Close() {
 			process.retired.Store(true)
 		}
 	}
-	stopChildProcess(pi)
-	stopChildProcess(dsh)
+	stopChildProcess(pi, "shutdown")
+	stopChildProcess(dsh, "shutdown")
 	for _, process := range parked {
-		stopChildProcess(process)
+		stopChildProcess(process, "shutdown")
 	}
 	for _, process := range retiring {
-		stopChildProcess(process)
+		stopChildProcess(process, "shutdown")
 	}
 }
 
@@ -3136,7 +3168,14 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 	}
 	// Every ended Sidecar produces the lifecycle receipt, so the persisted
 	// sidecar.stopped event stops disappearing for processes the Supervisor retired.
-	s.emitEvent(Event{Engine: kernel, Type: engineSidecarStoppedEvent, Error: errorText})
+	s.emitEvent(Event{
+		Engine: kernel,
+		Type:   engineSidecarStoppedEvent,
+		Error:  errorText,
+		// Why it went away: parked-reap / retired / credential-revoked / shutdown / hard-stop.
+		// 搬运自本地分支：没有它时，任何一次回收在界面和日志里都只显示“已停止”。
+		Reason: stoppedReason(process),
+	})
 	if !current {
 		// A parked or retired Sidecar is one workspace, not the engine. engine.stopped
 		// ends every waiter and every running conversation, so it must stay reserved for
@@ -3145,7 +3184,7 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 		s.reportInterruptedSessions(kernel, interrupted)
 		return
 	}
-	s.emitEvent(Event{Engine: kernel, Type: "engine.stopped", Error: errorText, Done: true})
+	s.emitEvent(Event{Engine: kernel, Type: "engine.stopped", Error: errorText, Done: true, Reason: stoppedReason(process)})
 }
 
 // observeTurnLifecycle keeps busySessions in step with the turn boundaries Pi reports, so
@@ -3810,7 +3849,7 @@ func (s *Supervisor) HardStopSession(sessionID string) {
 	if process == nil {
 		return
 	}
-	stopChildProcess(process)
+	stopChildProcess(process, "hard-stop")
 }
 
 func (s *Supervisor) ClearQueuedMessages(sessionID string) error {

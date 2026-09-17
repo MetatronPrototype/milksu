@@ -472,3 +472,24 @@ func TestActiveSidecarExitStillBroadcastsEngineStopped(t *testing.T) {
 			engineSidecarStoppedEvent, recorded)
 	}
 }
+
+// 搬运自本地分支：停靠回收、凭据撤销、轮换退役、关停、硬停都必须把"为什么停"
+// 记录在进程上，停止事件据此才能说清原因（以前界面和日志只显示“已停止”）。
+func TestStopChildProcessRecordsWhyItStopped(t *testing.T) {
+	if got := stoppedReason(nil); got != "" {
+		t.Fatalf("nil process must read as empty, got %q", got)
+	}
+	process := &childProcess{stdin: nopWriteCloser{}, workspace: "/workspace/a"}
+	if got := stoppedReason(process); got != "" {
+		t.Fatalf("a live process has no stop reason, got %q", got)
+	}
+	stopChildProcess(process, "parked-reap")
+	if got := stoppedReason(process); got != "parked-reap" {
+		t.Fatalf("stop reason = %q, want parked-reap", got)
+	}
+	// The last stop wins, so a re-entrant stop never leaves a stale cause behind.
+	stopChildProcess(process, "shutdown")
+	if got := stoppedReason(process); got != "shutdown" {
+		t.Fatalf("stop reason = %q, want shutdown", got)
+	}
+}

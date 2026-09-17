@@ -321,3 +321,48 @@ QueueMessage / ListDshCommands / ExecuteDshCommand / DshCommandDescriptor / DshC
 `staleSidecarGraceTimeout` 保留上游的 **75 分钟**（本地是 10 分钟）。
 上游注释里写明理由：hang guard 允许单次 bash 跑到 3600 秒，宽限短于这个上限会**杀掉仍在合法工作的回合**。
 本地那 10 分钟与之矛盾，采纳会引入该回归。
+
+---
+
+# 更新（第六次）：③ 停止原因上报已搬（① 按建议不搬）
+
+## ③ 停止原因上报 —— ✅ 已完成（用你的）
+
+在上游引擎上实现（不动上游任何策略）：
+
+| 改动 | 内容 |
+|---|---|
+| `childProcess.stopReason atomic.Value` | 记录"为什么被停" |
+| `stoppedReason(process)` | 读取该原因；自然死亡返回空 |
+| `stopChildProcess(process, reason)` | 由 1 参数改为 2 参数，并打印一行结构化日志（reason / pid / workspace / stale / retired） |
+| `engine.sidecar_stopped` 事件 | 带上 `Reason`（复用上游 Event 已有的 `Reason` 字段，未新增字段） |
+| `engine.stopped` 事件 | 同样带上 `Reason` |
+
+8 处调用点各自的原因：
+
+```
+parked-reap         停靠池回收
+retired             轮换后退役
+credential-revoked  凭据被撤销
+shutdown            应用关停（pi / dsh / parked / retiring 四处）
+hard-stop           三级停止的硬停
+```
+
+新增测试：`TestStopChildProcessRecordsWhyItStopped`（含 nil 进程、初值为空、后写覆盖）。
+
+## ① `parkedTurnStaleWindow` —— ❌ 不搬（按建议保持上游）
+
+判据是"最后输出之后多久"，值为 10 分钟。但：
+- bash 默认超时现在是 **600 秒**（正好 10 分钟），最大 3600 秒
+- 一个正在执行的长命令**全程不产生输出** → 会被判成"安静太久" → 回收 → **杀掉正在跑的回合**
+- 上游对同类机制（`staleSidecarGraceTimeout`）明确写了这个理由，并把值设为 75 分钟（大于命令上限）
+- 上游的 `maxParkedSidecarsHardLimit`（现为 12）已覆盖防泄漏
+
+## ② `decrementActiveTurns` —— ❌ 不需要（上游已修同类问题）
+
+上游在 `error` 与 `session_destroyed` 两条路径上都会 `delete(s.busySessions, sessionID)`，
+注释与本地提交的意图一致（"turn_settled ends only the turn"）。机制不同，覆盖相同。
+
+## 全绿验证
+
+Go 全绿（含 `go vet`）、前端 `tsc` + 627 测试、侧车 736/736。
