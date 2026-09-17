@@ -1,38 +1,49 @@
 /**
  * MilkSU 防挂死守卫（Pi sidecar 扩展）
  *
- * Pi 的 bash 工具把 `timeout` 当成可选参数：不传就没有上界，一次调用可以无限期
- * 占住整个回合（现场：iCloud 驱逐目录里的 `git fsck` 跑了 1 小时 40 分，
- * CPU 只用掉 1.45 秒，其余时间等 iCloud 现下载）。
+ * 修两个已确认的缺陷：
+ *   1) bash 工具没有默认超时：`resolveTimeoutMs(undefined)` 返回 undefined，
+ *      一条命令可以无限期挂住整个回合（现场证据：git fsck 在 iCloud 目录跑了 1 小时 40 分）。
+ *   2) 没有 iCloud「仅存云端」文件的预检：批量读取类命令会逐个现下载
+ *      （实测约 2 秒/文件；4036 个对象不可行）。
  *
- * 已有的重复调用熔断（`bridge-tool-repeat.js`）只比较多次调用之间有没有新进展，
- * 单次调用不返回落在它的判定之外，所以这一层是必要的。
- *
- * 这里只做两件确定性的事：
- *   1) `tool_call` 给缺少 `timeout` 的 bash 调用注入默认值，并把超过上限的值收敛。
- *      该钩子拿到的 `event.input` 与随后执行的参数是同一个对象，就地写入会被采用。
- *   2) `tool_result` 在超时结果上补一段诊断，让停下来的原因可查。
- *
- * 不在这一层判断「哪条命令危险」。那需要解析 shell（`cd`、`git -C`、变量、子 shell、
- * 符号链接），而超时已经把无界等待变成有界失败；猜错的代价是拦掉用户的合法命令。
- * iCloud 只作为超时之后的解释出现，不作为执行前的拦截理由。
+ * 实现要点（与 pi 的钩子契约一致）：
+ *   - `tool_call` 钩子拿到的 `event.input` 与随后执行的参数是**同一个对象**，
+ *     因此就地写入 `timeout` 会被真正采用；
+ *   - 钩子返回 `{ block: true, reason }` 可阻断该次调用；
+ *   - pi 的超时实现本身是正确的（detached 进程组 + 结束后整组终止）。
  */
 
 import { spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve as resolvePath, sep } from "node:path";
 
-export const DEFAULT_BASH_TIMEOUT_SECONDS = 600;
+export const DEFAULT_BASH_TIMEOUT_SECONDS = 120;
 export const MAX_BASH_TIMEOUT_SECONDS = 3600;
-
-/**
- * 超时之后才使用的诊断阈值：看到这么多仅存云端的文件，才在结果里点名 iCloud。
- * 它不参与任何拦截决定，所以判断偏松只会少一句解释。
- */
-export const DATALESS_DIAGNOSTIC_THRESHOLD = 20;
+export const DATALESS_BLOCK_THRESHOLD = 20;
 export const DATALESS_SCAN_TIMEOUT_MS = 2500;
-/** 命中这么多即可停止扫描：`head` 关闭管道，重度驱逐的树在毫秒级返回。 */
-export const DATALESS_EARLY_EXIT_LIMIT = DATALESS_DIAGNOSTIC_THRESHOLD + 1;
+/**
+ * The scan stops as soon as this many hits are seen (`head` closes the pipe), so a
+ * heavily evicted tree answers in milliseconds instead of walking everything. A tree
+ * that has fewer hits than this costs a full walk, which is why the guard also
+ * refuses to treat a timed-out scan as "clean" inside an iCloud-synced directory.
+ */
+export const DATALESS_EARLY_EXIT_LIMIT = DATALESS_BLOCK_THRESHOLD + 1;
+
+/** 需要预检的「批量读取/扫描」类命令：这些会触碰大量文件 */
+export const BULK_COMMAND_PATTERNS = [
+  /\bgit\s+(fsck|gc|repack|count-objects|cat-file|rev-list|verify-pack|prune|reflog)\b/,
+  /\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;]*\s-[a-zA-Z]*[rR]/,
+  /\bfind\b/,
+  /\bdu\b/,
+  /\brsync\b/,
+  /\btar\b/,
+  /\bxcodebuild\b/,
+  /\b(npm|pnpm|yarn|bun)\s+(install|ci|i)\b/,
+  /\bpip\s+install\b/,
+  /\bbrctl\b/,
+];
 
 function readPositiveInteger(environment, name, fallback) {
   const raw = environment?.[name];
@@ -55,7 +66,24 @@ export function hangGuardConfig(environment = process.env) {
       "MILKSU_PI_BASH_MAX_TIMEOUT_SECONDS",
       MAX_BASH_TIMEOUT_SECONDS,
     ),
+    datalessGuardEnabled: environment?.MILKSU_PI_DATALESS_GUARD !== "0",
+    datalessBlockThreshold: readPositiveInteger(
+      environment,
+      "MILKSU_PI_DATALESS_BLOCK_THRESHOLD",
+      DATALESS_BLOCK_THRESHOLD,
+    ),
+    datalessScanTimeoutMs: readPositiveInteger(
+      environment,
+      "MILKSU_PI_DATALESS_SCAN_TIMEOUT_MS",
+      DATALESS_SCAN_TIMEOUT_MS,
+    ),
   };
+}
+
+export function isBulkCommand(command, patterns = BULK_COMMAND_PATTERNS) {
+  const text = String(command ?? "");
+  if (!text) return false;
+  return patterns.some(pattern => pattern.test(text));
 }
 
 /**
@@ -87,7 +115,8 @@ export function applyBashTimeout(input, config) {
  *
  * MilkSU sandboxes the sidecar's own HOME (e.g. `…/com.milksu.app/agent-home`) but runs
  * tool commands with the real user home, and it publishes that as `MILKSU_USER_HOME`.
- * Using `os.homedir()` here would resolve a path that does not exist.
+ * Using `os.homedir()` here silently checked a path that does not exist, which is exactly
+ * how the iCloud preflight missed the incident.
  */
 export function resolveUserHome(environment = process.env) {
   const configured = String(environment?.MILKSU_USER_HOME ?? "").trim();
@@ -115,9 +144,8 @@ function iCloudRoots(home) {
 }
 
 /**
- * Paths whose contents iCloud may keep in the cloud only. Only used after a timeout, to
- * decide whether the dataless count is worth reporting; outside these roots the scan is
- * skipped so a timeout on an ordinary project costs nothing extra.
+ * Paths whose contents iCloud may keep in the cloud only. Used to decide whether the
+ * dataless preflight is worth running at all: outside these roots the scan is skipped.
  */
 export function isICloudSyncedPath(directory, options = {}) {
   const { platform = process.platform, home = resolveUserHome() } = options;
@@ -129,9 +157,25 @@ export function isICloudSyncedPath(directory, options = {}) {
 }
 
 /**
- * Directories a timed-out bash command may have been reading: the session cwd plus every
- * `cd`/`pushd` target in the command. This is a best-effort hint for the diagnostic only;
- * missing a target costs one sentence of explanation, never a blocked command.
+ * Best-effort decision log next to the Pi agent directory. A guard that silently decides
+ * not to act is impossible to diagnose from the outside, so every decision (including the
+ * skip paths) is recorded in one line.
+ */
+export function appendGuardLog(line, { home = resolveUserHome(), environment = process.env } = {}) {
+  try {
+    const base = environment?.MILKSU_PI_AGENT_DIR || join(home, ".pi", "agent");
+    mkdirSync(base, { recursive: true });
+    appendFileSync(join(base, "hang-guard.log"), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    /* logging must never break a tool call */
+  }
+}
+
+/**
+ * Candidate directories a bash command may touch: the session cwd plus every
+ * `cd`/`pushd` target in the command itself. The incident that motivated this guard
+ * ran `cd ~/Documents/SyncGPT && git fsck` from a session whose cwd was NOT under an
+ * iCloud root, so inspecting only the session cwd would have missed it entirely.
  */
 export function commandDirectories(command, cwd, options = {}) {
   const { home = resolveUserHome() } = options;
@@ -188,34 +232,61 @@ export function countDatalessFiles(directory, options = {}) {
   return lines.length;
 }
 
-/**
- * 超时结果上追加的说明。命中 iCloud 时点名具体目录和文件数，其余情况只说明超时边界
- * 与更合适的做法（后台任务），不要求模型再猜。
- */
-export function timeoutDiagnostic({
-  timeoutSeconds,
+export function datalessBlockReason({
   directory,
-  count = -1,
-  threshold = DATALESS_DIAGNOSTIC_THRESHOLD,
+  count,
+  command,
+  threshold = DATALESS_BLOCK_THRESHOLD,
   limit = DATALESS_EARLY_EXIT_LIMIT,
 }) {
-  const lines = [
-    "",
-    `Command exceeded its ${timeoutSeconds}s foreground limit and was terminated.`,
-  ];
-  if (directory && count >= threshold) {
-    const capped = count >= limit ? "+" : "";
-    lines.push(
-      `${count}${capped} files under ${directory} exist only in iCloud, so reading them forces `
-      + `on-demand downloads; that is the likely cause. Run "brctl download '${directory}'" first, `
-      + `narrow the scope, or move the project out of iCloud.`,
-    );
-  }
-  lines.push(
-    "For work that legitimately runs this long, use the background task tools instead of a "
-    + "foreground wait, or pass an explicit larger timeout.",
-  );
-  return lines.join("\n");
+  const capped = count >= limit ? "+" : "";
+  const minutes = Math.max(1, Math.round((count * 2) / 60));
+  return [
+    `MilkSU paused this bulk command: ${count}${capped} files in the working directory exist only in iCloud`,
+    `(evicted locally), so reading them forces on-demand downloads (~2s per file, >= ${minutes} min total,`,
+    `and iCloud may evict them again). Threshold: ${threshold}.`,
+    ``,
+    `Directory: ${directory}`,
+    `Command: ${String(command ?? "").slice(0, 200)}`,
+    ``,
+    `Step 1 — tell the user before anything else: ask with milksu_ask, and say that this directory`,
+    `exists only in iCloud, how many files are involved, and how long the wait is likely to be.`,
+    `Step 2 — if the user agrees to the wait, re-run the same command with an explicit timeout`,
+    `argument (the estimate above, up to the configured maximum). An explicit timeout is read as`,
+    `the user's consent and lifts this pause; the timeout still bounds the command either way.`,
+    ``,
+    `Cheaper options if the user would rather not wait:`,
+    `1) Download first: run "brctl download '${directory}'" (or Finder > Download Now), then retry.`,
+    `2) Narrow the scope to a specific subdirectory or file instead of the whole tree.`,
+    `3) Move the project out of ~/Documents (iCloud Desktop & Documents) and retry.`,
+  ].join("\n");
+}
+
+/**
+ * Reason used when the preflight itself could not finish inside its budget inside an
+ * iCloud-synced directory: an unreadable or crawling scan is itself evidence that the
+ * tree is evicted, so bulk commands are refused rather than silently allowed.
+ */
+export function datalessUnknownReason({
+  directory,
+  command,
+  scanTimeoutMs = DATALESS_SCAN_TIMEOUT_MS,
+}) {
+  return [
+    `MilkSU paused this bulk command: the working directory is iCloud-synced and the`,
+    `preflight scan did not finish within ${scanTimeoutMs}ms. A scan this slow is itself a sign`,
+    `that the tree is evicted (files present only in the cloud), so a bulk read would be`,
+    `unbounded. The guard fails closed rather than guessing.`,
+    ``,
+    `Directory: ${directory}`,
+    `Command: ${String(command ?? "").slice(0, 200)}`,
+    ``,
+    `Tell the user first: ask with milksu_ask and say the directory is iCloud-synced, that its size`,
+    `could not be measured in time, and that the wait may be long. If the user agrees, re-run the`,
+    `same command with an explicit timeout argument; that is read as consent and lifts this pause.`,
+    `If they would rather not wait: run "brctl download '${directory}'" first, narrow the scope,`,
+    `move the project out of ~/Documents, or disable the preflight with MILKSU_PI_DATALESS_GUARD=0.`,
+  ].join("\n");
 }
 
 function textOf(content) {
@@ -245,20 +316,94 @@ export function createHangGuardExtension({
     const now = Date.now();
     const hit = cache.get(directory);
     if (hit && now - hit.at < scanCacheTtlMs) return hit.count;
-    const count = countDatalessFiles(directory, { platform, spawn });
+    const count = countDatalessFiles(directory, {
+      platform,
+      spawn,
+      scanTimeoutMs: config.datalessScanTimeoutMs,
+      limit: config.datalessBlockThreshold + 1,
+    });
     cache.set(directory, { at: now, count });
     return count;
   };
 
   return pi => {
-    pi.on("tool_call", async event => {
+    const log = line => appendGuardLog(line, { home, environment });
+    log(
+      `guard loaded default=${config.defaultTimeoutSeconds}s max=${config.maxTimeoutSeconds}s `
+      + `datalessGuard=${config.datalessGuardEnabled} threshold=${config.datalessBlockThreshold}`,
+    );
+
+    pi.on("tool_call", async (event, ctx) => {
       try {
         if (event?.toolName !== "bash") return undefined;
-        applyBashTimeout(event.input, config);
-      } catch {
-        // 注入失败不能挡住调用本身。
+        const input = event.input;
+        if (!input || typeof input !== "object") return undefined;
+
+        // 显式传入 timeout = 调用方代表“用户已同意等”。守卫对驱逐目录下的批量命令只暂停一次，
+        // 让用户先被问到；这个标记就是“已经问过并同意了”的信号。要在注入默认值之前判定。
+        const hadExplicitTimeout = input.timeout !== undefined && input.timeout !== null && input.timeout !== "";
+
+        const applied = applyBashTimeout(input, config);
+        const command = String(input.command ?? "");
+        const bulk = isBulkCommand(command);
+
+        if (!config.datalessGuardEnabled) {
+          log(`tool_call bulk=${bulk} timeout=${applied ?? "kept"} datalessGuard=off`);
+          return undefined;
+        }
+        if (!command || !bulk) {
+          log(`tool_call bulk=${bulk} timeout=${applied ?? "kept"} -> skip`);
+          return undefined;
+        }
+
+        if (hadExplicitTimeout) {
+          log(`tool_call bulk=${bulk} explicitTimeout -> consent, dataless pause skipped`);
+          return undefined;
+        }
+
+        // Check every directory the command may touch, not only the session cwd: a
+        // command can `cd` into an iCloud-synced tree from anywhere.
+        const candidates = commandDirectories(command, ctx?.cwd, { home });
+        const synced = candidates.filter(directory => isICloudSyncedPath(directory, { platform, home }));
+        if (synced.length === 0) {
+          log(`tool_call bulk=true timeout=${applied ?? "kept"} synced=0 -> skip`);
+          return undefined;
+        }
+
+        for (const directory of synced) {
+          const count = countCached(directory);
+          if (count < 0) {
+            log(`tool_call bulk=true dir=${directory} count=unknown -> block (fail closed)`);
+            return {
+              block: true,
+              reason: datalessUnknownReason({
+                directory,
+                command,
+                scanTimeoutMs: config.datalessScanTimeoutMs,
+              }),
+            };
+          }
+          if (count >= config.datalessBlockThreshold) {
+            log(`tool_call bulk=true dir=${directory} count=${count} -> block`);
+            return {
+              block: true,
+              reason: datalessBlockReason({
+                directory,
+                count,
+                command,
+                threshold: config.datalessBlockThreshold,
+                limit: config.datalessBlockThreshold + 1,
+              }),
+            };
+          }
+          log(`tool_call bulk=true dir=${directory} count=${count} -> below threshold`);
+        }
+        return undefined;
+      } catch (error) {
+        // 守卫自身绝不阻断正常流程，但必须留下痕迹
+        log(`tool_call hook error: ${error && error.message ? error.message : error}`);
+        return undefined;
       }
-      return undefined;
     });
 
     pi.on("tool_result", async (event, ctx) => {
@@ -266,16 +411,24 @@ export function createHangGuardExtension({
         if (!event?.isError) return undefined;
         const text = textOf(event.content);
         if (!/timeout[:：]/i.test(text) && !/timed out/i.test(text)) return undefined;
+        const directory = ctx?.cwd;
         // Only iCloud roots can hold cloud-only files, so skip the scan elsewhere.
-        const synced = commandDirectories(event.input?.command, ctx?.cwd, { home })
+        const synced = commandDirectories(event.input?.command, directory, { home })
           .filter(candidate => isICloudSyncedPath(candidate, { platform, home }));
-        const directory = synced[0];
-        const detail = timeoutDiagnostic({
-          timeoutSeconds: Number(event.input?.timeout) || config.defaultTimeoutSeconds,
-          directory,
-          count: directory ? countCached(directory) : -1,
-        });
-        return { content: [...(event.content ?? []), { type: "text", text: detail }] };
+        const count = synced.length > 0 ? countCached(synced[0]) : 0;
+        const lines = [
+          "",
+          `[MilkSU hang guard] command was terminated by its timeout `
+          + `(default ${config.defaultTimeoutSeconds}s, explicit max ${config.maxTimeoutSeconds}s).`,
+        ];
+        if (count >= config.datalessBlockThreshold) {
+          lines.push(
+            `Detected ${count} files that exist only in iCloud in ${synced[0]}; `
+            + `that is the likely cause. Consider "brctl download" or moving the project out of ~/Documents.`,
+          );
+        }
+        lines.push("For long jobs prefer the background task tools; keep foreground waits bounded.");
+        return { content: [...(event.content ?? []), { type: "text", text: lines.join("\n") }] };
       } catch {
         return undefined;
       }

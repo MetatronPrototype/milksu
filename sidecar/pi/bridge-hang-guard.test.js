@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  DATALESS_DIAGNOSTIC_THRESHOLD,
+  BULK_COMMAND_PATTERNS,
   DATALESS_EARLY_EXIT_LIMIT,
   DEFAULT_BASH_TIMEOUT_SECONDS,
   MAX_BASH_TIMEOUT_SECONDS,
@@ -9,10 +9,12 @@ import {
   commandDirectories,
   countDatalessFiles,
   createHangGuardExtension,
+  datalessBlockReason,
+  datalessUnknownReason,
   hangGuardConfig,
+  isBulkCommand,
   isICloudSyncedPath,
   resolveUserHome,
-  timeoutDiagnostic,
 } from "./bridge-hang-guard.js";
 
 const baseConfig = {
@@ -60,16 +62,9 @@ const manyDataless = Array.from({ length: DATALESS_EARLY_EXIT_LIMIT + 4 }, (_, i
 // ───────────────────────── 超时注入 ─────────────────────────
 
 test("missing timeout receives the default", () => {
-  const input = { command: "sleep 6000" };
+  const input = { command: "sleep 600" };
   assert.equal(applyBashTimeout(input, baseConfig), DEFAULT_BASH_TIMEOUT_SECONDS);
   assert.equal(input.timeout, DEFAULT_BASH_TIMEOUT_SECONDS);
-});
-
-test("the default leaves room for ordinary long builds", () => {
-  // 120s would terminate `npm ci`, `cargo build` and `go test ./...` on a cold cache,
-  // and the model routinely omits `timeout` entirely.
-  assert.ok(DEFAULT_BASH_TIMEOUT_SECONDS >= 600);
-  assert.ok(DEFAULT_BASH_TIMEOUT_SECONDS < MAX_BASH_TIMEOUT_SECONDS);
 });
 
 test("explicit reasonable timeout is preserved", () => {
@@ -99,62 +94,27 @@ test("null timeout is treated as missing", () => {
   assert.equal(input.timeout, DEFAULT_BASH_TIMEOUT_SECONDS);
 });
 
-// ───────────────────────── tool_call 只注入超时，不做判断 ─────────────────────────
+// ───────────────────────── 批量命令识别 ─────────────────────────
 
-test("tool_call never blocks a command, whatever it is or where it runs", async () => {
-  const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless) });
-  const commands = [
-    "git fsck --no-progress",
-    "cd ~/Documents/sync-repo && git fsck --no-progress",
-    "grep -rn foo .",
-    "find . -name '*.swift'",
-    "npm ci",
-    "git status",
-  ];
-  for (const command of commands) {
-    const input = { command };
-    for (const cwd of [ICLOUD_DIR, PLAIN_DIR]) {
-      const result = await handler("tool_call")({ toolName: "bash", input: { ...input } }, { cwd });
-      assert.equal(result, undefined, `${command} in ${cwd} must not be blocked`);
-    }
-  }
+test("bulk commands are detected while routine git commands are not", () => {
+  assert.equal(isBulkCommand("git fsck --no-progress"), true);
+  assert.equal(isBulkCommand("git gc"), true);
+  assert.equal(isBulkCommand("git repack -ad"), true);
+  assert.equal(isBulkCommand("grep -rn foo ."), true);
+  assert.equal(isBulkCommand("find . -name '*.swift'"), true);
+  assert.equal(isBulkCommand("xcodebuild -scheme X build"), true);
+  assert.equal(isBulkCommand("npm ci"), true);
+  assert.equal(isBulkCommand("git status"), false);
+  assert.equal(isBulkCommand("git add -A"), false);
+  assert.equal(isBulkCommand("git commit -m x"), false);
+  assert.equal(isBulkCommand("git log --oneline"), false);
+  assert.equal(isBulkCommand("ls -la"), false);
+  assert.equal(isBulkCommand("cat README.md"), false);
+  assert.equal(isBulkCommand(""), false);
+  assert.equal(isBulkCommand(undefined), false);
 });
 
-test("tool_call never touches the filesystem", async () => {
-  // Deciding "is this command dangerous here" needs shell parsing and a filesystem scan
-  // before execution. Both were dropped: an unbounded wait is already bounded by the
-  // injected timeout, so a wrong guess would only cost the user a legitimate command.
-  const calls = [];
-  const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless, { capture: calls }) });
-
-  const input = { command: "cd ~/Documents/sync-repo && git fsck --no-progress" };
-  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: ICLOUD_DIR });
-
-  assert.equal(result, undefined);
-  assert.equal(calls.length, 0, "no preflight scan may run before a command");
-  assert.equal(input.timeout, DEFAULT_BASH_TIMEOUT_SECONDS);
-});
-
-test("tool_call ignores non-bash tools", async () => {
-  const { handler } = hangGuard({ spawn: fakeSpawn("") });
-
-  const input = { path: "/tmp/x" };
-  assert.equal(await handler("tool_call")({ toolName: "read", input }, { cwd: ICLOUD_DIR }), undefined);
-  assert.equal(input.timeout, undefined);
-});
-
-test("tool_call survives an input it cannot write to", async () => {
-  const { handler } = hangGuard({ spawn: fakeSpawn("") });
-  const input = Object.freeze({ command: "ls" });
-  assert.equal(await handler("tool_call")({ toolName: "bash", input }, { cwd: PLAIN_DIR }), undefined);
-});
-
-test("the whole guard can be disabled", () => {
-  const { handlers } = hangGuard({ environment: { MILKSU_PI_HANG_GUARD: "0" } });
-  assert.equal(handlers.size, 0);
-});
-
-// ───────────────────────── iCloud 路径识别（仅用于超时后的解释） ─────────────────────────
+// ───────────────────────── iCloud 路径识别 ─────────────────────────
 
 test("iCloud synced roots are recognised and everything else skipped", () => {
   const options = { platform: "darwin", home: FAKE_HOME };
@@ -216,14 +176,28 @@ test("directories with quotes are shell-quoted safely", () => {
 
 test("the sandboxed sidecar HOME is not used for ~ expansion", () => {
   // MilkSU runs the sidecar with HOME=…/com.milksu.app/agent-home while commands use the
-  // real user home, published as MILKSU_USER_HOME.
+  // real user home, published as MILKSU_USER_HOME. Using os.homedir() here made the
+  // preflight check a non-existent path and miss the incident entirely.
   const sandboxed = { HOME: "/sandbox/agent-home", MILKSU_USER_HOME: FAKE_HOME };
   assert.equal(resolveUserHome(sandboxed), FAKE_HOME);
   assert.equal(resolveUserHome({ MILKSU_USER_HOME: "  " }) !== "", true);
+  assert.equal(resolveUserHome({}), resolveUserHome({}));
   assert.equal(
-    commandDirectories("cd ~/Documents/sync-repo && git fsck", "/tmp", { home: resolveUserHome(sandboxed) })[1],
-    `${FAKE_HOME}/Documents/sync-repo`,
+    commandDirectories("cd ~/Documents/SyncGPT && git fsck", "/tmp", { home: resolveUserHome(sandboxed) })[1],
+    `${FAKE_HOME}/Documents/SyncGPT`,
   );
+});
+
+test("a bulk command cds into an evicted iCloud tree while HOME is sandboxed", async () => {
+  const { handler } = hangGuard({
+    environment: { HOME: "/sandbox/agent-home", MILKSU_USER_HOME: FAKE_HOME },
+    spawn: fakeSpawn(manyDataless),
+    home: FAKE_HOME,
+  });
+  const input = { command: "cd ~/Documents/SyncGPT && git fsck --no-progress" };
+  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: "/sandbox/work" });
+  assert.equal(result?.block, true);
+  assert.match(result.reason, /only in iCloud/);
 });
 
 // ───────────────────────── 命令涉及的目录 ─────────────────────────
@@ -235,8 +209,8 @@ test("command directories include the session cwd and cd targets", () => {
     ["/tmp/work"],
   );
   assert.deepEqual(
-    commandDirectories("cd ~/Documents/sync-repo && git fsck", "/tmp/work", options),
-    ["/tmp/work", `${FAKE_HOME}/Documents/sync-repo`],
+    commandDirectories("cd ~/Documents/SyncGPT && git fsck", "/tmp/work", options),
+    ["/tmp/work", `${FAKE_HOME}/Documents/SyncGPT`],
   );
   assert.deepEqual(
     commandDirectories('cd "~/Documents/My Repo" && git gc', "/tmp", options),
@@ -253,54 +227,142 @@ test("command directories include the session cwd and cd targets", () => {
   assert.deepEqual(commandDirectories("cd 64x64 && ls", "/tmp/x", options), ["/tmp/x", "/tmp/x/64x64"]);
 });
 
-// ───────────────────────── 超时诊断文案 ─────────────────────────
+// ───────────────────────── 拦截理由 ─────────────────────────
 
-test("diagnostic names the limit and points at background tasks", () => {
-  const detail = timeoutDiagnostic({ timeoutSeconds: 600 });
-  assert.match(detail, /600s foreground limit/);
-  assert.match(detail, /background task tools/);
-  assert.doesNotMatch(detail, /iCloud/);
-});
-
-test("diagnostic explains iCloud only when the count is above the threshold", () => {
-  const explained = timeoutDiagnostic({
-    timeoutSeconds: 600,
+test("block reason states the count, the cost and the options", () => {
+  const reason = datalessBlockReason({
     directory: ICLOUD_DIR,
     count: DATALESS_EARLY_EXIT_LIMIT,
+    command: "git fsck",
+    threshold: 20,
   });
-  assert.match(explained, /21\+/);
-  assert.match(explained, /only in iCloud/);
-  assert.match(explained, /brctl download/);
-
-  const quiet = timeoutDiagnostic({
-    timeoutSeconds: 600,
-    directory: ICLOUD_DIR,
-    count: DATALESS_DIAGNOSTIC_THRESHOLD - 1,
-  });
-  assert.doesNotMatch(quiet, /iCloud/);
-
-  const unknown = timeoutDiagnostic({ timeoutSeconds: 600, directory: ICLOUD_DIR, count: -1 });
-  assert.doesNotMatch(unknown, /iCloud/);
+  assert.match(reason, /21\+/);
+  assert.match(reason, /only in iCloud/);
+  assert.match(reason, /brctl download/);
+  assert.match(reason, /explicit timeout/);
+  // 第一步必须是“先问用户”，而不是直接拒绝。
+  assert.match(reason, /milksu_ask/);
 });
 
-// ───────────────────────── tool_result 钩子 ─────────────────────────
+test("unknown reason explains why it fails closed", () => {
+  const reason = datalessUnknownReason({ directory: ICLOUD_DIR, command: "git fsck", scanTimeoutMs: 2500 });
+  assert.match(reason, /iCloud-synced/);
+  assert.match(reason, /did not finish within 2500ms/);
+  assert.match(reason, /fails closed/);
+  assert.match(reason, /MILKSU_PI_DATALESS_GUARD=0/);
+});
+
+// ───────────────────────── 钩子行为 ─────────────────────────
+
+test("tool_call blocks bulk commands in an evicted iCloud directory", async () => {
+  const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless) });
+
+  const input = { command: "git fsck --no-progress" };
+  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: ICLOUD_DIR });
+  assert.equal(input.timeout, DEFAULT_BASH_TIMEOUT_SECONDS);
+  assert.equal(result?.block, true);
+  assert.match(result.reason, /only in iCloud/);
+});
+
+test("tool_call lifts the iCloud pause when the caller passes an explicit timeout", async () => {
+  // 守卫对驱逐目录下的批量命令只暂停一次（让用户先被问到）；
+  // 显式传入 timeout = 调用方报告“用户已同意等”，应当放行并保留该超时。
+  const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless) });
+
+  const input = { command: "git fsck --no-progress", timeout: 3600 };
+  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: ICLOUD_DIR });
+  assert.equal(result, undefined, "an explicit timeout must lift the pause");
+  assert.equal(input.timeout, 3600, "the explicit timeout is preserved");
+});
+
+test("tool_call blocks a bulk command that cds into an evicted iCloud tree", async () => {
+  // Regression test for the incident: the session cwd was NOT in iCloud, but the
+  // command itself switched into the evicted repository.
+  const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless) });
+
+  const input = { command: "cd ~/Documents/SyncGPT && git fsck --no-progress" };
+  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: PLAIN_DIR });
+  assert.equal(result?.block, true);
+  assert.match(result.reason, /only in iCloud/);
+  assert.match(result.reason, /Documents\/SyncGPT/);
+});
+
+test("tool_call skips the scan entirely outside iCloud roots", async () => {
+  const calls = [];
+  const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless, { capture: calls }) });
+
+  const input = { command: "git fsck --no-progress" };
+  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: PLAIN_DIR });
+  assert.equal(result, undefined);
+  assert.equal(calls.length, 0, "no scan must run outside iCloud roots");
+  assert.equal(input.timeout, DEFAULT_BASH_TIMEOUT_SECONDS);
+  assert.equal(isICloudSyncedPath(PLAIN_DIR, { home: FAKE_HOME }), false);
+});
+
+test("tool_call fails closed when the iCloud preflight cannot finish", async () => {
+  const { handler } = hangGuard({ spawn: fakeSpawn("", { error: new Error("ETIMEDOUT") }) });
+
+  const input = { command: "grep -rn foo ." };
+  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: ICLOUD_DIR });
+  assert.equal(result?.block, true);
+  assert.match(result.reason, /fails closed/);
+});
+
+test("tool_call leaves routine commands unblocked in iCloud directories", async () => {
+  const { handler } = hangGuard({ spawn: fakeSpawn("f1\nf2\n") });
+
+  const input = { command: "git status" };
+  const result = await handler("tool_call")({ toolName: "bash", input }, { cwd: ICLOUD_DIR });
+  assert.equal(result, undefined);
+  assert.equal(input.timeout, DEFAULT_BASH_TIMEOUT_SECONDS);
+});
+
+test("tool_call ignores non-bash tools", async () => {
+  const { handler } = hangGuard({ spawn: fakeSpawn("") });
+
+  const input = { path: "/tmp/x" };
+  assert.equal(await handler("tool_call")({ toolName: "read", input }, { cwd: ICLOUD_DIR }), undefined);
+  assert.equal(input.timeout, undefined);
+});
+
+test("a clean iCloud directory below the threshold is allowed", async () => {
+  const { handler } = hangGuard({ spawn: fakeSpawn("only-one\n") });
+
+  const input = { command: "git fsck" };
+  assert.equal(await handler("tool_call")({ toolName: "bash", input }, { cwd: ICLOUD_DIR }), undefined);
+  assert.equal(input.timeout, DEFAULT_BASH_TIMEOUT_SECONDS);
+});
+
+test("dataless guard can be disabled while the timeout stays active", async () => {
+  const calls = [];
+  const { handler } = hangGuard({
+    environment: { MILKSU_PI_DATALESS_GUARD: "0" },
+    spawn: fakeSpawn(manyDataless, { capture: calls }),
+  });
+
+  const input = { command: "git fsck" };
+  assert.equal(await handler("tool_call")({ toolName: "bash", input }, { cwd: ICLOUD_DIR }), undefined);
+  assert.equal(input.timeout, DEFAULT_BASH_TIMEOUT_SECONDS);
+  assert.equal(calls.length, 0);
+});
+
+test("the whole guard can be disabled", () => {
+  const { handlers } = hangGuard({ environment: { MILKSU_PI_HANG_GUARD: "0" } });
+  assert.equal(handlers.size, 0);
+});
 
 test("tool_result appends diagnostics to timeouts only", async () => {
   const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless) });
 
   const timeoutResult = await handler("tool_result")(
-    {
-      isError: true,
-      input: { command: "git fsck", timeout: 600 },
-      content: [{ type: "text", text: "timeout:600" }],
-    },
+    { isError: true, content: [{ type: "text", text: "timeout:120" }] },
     { cwd: ICLOUD_DIR },
   );
-  assert.match(timeoutResult.content.at(-1).text, /600s foreground limit/);
-  assert.match(timeoutResult.content.at(-1).text, /only in iCloud/);
+  assert.match(timeoutResult.content.at(-1).text, /terminated by its timeout/);
+  assert.match(timeoutResult.content.at(-1).text, /exist only in iCloud/);
 
   const otherError = await handler("tool_result")(
-    { isError: true, input: { command: "git fsck" }, content: [{ type: "text", text: "ENOENT" }] },
+    { isError: true, content: [{ type: "text", text: "ENOENT" }] },
     { cwd: ICLOUD_DIR },
   );
   assert.equal(otherError, undefined);
@@ -311,30 +373,11 @@ test("tool_result skips the scan outside iCloud roots", async () => {
   const { handler } = hangGuard({ spawn: fakeSpawn(manyDataless, { capture: calls }) });
 
   const result = await handler("tool_result")(
-    {
-      isError: true,
-      input: { command: "git fsck", timeout: 600 },
-      content: [{ type: "text", text: "timeout:600" }],
-    },
+    { isError: true, content: [{ type: "text", text: "timeout:120" }] },
     { cwd: PLAIN_DIR },
   );
-  assert.match(result.content.at(-1).text, /600s foreground limit/);
-  assert.doesNotMatch(result.content.at(-1).text, /iCloud/);
+  assert.match(result.content.at(-1).text, /terminated by its timeout/);
   assert.equal(calls.length, 0);
-});
-
-test("tool_result reports the explicit timeout the call actually used", async () => {
-  const { handler } = hangGuard({ spawn: fakeSpawn("") });
-
-  const result = await handler("tool_result")(
-    {
-      isError: true,
-      input: { command: "sleep 4000", timeout: 3600 },
-      content: [{ type: "text", text: "Command timed out" }],
-    },
-    { cwd: PLAIN_DIR },
-  );
-  assert.match(result.content.at(-1).text, /3600s foreground limit/);
 });
 
 // ───────────────────────── 配置 ─────────────────────────
@@ -344,16 +387,24 @@ test("config reads environment overrides and defaults", () => {
   assert.equal(defaults.defaultTimeoutSeconds, DEFAULT_BASH_TIMEOUT_SECONDS);
   assert.equal(defaults.maxTimeoutSeconds, MAX_BASH_TIMEOUT_SECONDS);
   assert.equal(defaults.enabled, true);
+  assert.equal(defaults.datalessGuardEnabled, true);
 
   const overridden = hangGuardConfig({
     MILKSU_PI_BASH_DEFAULT_TIMEOUT_SECONDS: "45",
     MILKSU_PI_BASH_MAX_TIMEOUT_SECONDS: "600",
+    MILKSU_PI_DATALESS_BLOCK_THRESHOLD: "5",
     MILKSU_PI_HANG_GUARD: "0",
   });
   assert.equal(overridden.defaultTimeoutSeconds, 45);
   assert.equal(overridden.maxTimeoutSeconds, 600);
+  assert.equal(overridden.datalessBlockThreshold, 5);
   assert.equal(overridden.enabled, false);
 
   const invalid = hangGuardConfig({ MILKSU_PI_BASH_DEFAULT_TIMEOUT_SECONDS: "-1" });
   assert.equal(invalid.defaultTimeoutSeconds, DEFAULT_BASH_TIMEOUT_SECONDS);
+});
+
+test("bulk patterns stay a non-empty list of regular expressions", () => {
+  assert.ok(BULK_COMMAND_PATTERNS.length > 0);
+  assert.ok(BULK_COMMAND_PATTERNS.every(pattern => pattern instanceof RegExp));
 });
