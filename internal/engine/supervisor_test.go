@@ -3439,6 +3439,7 @@ func TestNormalizeBridgeEventPassesStatusNoticesThrough(t *testing.T) {
 			ConversationTitle: "来源会话",
 			Agent:             "MilkSU agent",
 		},
+		Kind: "result",
 	}, KernelPi)
 	if delivery.Type != "agent.delivery" {
 		t.Fatalf("type = %q, want agent.delivery", delivery.Type)
@@ -3453,6 +3454,11 @@ func TestNormalizeBridgeEventPassesStatusNoticesThrough(t *testing.T) {
 	}
 	if delivery.DeliveryOrigin == nil || delivery.DeliveryOrigin.ConversationID != "session-1" {
 		t.Fatalf("deliveryOrigin = %+v, want the source conversation", delivery.DeliveryOrigin)
+	}
+	// 形态也被丢过：结果回复被归一成请求，后端就不去查“已授予结果回复”的授权，
+	// 于是对方明明用 result 回信，却被拒为 not-allowlisted。
+	if delivery.Kind != "result" {
+		t.Fatalf("kind = %q, want result", delivery.Kind)
 	}
 
 	// Anything unknown keeps the prefixed name, so it is never mistaken for a real event.

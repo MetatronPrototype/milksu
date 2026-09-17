@@ -139,26 +139,29 @@ type Event struct {
 	Notice         string                   `json:"notice,omitempty"`
 	// A cross-conversation delivery announced by a pi tool. Without these fields the
 	// renderer receives an event it cannot act on, so the message vanished silently.
-	TargetConversationID string                 `json:"targetConversationId,omitempty"`
-	DeliveryOrigin       *DeliveryOrigin        `json:"deliveryOrigin,omitempty"`
-	Choice               string                 `json:"choice,omitempty"`
-	BackgroundTasks      []BackgroundTask       `json:"backgroundTasks,omitempty"`
-	SubagentTasks        []SubagentTask         `json:"subagentTasks,omitempty"`
-	Jobs                 []DshJob               `json:"jobs,omitempty"`
-	Commands             []DshCommandDescriptor `json:"commands,omitempty"`
-	PlanMode             *DshPlanMode           `json:"planMode,omitempty"`
-	Command              *DshCommandResult      `json:"command,omitempty"`
-	Goal                 *CodingGoalState       `json:"goal,omitempty"`
-	Resumed              bool                   `json:"resumed,omitempty"`
-	Aborted              bool                   `json:"aborted,omitempty"`
-	Compaction           *CompactionResult      `json:"compaction,omitempty"`
-	Steering             []string               `json:"steering,omitempty"`
-	FollowUp             []string               `json:"followUp,omitempty"`
-	ModelSource          string                 `json:"modelSource,omitempty"`
-	Module               string                 `json:"module,omitempty"`
-	Usage                *ModelUsage            `json:"usage,omitempty"`
-	ContextComposition   *ContextComposition    `json:"contextComposition,omitempty"`
-	ForkedSessionID      string                 `json:"forkedSessionId,omitempty"`
+	TargetConversationID string          `json:"targetConversationId,omitempty"`
+	DeliveryOrigin       *DeliveryOrigin `json:"deliveryOrigin,omitempty"`
+	// 投递形态（request / result）。少了它，渲染层会把“结果回复”归一成普通请求，
+	// 后端就不会去查“已授予结果回复”那条授权，回信被拒为 not-allowlisted。
+	Kind               string                 `json:"kind,omitempty"`
+	Choice             string                 `json:"choice,omitempty"`
+	BackgroundTasks    []BackgroundTask       `json:"backgroundTasks,omitempty"`
+	SubagentTasks      []SubagentTask         `json:"subagentTasks,omitempty"`
+	Jobs               []DshJob               `json:"jobs,omitempty"`
+	Commands           []DshCommandDescriptor `json:"commands,omitempty"`
+	PlanMode           *DshPlanMode           `json:"planMode,omitempty"`
+	Command            *DshCommandResult      `json:"command,omitempty"`
+	Goal               *CodingGoalState       `json:"goal,omitempty"`
+	Resumed            bool                   `json:"resumed,omitempty"`
+	Aborted            bool                   `json:"aborted,omitempty"`
+	Compaction         *CompactionResult      `json:"compaction,omitempty"`
+	Steering           []string               `json:"steering,omitempty"`
+	FollowUp           []string               `json:"followUp,omitempty"`
+	ModelSource        string                 `json:"modelSource,omitempty"`
+	Module             string                 `json:"module,omitempty"`
+	Usage              *ModelUsage            `json:"usage,omitempty"`
+	ContextComposition *ContextComposition    `json:"contextComposition,omitempty"`
+	ForkedSessionID    string                 `json:"forkedSessionId,omitempty"`
 }
 
 // ModelUsage is the bounded, credential-free projection emitted by Pi after
@@ -400,6 +403,7 @@ type bridgeEvent struct {
 	Text                 string                 `json:"text"`
 	TargetConversationID string                 `json:"targetConversationId"`
 	DeliveryOrigin       *DeliveryOrigin        `json:"deliveryOrigin"`
+	Kind                 string                 `json:"kind"`
 	Justification        *ApprovalJustification `json:"justification"`
 	Choice               string                 `json:"choice"`
 	Tasks                []BackgroundTask       `json:"tasks"`
@@ -3512,6 +3516,7 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		event.Text = raw.Text
 		event.TargetConversationID = raw.TargetConversationID
 		event.DeliveryOrigin = raw.DeliveryOrigin
+		event.Kind = raw.Kind
 	case "approval_resolved":
 		event.Type = "approval.resolved"
 		event.Done = true
