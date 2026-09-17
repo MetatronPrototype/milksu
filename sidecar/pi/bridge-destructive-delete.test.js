@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  destructiveDeleteApproval,
   destructiveDeleteDecision,
   destructiveJustification,
   expandDeleteTarget,
@@ -18,6 +19,8 @@ import {
   consumeMatchingDestructiveDeleteCredential,
   issueDestructiveDeleteCredential,
   recursiveDeleteTargets,
+  stripFdOnlyRedirections,
+  writesPath,
   shellScriptArgument,
   resetDestructiveDeleteCredentials,
 } from "./bridge-destructive-delete.js";
@@ -223,7 +226,6 @@ test("the parser ignores quoted text, grep patterns and heredoc bodies", () => {
   assert.deepEqual(recursiveDeleteTargets("rm -rf /tmp/x"), ["/tmp/x"]);
   assert.deepEqual(recursiveDeleteTargets('rm -rf "/tmp/a b"'), ["/tmp/a b"]);
   assert.deepEqual(recursiveDeleteTargets('bash -c "rm -rf /tmp/y"'), ["/tmp/y"]);
-  assert.deepEqual(recursiveDeleteTargets('bash -lc "rm -rf /tmp/y"'), ["/tmp/y"]);
   assert.deepEqual(recursiveDeleteTargets("sh -c 'rm -rf /tmp/z'"), ["/tmp/z"]);
   assert.deepEqual(recursiveDeleteTargets("find /tmp/x -delete"), ["/tmp/x"]);
   // A pipe into xargs has no visible target, so the working directory is assumed.
@@ -381,7 +383,6 @@ test("guard-script-ref: the named script is recognised", () => {
   assert.equal(shellScriptArgument(["source", "/tmp/x.sh"]), "/tmp/x.sh")
   assert.equal(shellScriptArgument([".", "/tmp/x.sh"]), "/tmp/x.sh")
   assert.equal(shellScriptArgument(["python3", "/tmp/x.py"]), "/tmp/x.py")
-  assert.equal(shellScriptArgument(["./wipe.sh"]), "./wipe.sh")
 
   // Ordinary commands are not script references.
   assert.equal(shellScriptArgument(["rm", "-rf", "/tmp/x"]), undefined)
@@ -509,3 +510,115 @@ test("guard-script-cycle: mutual references converge", async (t) => {
   await writeFile(b, `#!/bin/sh\nbash ${a}\n`);
   assert.deepEqual(recursiveDeleteTargets(`bash ${a}`), []);
 });
+
+// The card reads the script out of a combined flag (`bash -lc "…"`). The guard has to read
+// the same thing, or a command the card refused becomes one the guard lets through.
+test("guard-inline-flag: the script inside a combined -c flag is judged", () => {
+  assert.deepEqual(recursiveDeleteTargets('bash -lc "rm -rf /tmp/x"'), ["/tmp/x"])
+  assert.deepEqual(recursiveDeleteTargets("sh -euc 'rm -rf /tmp/y'"), ["/tmp/y"])
+  assert.deepEqual(recursiveDeleteTargets('zsh -cx "rm -rf /tmp/z"'), ["/tmp/z"])
+  // A flag without `c` still names a file rather than carrying an inline script.
+  assert.equal(shellScriptArgument(["bash", "-e", "/tmp/x.sh"]), "/tmp/x.sh")
+  assert.equal(shellScriptArgument(["bash", "-lc", "rm -rf /tmp/x"]), undefined)
+})
+
+// `./wipe.sh` deletes exactly like `bash wipe.sh`; the file has to be read either way.
+test("guard-script-path: a script run by its own path is read", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-path-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const target = join(workspace, "big");
+  await mkdir(target, { recursive: true });
+  await writeFile(join(target, "f1"), "");
+  const script = join(workspace, "wipe.sh");
+  await writeFile(script, `#!/bin/sh\nrm -rf "${target}"\n`);
+
+  assert.equal(shellScriptArgument([script]), script);
+  assert.equal(shellScriptArgument(["./wipe.sh"]), "./wipe.sh");
+  assert.deepEqual(recursiveDeleteTargets(`${script}`), [target]);
+
+  // A bare binary path is not a script and is not read as one.
+  assert.equal(shellScriptArgument(["/usr/bin/rm"]), undefined);
+});
+
+// A script the command writes itself does not exist when the decision is made, so its
+// contents cannot be read. Reporting "no targets" would let the delete run unseen.
+test("guard-script-written: a script the command writes is refused", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-written-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const script = join(workspace, "wipe.sh");
+
+  const written = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `printf 'rm -rf /tmp/big' > ${script} && bash ${script}` },
+    policy: { workspace },
+  });
+  assert.equal(written?.action, "block");
+
+  // A heredoc counts as writing it too.
+  const heredoc = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `cat > ${script} <<'EOF'\nrm -rf /tmp/big\nEOF\nbash ${script}` },
+    policy: { workspace },
+  });
+  assert.equal(heredoc?.action, "block");
+
+  // A script that is merely missing is not a refusal: the command that named it fails anyway.
+  const missing = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `bash ${join(workspace, "nope.sh")}` },
+    policy: { workspace },
+  });
+  assert.notEqual(missing?.action, "block");
+});
+
+// The guard has to see `~` as the real home directory, not as a literal name.
+test("guard-home: `~` is expanded before the target is judged", async () => {
+  const decision = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: "rm -rf ~" },
+    policy: { workspace: "/tmp/not-the-home" },
+    homeDirectory: "/Users/probe",
+  });
+  assert.equal(decision?.action, "approval");
+  assert.match(decision.content, /\/Users\/probe/);
+});
+
+// The card can only judge a delete if the approval carries the delete: a bare path arrives
+// as plain text, which is not recognisable as a deletion.
+test("guard-approval-input: request_destructive_delete always sends a structured delete", () => {
+  const approval = destructiveDeleteApproval({ target: "/tmp/gate-probe", decision: null });
+  const parsed = JSON.parse(approval.input);
+  assert.equal(parsed.command, 'rm -rf "/tmp/gate-probe"');
+  assert.deepEqual(parsed.normalizedTargets.map(entry => entry.path), ["/tmp/gate-probe"]);
+  assert.ok(recursiveDeleteTargets(parsed.command).length > 0);
+
+  // When the guard already produced structured input, that one is used unchanged.
+  const withDecision = destructiveDeleteApproval({
+    target: "/tmp/gate-probe",
+    decision: { content: "ready", input: '{"command":"rm -rf \\"/x\\""}' },
+  });
+  assert.equal(withDecision.content, "ready");
+  assert.equal(withDecision.input, '{"command":"rm -rf \\"/x\\""}');
+});
+
+// `2>&1` merges stderr into the pipe; it writes no file. Treating it as a redirection made
+// the write-detection fire and then match whatever path the command happened to mention, so
+// `./node_modules/.bin/vitest run X 2>&1 | tail` was refused as "writes X".
+test("guard-fd: descriptor redirections are not file writes", () => {
+  const script = "/tmp/guard-fd-target.sh"
+  // No file redirection at all -> not a write, whatever the path looks like.
+  assert.equal(writesPath(`./node_modules/.bin/vitest run ${script} 2>&1 | tail`, script), false)
+  assert.equal(writesPath(`bash -c 'run ${script}' 2>&1`, script), false)
+  assert.equal(writesPath(`node ${script} 2>&1 >/dev/null`, script), false)
+  // The fd forms themselves are stripped, not the path.
+  assert.equal(stripFdOnlyRedirections("cmd 2>&1 | tail").replace(/\s+/g, " ").trim(), "cmd | tail")
+  assert.equal(stripFdOnlyRedirections("cmd >/dev/null 2>&1").trim(), "cmd")
+  // A real redirection that names the same path must still count.
+  assert.equal(writesPath(`printf 'rm -rf /tmp/x' > ${script} && bash ${script}`, script), true)
+  // A real redirection naming a different path must not.
+  assert.equal(writesPath(`printf 'x' > /tmp/other.sh && bash ${script}`, script), false)
+})
