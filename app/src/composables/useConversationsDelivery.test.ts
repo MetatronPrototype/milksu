@@ -8,12 +8,16 @@ type EventHandler = (event: { payload: unknown }) => void
 const handlers = new Map<string, EventHandler>()
 let stored: Record<string, unknown>[] = []
 const commandCalls: { command: string; args: unknown }[] = []
+let failDelivery = false
 
 vi.mock('@/desktop', () => ({
   invokeCommand: vi.fn(async (command: string, args?: unknown) => {
     commandCalls.push({ command, args })
     if (command === 'list_conversations') return stored
     if (command === 'get_coding_project_memory') return { recents: [], lastWorkspacePath: '' }
+    if (command === 'deliver_agent_message' && failDelivery) {
+      throw new Error('两个对话不在同一个项目里')
+    }
     return null
   }),
   listenEvent: vi.fn(async (name: string, handler: EventHandler) => {
@@ -26,6 +30,10 @@ function emitDelivery(payload: Record<string, unknown>) {
   handlers.get('agent-delivery')?.({ payload })
 }
 
+function emitEngineEvent(payload: Record<string, unknown>) {
+  handlers.get('engine-event')?.({ payload })
+}
+
 function conversation(id: string, messages: Record<string, unknown>[] = []) {
   return { id, title: id, createdAt: 1, workspacePath: '/tmp/project', messages }
 }
@@ -34,6 +42,7 @@ describe('cross-conversation delivery', () => {
   beforeEach(() => {
     handlers.clear()
     commandCalls.length = 0
+    failDelivery = false
     stored = [conversation('conversation-source'), conversation('conversation-target')]
   })
 
@@ -103,6 +112,68 @@ describe('cross-conversation delivery', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(commandCalls.some(call => call.command === 'settle_agent_delivery')).toBe(false)
+    const target = conversations.conversations.find(item => item.id === 'conversation-target')
+    expect(target?.messages ?? []).toHaveLength(0)
+  })
+
+  it('hands the sidecar delivery request to the backend instead of answering it locally', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    await conversations.load()
+    await conversations.listen()
+
+    // 侧车通过引擎事件把请求交给宿主：项目边界和限流都归后端，宿主只负责转交。
+    emitEngineEvent({
+      sessionId: 'conversation-source',
+      type: 'agent.delivery',
+      text: '交给别的对话处理',
+      requestId: 'request-9',
+      targetConversationId: 'conversation-target',
+      kind: 'result',
+      deliveryOrigin: { conversationId: 'conversation-source' },
+    })
+
+    await vi.waitFor(() => {
+      expect(commandCalls.some(call => call.command === 'deliver_agent_message')).toBe(true)
+    })
+    expect(commandCalls.find(call => call.command === 'deliver_agent_message')?.args).toMatchObject({
+      targetConversationId: 'conversation-target',
+      text: '交给别的对话处理',
+      kind: 'result',
+      // 只送来源 id：标题和 agent 由后端自己解析。
+      origin: { conversationId: 'conversation-source' },
+      requestId: 'request-9',
+    })
+  })
+
+  it('tells the sender when the backend refuses, so the tool never has to wait for a timeout', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    await conversations.load()
+    await conversations.listen()
+    failDelivery = true
+
+    emitEngineEvent({
+      sessionId: 'conversation-source',
+      type: 'agent.delivery',
+      text: '跨项目的消息',
+      requestId: 'request-10',
+      targetConversationId: 'conversation-target',
+      deliveryOrigin: { conversationId: 'conversation-source' },
+    })
+
+    await vi.waitFor(() => {
+      expect(commandCalls.some(call => call.command === 'settle_agent_delivery')).toBe(true)
+    })
+    expect(commandCalls.find(call => call.command === 'settle_agent_delivery')?.args).toMatchObject({
+      conversationId: 'conversation-source',
+      requestId: 'request-10',
+      status: 'refused',
+    })
+    // 拒绝必须说真话，而且不能把消息硬塞进目标对话。
+    expect(String(
+      (commandCalls.find(call => call.command === 'settle_agent_delivery')?.args as { detail?: string })?.detail ?? '',
+    )).toContain('不在同一个项目')
     const target = conversations.conversations.find(item => item.id === 'conversation-target')
     expect(target?.messages ?? []).toHaveLength(0)
   })

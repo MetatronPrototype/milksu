@@ -3416,6 +3416,42 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         noteTurnHeartbeat(sessionId)
         return
       }
+      if (type === 'agent.delivery') {
+        // 搬运自本地分支（C 缺失的一环）：侧车把投递请求交给宿主，宿主只有一条路——
+        // 转给后端，项目边界和限流都归它管。后端接受了才发 agent-delivery 事件，
+        // 那一步才是真正把消息写进目标对话。
+        const delivery = event.payload as unknown as {
+          targetConversationId?: string
+          kind?: string
+          // 只读 id：标题和 agent 由后端自己解析，调用方伪造不了。
+          deliveryOrigin?: { conversationId?: string }
+        }
+        const deliveryTarget = String(delivery?.targetConversationId ?? '').trim()
+        const deliveryBody = String(text ?? '').trim()
+        const deliverySource = String(delivery?.deliveryOrigin?.conversationId ?? '').trim()
+        const deliveryRequest = String(requestId ?? '').trim()
+        if (!deliveryTarget) return
+        if (!deliveryBody) {
+          // 绝不静默丢弃：发信方必须知道这条投递哪儿也没去。
+          settleAgentDelivery(deliverySource, deliveryRequest, 'refused', 'the announcement carried no text')
+          return
+        }
+        if (deliverySource && deliverySource === deliveryTarget) {
+          settleAgentDelivery(deliverySource, deliveryRequest, 'refused', 'a conversation cannot deliver to itself')
+          return
+        }
+        void invokeCommand('deliver_agent_message', {
+          targetConversationId: deliveryTarget,
+          text: deliveryBody,
+          kind: normalizeDeliveryKind(delivery?.kind),
+          origin: { conversationId: deliverySource },
+          ...(deliveryRequest ? { requestId: deliveryRequest } : {}),
+        }).catch(err => {
+          // 被拒绝必须说出来，否则发信方只能等到超时才知道。
+          settleAgentDelivery(deliverySource, deliveryRequest, 'refused', agentErrorMessage(err))
+        })
+        return
+      }
       if (type === 'tool.started' || type === 'tool.progress') {
         noteToolRunning(sessionId, toolCallId, toolName, true)
       } else if (type === 'tool.completed') {
