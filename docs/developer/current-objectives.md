@@ -25,7 +25,7 @@
 | --- | --- |
 | 阶段 | 内测迭代 / Agent Runtime 与跨平台发行收敛。不再按 M3/M4 组织。 |
 | 历史基线 | M3 product-loop 已在 `108e0e3`（2026-08-05）合并，仅供追溯。 |
-| 当前开发 | 新对话可选 Pi 或 DeepSeek Harness；设置 → 模型「默认运行时」只改新对话 kernel，不改写旧会话。出厂默认官方 DeepSeek Flash、默认运行时 Pi。工作树 DSH 钉 `0.1.6-alpha.1`（内核，不是 UI 参考；原厂 GUI 是 `dsh web`）。Pi 子 Agent 默认主工作区、父回合阻塞；DSH 可在 Multitask 下用 ACP `session/new` 开子会话并继续主对话。Working 短胶囊对 Pi / DSH 同一套信息架构。Computer Use 由模型列窗 / 认窗 / 锁定。产品回归入口 `npm run test:product-loop`。产品 UI 语言和工作树 renderer 是 React + shadcn，见 `AGENTS.md`。`v26.916.2` 安装包已是 React + shadcn。未做：新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。宽作业用 `recon-authorized-target` Skill，不造 typed sweep。 |
+| 当前开发 | 新对话可选 Pi 或 DeepSeek Harness；设置 → 模型「默认运行时」只改新对话 kernel，不改写旧会话。出厂默认官方 DeepSeek Flash、默认运行时 Pi。工作树 DSH 钉 `0.1.6-alpha.1`（内核，不是 UI 参考；原厂 GUI 是 `dsh web`）。Pi 子 Agent 默认主工作区、父回合阻塞；DSH 可在 Multitask 下用 ACP `session/new` 开子会话并继续主对话。Working 短胶囊对 Pi / DSH 同一套信息架构。Computer Use 由模型列窗 / 认窗 / 锁定。产品回归入口 `npm run test:product-loop`。产品 UI 语言和工作树 renderer 是 React + shadcn，见 `AGENTS.md`。未做：新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。宽作业用 `recon-authorized-target` Skill，不造 typed sweep。 |
 | 平台边界 | macOS DMG 签名公证；Windows 安装器未代码签名，打入 CUA Driver `0.27.0`；Linux 发共用 DEB 与 tarball，GNOME Portal 已进包，无 Secret Service / 本地 OCR；Hyprland/Xorg Computer Use 不可用。Windows/Linux 窗口铬尚未真机验收。安装包见 README。 |
 | 发行流水 | 干净已推送的 `main` 上跑一次 canonical 验证；三端走 GitHub-hosted。`macos-release` 仅限 `main`，dispatch 后立即签名。正式包装 OTA 到私有 R2 并发布 current pointer；GitHub Release 不上 updater ZIP。 |
 
@@ -33,16 +33,16 @@
 
 更早的 tag 见 [GitHub Releases](https://github.com/MilkSU-Official/milksu/releases)，本页不复述。
 
-最近一次正式包装源 `8e44b319`（`26.916.2`）：产品 UI 改为 React + shadcn；设置可选界面/对话字族与 11–18px 字号；默认运行时 DSH；Working / Multitask；主题 light/dark 不再跟系统反转。Windows 安装器仍未代码签名。
+最近一次正式包装源 `bd3199c7`（`26.917.1`）：整理上下文 / 接到新会话短会话不再失败，新会话铺原文或 harness 摘要；DSH 打 TokenFlux 保留厂商前缀；出厂默认运行时 Pi；Windows 上 DSH 操作内置浏览器不再把进程打死。Windows 安装器仍未代码签名。
 
-发行页：<https://github.com/MilkSU-Official/milksu/releases/tag/v26.916.2>
+发行页：<https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.1>
 
 | 平台 | Workflow | 安装包 | 大小 | SHA-256 |
 | --- | --- | --- | ---: | --- |
-| macOS ARM64 | `35119063866` | `MilkSU-macOS-arm64-26.916.2.dmg` | 329,078,946 B | `826e3093a844a4bbf928f7289d6002d479456fe2422277a27e25a33646d9f25b` |
-| Windows x64 | `35119069646` | `MilkSU-Windows-x64-26.916.2-Setup.exe` | 263,083,136 B | `c89556da71015e40149f23f8bc88475bd4584cd2e51819203b13c70b236f4817` |
-| Linux x64 DEB | `35121459391` | `MilkSU-Linux-x64-26.916.2.deb` | 236,953,320 B | `ea72ec77388e3b850ffb2081db1328730d3d9e169ea598037c0661c4bb1f3157` |
-| Linux x64 tarball | `35121459391` | `MilkSU-Linux-x64-26.916.2.tar.gz` | 290,163,067 B | `5927ea2ab7ef0ebe628eee91b2d2d3eff3c4aff2f878e7b72b1c9748a381ac73` |
+| macOS ARM64 | `35197857407` | `MilkSU-macOS-arm64-26.917.1.dmg` | 329,034,308 B | `077881adaf9658eee2aa3faeadc4fc0af45daf4be9f6f66fa43d1da1fbd75771` |
+| Windows x64 | `35197861113` | `MilkSU-Windows-x64-26.917.1-Setup.exe` | 263,090,915 B | `5d8b0b8abaf4139e2e8c23868be7ebb272ff09b70300a54c9f1c062592cc7ad5` |
+| Linux x64 DEB | `35197870733` | `MilkSU-Linux-x64-26.917.1.deb` | 236,970,528 B | `143a8135e1058438382edea68f37909af686dd37f06ff462a3fea36012d507e7` |
+| Linux x64 tarball | `35197870733` | `MilkSU-Linux-x64-26.917.1.tar.gz` | 290,171,751 B | `2fc9837153c3b583422c32525c2d8df79d9c115435665441257acb29df44a79e` |
 
 ## 未打进 GitHub 安装包
 
@@ -50,14 +50,8 @@
 - Computer Use 选窗器仍是可选人工面。宽作业走 `recon-authorized-target` Skill，不造 typed sweep。
 - DSH `bash` 没有 MilkSU 侧超时上界（工具在 harness 进程内，不要在客户端复刻第二套循环）。
 - 不要把 `test:dsh-complete-loop` 当主入口。产品回归走 `npm run test:product-loop`。
-- 整理上下文 / 接到新会话：Pi 短会话不再把「Nothing to compact」当成失败；DSH 整理失败不再开空会话，并把整理后的表面上下文种进新会话。新会话 GUI 显示上一会话原文，或 Pi/DSH 已产出的整理摘要，不再只留一句罐头。`composer-runtime` 已覆盖。未进安装包。
-- DSH 打 TokenFlux（`https://tokenflux.dev/v1`）时保留产品侧 `prefix/model`（例如 `deepseek/deepseek-flash`），不再把复合 Key 收成无前缀 ACP 叶名。官方 DeepSeek 直连仍用叶名。出厂默认运行时是 Pi；已落盘的 DSH 选择和旧会话不改写。未进安装包。
 - Agent Harness：DSH 没有 Cursor 那种 `run_in_background` Task。ACP `session/prompt` 要等到 `whenIdle`（含子代理）才结算，所以主对话继续发走 host `Agent.followup`。作曲栏停止键只在父回合还在生成、压缩或中止时出现。加号 Multitask 才是另开 ACP 子会话。Pi 的 `subagent` 仍阻塞父工具。不要升 Pi 来假装能并行。
 - 不要复刻原厂 `dsh web` 皮肤、Queue dock、Jobs 顶栏、slash 目录或 Agent preset 切换器。未复刻 child transcript、preset、插件清单、归档、Schedule。
-- 设置 → 通用「强调色」：出厂默认墨色；可选蓝 / 紫 / 青 / 琥珀 / 玫红。彩色预设同时改写 `--emphasis` 与 `--primary`，发送/主按钮、选中滤片、Switch / Checkbox、进度条、侧栏选中细条和 `text-primary` 勾选跟色；侧栏「更新」仍用固定 `--update` 蓝。即时落盘。未进安装包。
-- 准备 writer 时按停止，有时同时出现「本轮已停止。」和「Agent 运行失败」。合同只留前者。
-- reasoning-only 终局：上游只有思考没有正文时，Pi 用一次禁工具 follow-up 补短答复，DSH 在同一回合再 prompt 一次；失败后对话显示「这一轮没有可见正文」和继续。不把 thinking 复制进正文，也不再阻断正常工具调用。未进安装包。
-- Windows 上 DSH 操作内置浏览器时，`milksu_workspace` 走 product IPC named pipe；客户端断开曾把未处理的 `error` 抛成 sidecar 退出，UI 只剩「这个项目的 Agent 进程已停止」。Pi 的 workspace 在桥进程内，所以同一场景 Pi 能点。打包 Sidecar 还漏了 `playwright-lazy-mcp.cjs`（Pi 有 `playwright-session-bridge.cjs`），安装包里的 DSH 挂不上隔离浏览器点击。工作树已修。未进安装包。
 
 ## 当前产品事实
 
