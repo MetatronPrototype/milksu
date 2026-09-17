@@ -568,3 +568,29 @@ commandQueue = commandQueue.then(() => handleCommand(command))
 
 **一条功能可以跨三个语言层同时断掉，而每一层单独看都"像是好的"。**
 盲测（真的发一条）是唯一能发现这种事的方法——静态检查、单测全绿都盖不住。
+
+## 跨对话投递端到端验证通过 ✅（beta.23，2026-09-17 23:35）
+
+三个断点全部修完后，重发三条，工具**第一次拿到了真实回执**（此前三次都是
+"Unconfirmed: ... did not report the outcome before the wait timed out"）：
+
+```
+Delivered: MilkSU accepted the message for fa500e38… (TestA) and dispatched it.
+Delivered: MilkSU accepted the message for db73405a… (TestB) and dispatched it.
+Delivered: MilkSU accepted the message for 4da74902… (TestC) and dispatched it.
+```
+
+判决能回到发信方，说明整条往返链路都通了：
+
+```
+侧车工具 → broker.request
+  → 引擎事件 agent.delivery（stdout JSON）
+  → Go 解析（字段必须存在）→ 转发给渲染层
+  → 渲染层转 RPC deliver_agent_message → 后端校验 + 发公告
+  → 渲染层落库 + settle 回执
+  → Go 写 delivery_response 给侧车（必须绕开串行命令队列）
+  → broker.respond → 工具拿到 verdict
+```
+
+**缺任何一环都只会得到超时**。这也说明这类跨语言链路无法靠单层检查发现——
+只能真发一条看回执。
