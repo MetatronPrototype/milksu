@@ -19,7 +19,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve as resolvePath, sep } from "node:path";
 
-export const DEFAULT_BASH_TIMEOUT_SECONDS = 120;
+export const DEFAULT_BASH_TIMEOUT_SECONDS = 600;
 export const MAX_BASH_TIMEOUT_SECONDS = 3600;
 export const DATALESS_BLOCK_THRESHOLD = 20;
 export const DATALESS_SCAN_TIMEOUT_MS = 2500;

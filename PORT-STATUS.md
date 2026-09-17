@@ -275,3 +275,49 @@ npm run test:sidecar                                # 736 / 736
 
 用这个分支重新构建试验田（`MILKSU_REPO=~/MilkSU/Coding/milksu-react bash 试验田打包安装.sh`），
 得到 `beta.18` = React 界面 + 上面这些搬过来的修复。
+
+---
+
+# 更新（第五次）：按你的决定改引擎设计 + 超时
+
+## 关键发现：「引擎设计跟我的」不能整块替换
+
+试过才知道：本地的 `internal/engine/supervisor.go` 不只是"停靠池设计不同"，而是**一个更老的引擎**，
+缺整块上游后来的工作：
+
+```
+engine.SessionHandoffResult / WorkspaceForSession / AbortMessage 签名
+QueueMessage / ListDshCommands / ExecuteDshCommand / DshCommandDescriptor / DshCommandResult / DshPlanMode
+```
+
+这些是 **DSH 运行时支持**（上游"接入 0.1.6 完整内核"那批）。整块替换 = 把 DSH 支持删掉。
+所以只能**以上游引擎为底，把你的设计逐项改上去**。已恢复并逐项实施。
+
+## 已实施（都在上游引擎上做的小改动）
+
+| 项 | 内容 |
+|---|---|
+| 停靠池上限 | `maxParkedSidecars` **3 → 6**（你的设定；硬上限随之 6 → 12） |
+| 刚收到指令的保护 | 新增 `lastPromptAt`：`writeToSessionLocked` 写完命令即记录；回收候选判定里 30 秒内视为忙 |
+| 还在说话的保护 | 新增 `lastActivity`：`readEvents` 每读到一行即记录；30 秒内视为忙 |
+| 跑探针也算忙 | 新增 `workspaceHasWaiterLocked`：工作区里任一会话在等 `probeWaiters` / `controlWaiters` / `recoveryWaiters` 时，该停靠 sidecar 不参与回收 |
+| bash 默认超时 | **120 → 600 秒**（跟上游） |
+
+改动集中在 `oldestParkedCandidateLocked` 的 `requireIdle` 判据上，**不动上游的硬上限与停止事件**。
+
+验证：`go build` ✅、`go test ./internal/... ./cmd/milksu-backend/` 全绿、
+前端 vitest 101 文件 / 627 测试 ✅、侧车 736/736 ✅、hang-guard 29/29 ✅
+
+## ② 里剩下的 3 项（未做，各自需要单独一轮）
+
+| 项 | 为什么单独做 |
+|---|---|
+| `parkedTurnStaleWindow` | 上游已有"硬上限"来兜住同类泄漏（转弯不报完成时仍会被回收）。两套机制合并要先决定策略，否则重复设防反而难懂 |
+| `decrementActiveTurns` | 绑在本地"每进程 activeTurns 计数器"的设计上；上游用的是 supervisor 级会话状态（`busySessions`），不是同一套 |
+| 停止原因上报 | 要给事件结构加 `Reason` 字段，并改 `stopChildProcess` 的签名和**全部 7 处调用点** |
+
+## ① 中未采纳的部分（明确记录）
+
+`staleSidecarGraceTimeout` 保留上游的 **75 分钟**（本地是 10 分钟）。
+上游注释里写明理由：hang guard 允许单次 bash 跑到 3600 秒，宽限短于这个上限会**杀掉仍在合法工作的回合**。
+本地那 10 分钟与之矛盾，采纳会引入该回归。

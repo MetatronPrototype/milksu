@@ -34,7 +34,9 @@ const (
 	// parked sidecar that has no turn in flight is stopped. A sidecar that is still
 	// running a turn is kept even when that leaves the set over the limit: stopping
 	// it is exactly the loss parking exists to prevent.
-	maxParkedSidecars = 3
+	//
+	// 6 而非 3：搬运自本地分支（本地一直用 6）。硬上限会随之放大到 12。
+	maxParkedSidecars = 6
 	// maxParkedSidecarsHardLimit bounds the set even when every parked sidecar still
 	// looks busy, so a turn that never reports completion cannot leak processes.
 	maxParkedSidecarsHardLimit = 2 * maxParkedSidecars
@@ -432,6 +434,14 @@ type childProcess struct {
 	// stay here until they settle, while anything started afterwards belongs to the
 	// replacement. Written and read under Supervisor.mu.
 	retiredTurns map[string]struct{}
+	// lastPromptAt records when a command was handed to this sidecar. Its turn_started
+	// event may still be in flight, so the park pool must not read that window as idle:
+	// doing so killed a sidecar mid-turn and made a brand-new task look stuck at 0.0s.
+	// 搬运自本地分支。
+	lastPromptAt atomic.Int64
+	// lastActivity is the last time this sidecar wrote a line, so a process that is plainly
+	// still talking to us (slow model, long tool) is never read as idle. 搬运自本地分支。
+	lastActivity atomic.Int64
 }
 
 type sidecarStderrBuffer struct {
@@ -676,7 +686,13 @@ func (s *Supervisor) writeToSessionLocked(sessionID string, value any) error {
 	if proc == nil {
 		return s.sidecarMissingError(sessionID)
 	}
-	return writeCommand(proc.stdin, value)
+	if err := writeCommand(proc.stdin, value); err != nil {
+		return err
+	}
+	// The sidecar has work in hand now, so protect it from the park pool even before its
+	// first event arrives (搬运自本地分支：刚收到指令的 sidecar 不许被回收).
+	proc.lastPromptAt.Store(time.Now().UnixNano())
+	return nil
 }
 
 func (s *Supervisor) rememberForkedSessionLocked(parentID, forkedID string) {
@@ -777,6 +793,51 @@ func (s *Supervisor) workspaceHasRunningTurnLocked(kernel, workspace string) boo
 
 // oldestParkedCandidateLocked returns the least recently parked sidecar of one kernel.
 // When requireIdle is set, sidecars still running a turn are skipped.
+// parkedBusyWindow bounds how long "it just received work" protects a sidecar. A variable
+// so tests can shorten it. 搬运自本地分支。
+var parkedBusyWindow = 30 * time.Second
+
+func recentEnough(stamp int64, now time.Time) bool {
+	if stamp <= 0 {
+		return false
+	}
+	return now.Sub(time.Unix(0, stamp)) < parkedBusyWindow
+}
+
+// parkedProcessRecentlyBusy reports whether the process itself looks busy right now, even
+// when no session is registered as running a turn yet: a prompt that was just handed over
+// and a sidecar still writing both fall in that gap, and reading the gap as idle is what let
+// the park pool kill a sidecar mid-turn. 搬运自本地分支。
+func (s *Supervisor) parkedProcessRecentlyBusy(process *childProcess) bool {
+	if process == nil {
+		return false
+	}
+	now := time.Now()
+	return recentEnough(process.lastPromptAt.Load(), now) ||
+		recentEnough(process.lastActivity.Load(), now)
+}
+
+// workspaceHasWaiterLocked reports whether any session in the workspace is waiting on a
+// model probe, a control round-trip or a recovery. That is work a parked sidecar is still
+// serving even though no turn is registered. 搬运自本地分支。
+func (s *Supervisor) workspaceHasWaiterLocked(workspace string) bool {
+	for sessionID, bound := range s.sessionWorkspaces {
+		if bound != workspace {
+			continue
+		}
+		if _, waiting := s.probeWaiters[sessionID]; waiting {
+			return true
+		}
+		if _, waiting := s.controlWaiters[sessionID]; waiting {
+			return true
+		}
+		if waiters := s.recoveryWaiters[sessionID]; len(waiters) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Supervisor) oldestParkedCandidateLocked(kernel string, requireIdle bool) string {
 	prefix := NormalizeKernel(kernel) + "\x00"
 	oldestKey := ""
@@ -787,7 +848,9 @@ func (s *Supervisor) oldestParkedCandidateLocked(kernel string, requireIdle bool
 		}
 		process := s.parked[key]
 		if requireIdle && process != nil &&
-			s.workspaceHasRunningTurnLocked(kernel, process.workspace) {
+			(s.workspaceHasRunningTurnLocked(kernel, process.workspace) ||
+				s.parkedProcessRecentlyBusy(process) ||
+				s.workspaceHasWaiterLocked(process.workspace)) {
 			continue
 		}
 		if oldestKey == "" || at.Before(oldestAt) {
@@ -2996,6 +3059,9 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 	buffer := make([]byte, 64*1024)
 	scanner.Buffer(buffer, 4*1024*1024)
 	for scanner.Scan() {
+		// The process is alive and talking: record it so the park pool never reads a
+		// quiet-but-working sidecar as idle (搬运自本地分支).
+		process.lastActivity.Store(time.Now().UnixNano())
 		var raw bridgeEvent
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			s.emitEvent(Event{Engine: kernel, Type: "engine.protocol_error", Error: err.Error()})
