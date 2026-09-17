@@ -4,6 +4,16 @@ import type { Message } from '@/types'
 export type ComposerRunPhase = 'idle' | 'parent' | 'working' | 'compacting' | 'aborting'
 
 export const STALE_PARENT_RUN_MS = 2_000
+/**
+ * pi 的“引擎彻底没声了”兜底。
+ *
+ * 2 秒那条本来是为 DSH/ACP 写的（一段 assistant 行可能在 Working 空掉后还挂着 running）。
+ * 把它套到 pi 上就变成了一个假信号：工具刚结束、模型正在想下一步的那几秒里
+ * 没有任何“running 消息”，于是回合被判定结束 → 红停止按钮消失又出现（用户实测的闪），
+ * 而且那段缝里发出去的消息会被当成新回合。pi 的回合结束是引擎显式上报的
+ * （turn_settled → assistant.settled → finishRun），所以这里只需要一个很长的兜底。
+ */
+export const STALE_PARENT_RUN_FALLBACK_MS = 5 * 60_000
 
 export function isBackgroundWorkingTool(toolName?: string) {
   const name = String(toolName ?? '').trim().toLowerCase()
@@ -55,6 +65,7 @@ export function parentHasActiveTurnResidue(
 }
 
 export function shouldClearParentRun(input: {
+  kernel: AgentKernel
   parentMarkedRunning: boolean
   compacting: boolean
   aborting: boolean
@@ -67,7 +78,8 @@ export function shouldClearParentRun(input: {
   if (input.liveWorkingCount > 0) return false
   if (input.parentHasActiveTurnResidue) return false
   if (input.workingJustEmptied) return true
-  return input.msSinceRunStart >= STALE_PARENT_RUN_MS
+  const threshold = input.kernel === 'dsh' ? STALE_PARENT_RUN_MS : STALE_PARENT_RUN_FALLBACK_MS
+  return input.msSinceRunStart >= threshold
 }
 
 export function composerRunPhase(input: {
@@ -83,6 +95,7 @@ export function composerRunPhase(input: {
   if (input.aborting && input.parentMarkedRunning) return 'aborting'
   if (
     shouldClearParentRun({
+      kernel: input.kernel,
       parentMarkedRunning: input.parentMarkedRunning,
       compacting: false,
       aborting: false,

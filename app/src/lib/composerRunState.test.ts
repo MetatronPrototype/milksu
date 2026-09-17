@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Message } from '@/types'
 import {
   STALE_PARENT_RUN_MS,
+  STALE_PARENT_RUN_FALLBACK_MS,
   composerAllowsFollowupSend,
   composerParentTurnActive,
   composerRunPhase,
@@ -55,6 +56,7 @@ describe('composer run state', () => {
 
   it('keeps a just-started parent turn even before the first token', () => {
     expect(shouldClearParentRun({
+      kernel: 'pi',
       parentMarkedRunning: true,
       compacting: false,
       aborting: false,
@@ -75,6 +77,7 @@ describe('composer run state', () => {
 
   it('clears a stale parent run after subagents finish and the parent has no residue', () => {
     expect(shouldClearParentRun({
+      kernel: 'dsh',
       parentMarkedRunning: true,
       compacting: false,
       aborting: false,
@@ -84,6 +87,7 @@ describe('composer run state', () => {
       msSinceRunStart: 80,
     })).toBe(true)
     expect(shouldClearParentRun({
+      kernel: 'dsh',
       parentMarkedRunning: true,
       compacting: false,
       aborting: false,
@@ -92,6 +96,7 @@ describe('composer run state', () => {
       msSinceRunStart: STALE_PARENT_RUN_MS,
     })).toBe(true)
     expect(shouldClearParentRun({
+      kernel: 'dsh',
       parentMarkedRunning: true,
       compacting: false,
       aborting: false,
@@ -111,6 +116,29 @@ describe('composer run state', () => {
     })).toBe('idle')
     expect(composerShowsStop('idle')).toBe(false)
     expect(composerAllowsFollowupSend('idle')).toBe(true)
+  })
+
+  it('does not call a pi turn over during the thinking gap between tool calls', () => {
+    // 工具刚结束、模型还在想下一步：这几秒里没有任何 running 消息。
+    // 阈值曾经是共用的 2 秒，于是这段时间被当成“回合结束”——
+    // 红停止按钮消失又出现，缝里发出的消息会被当成新回合（用户实测到的闪）。
+    const quietGap = {
+      kernel: 'pi' as const,
+      parentMarkedRunning: true,
+      compacting: false,
+      aborting: false,
+      liveWorkingCount: 0,
+      parentHasActiveTurnResidue: false,
+    }
+    expect(shouldClearParentRun({ ...quietGap, msSinceRunStart: 30_000 })).toBe(false)
+    expect(composerRunPhase({ ...quietGap, msSinceRunStart: 30_000 })).toBe('parent')
+    expect(composerShowsStop('parent')).toBe(true)
+
+    // 但引擎彻底没声了很久，还是要能收场（兜底不只对 DSH 有）。
+    expect(shouldClearParentRun({
+      ...quietGap,
+      msSinceRunStart: STALE_PARENT_RUN_FALLBACK_MS,
+    })).toBe(true)
   })
 
   it('does not show the composer stop while only DSH background Working is live', () => {

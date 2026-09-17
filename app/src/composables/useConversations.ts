@@ -1847,6 +1847,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     const liveWorkingCount = liveWorkingCountFor(id)
     const workingJustEmptied = extras?.workingJustEmptied === true
     if (!shouldClearParentRun({
+      kernel,
       parentMarkedRunning: s.runningIds.has(id),
       compacting: s.continuity.compacting.has(id),
       aborting: s.abortingIds.has(id),
