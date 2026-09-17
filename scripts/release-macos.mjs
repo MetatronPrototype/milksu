@@ -117,6 +117,23 @@ async function assertOtaZipShipItReady(targetZipPath) {
   }
 }
 
+async function assertDmgVolumeBackground(mountPoint) {
+  const candidates = [
+    join(mountPoint, '.background.tiff'),
+    join(mountPoint, '.background.tif'),
+    join(mountPoint, '.background.png'),
+  ]
+  for (const path of candidates) {
+    try {
+      await stat(path)
+      return path
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+  }
+  throw new Error('DMG is missing the Finder background (.background.tiff from the @2x pair)')
+}
+
 async function verifyDmgInstallLayout(targetDmgPath) {
   const mountPoint = await mkdtemp(join(tmpdir(), 'milksu-dmg-layout-'))
   let attached = false
@@ -135,7 +152,7 @@ async function verifyDmgInstallLayout(targetDmgPath) {
       throw new Error(`DMG Applications shortcut points to ${applicationsTarget}`)
     }
     await stat(join(mountPoint, '.DS_Store'))
-    await stat(join(mountPoint, '.background.png'))
+    await assertDmgVolumeBackground(mountPoint)
   } finally {
     if (attached) await run('/usr/bin/hdiutil', ['detach', mountPoint])
     await rm(mountPoint, { recursive: true, force: true })

@@ -97,5 +97,6 @@ test('macOS DMG background is rasterized at 1x and @2x for the Finder window', (
   assert.match(macReleaseScript, /rasterizeDmgBackground\(/u)
   assert.match(macReleaseScript, /DMG_WINDOW_WIDTH/u)
   assert.match(macReleaseScript, /DMG_WINDOW_HEIGHT/u)
+  assert.match(macReleaseScript, /\.background\.tiff/u)
   assert.doesNotMatch(macReleaseScript, /sips', \[\s*'-s', 'format', 'png'/u)
 })
