@@ -954,6 +954,9 @@ type ConversationsState = {
   engineNoticeAt: number
   abortStalledIds: Set<string>
   stalledQueueIds: Set<string>
+  // 搬运自本地分支：三级停止的第二/三级。
+  forceStopReadyIds: Set<string>
+  hardStopFailedIds: Set<string>
   continuity: CodingContinuityState
   turnStatusById: Map<string, SessionTurnSnapshot>
   conversationActionError: string
@@ -1005,6 +1008,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     engineNoticeAt: 0,
     abortStalledIds: new Set<string>(),
     stalledQueueIds: new Set<string>(),
+    forceStopReadyIds: new Set<string>(),
+    hardStopFailedIds: new Set<string>(),
     continuity: createCodingContinuityState(),
     turnStatusById: new Map<string, SessionTurnSnapshot>(),
     conversationActionError: '',
@@ -1068,6 +1073,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set engineNoticeAt(value) { store.setState({ engineNoticeAt: value }) },
     get abortStalledIds() { return store.getState().abortStalledIds },
     set abortStalledIds(value) { store.setState({ abortStalledIds: value }) },
+    get forceStopReadyIds() { return store.getState().forceStopReadyIds },
+    set forceStopReadyIds(value) { store.setState({ forceStopReadyIds: value }) },
+    get hardStopFailedIds() { return store.getState().hardStopFailedIds },
+    set hardStopFailedIds(value) { store.setState({ hardStopFailedIds: value }) },
     get stalledQueueIds() { return store.getState().stalledQueueIds },
     set stalledQueueIds(value) { store.setState({ stalledQueueIds: value }) },
     get continuity() { return store.getState().continuity },
@@ -1123,16 +1132,81 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     clearAbortWatchdog(id)
     const timer = window.setTimeout(() => {
       abortWatchdogs.delete(id)
-      if (!s.runningIds.has(id)) return
-      const stalled = new Set(s.abortStalledIds)
-      stalled.add(id)
-      s.abortStalledIds = stalled
+      if (!s.runningIds.has(id) && !s.abortingIds.has(id)) return
+      // 搬运自本地分支：第一次无确认只给“重试停止”；第二次仍无确认就升级为“本地强制停止”，
+      // 否则用户会永远在“重试”和“停止中”之间打转。
+      if (abortRetriedIds.has(id)) {
+        abortRetriedIds.delete(id)
+        s.forceStopReadyIds = new Set(s.forceStopReadyIds).add(id)
+        s.abortStalledIds = new Set([...s.abortStalledIds].filter(item => item !== id))
+      } else {
+        abortRetriedIds.add(id)
+        s.abortStalledIds = new Set(s.abortStalledIds).add(id)
+      }
       if (!s.abortingIds.has(id)) return
       const aborting = new Set(s.abortingIds)
       aborting.delete(id)
       s.abortingIds = aborting
     }, ABORT_CONFIRM_TIMEOUT_MS)
     abortWatchdogs.set(id, timer)
+  }
+
+  // 已经烧掉一次 10 秒确认等待的会话；下一次仍无确认就升级。
+  const abortRetriedIds = new Set<string>()
+  // 本地强制停止后，这段时间内丢掉该会话的迟到引擎事件，免得一个迟到的 delta 把回合“复活”。
+  const FORCE_STOP_GUARD_MS = 30_000
+  // 只守被强制停掉的“那个回合”：epoch 一变（新的一轮）立刻释放。
+  const runEpochByConversation = new Map<string, number>()
+  const forceStopGuard = new Map<string, { epoch: number; until: number }>()
+  function currentRunEpoch(id: string) {
+    return runEpochByConversation.get(id) ?? 0
+  }
+  function beginNewRun(id: string) {
+    runEpochByConversation.set(id, currentRunEpoch(id) + 1)
+  }
+  function clearForceStopReady(id: string) {
+    abortRetriedIds.delete(id)
+    if (!s.forceStopReadyIds.has(id)) return
+    s.forceStopReadyIds = new Set([...s.forceStopReadyIds].filter(item => item !== id))
+  }
+  /**
+   * 第三级：引擎两次都没确认时，就地结算这个回合，并请后端把 sidecar 硬停。
+   * 本地结算一定先发生，所以即使硬停请求失败，界面也不会再卡在“停止中”。
+   */
+  async function forceStopConversation(id: string) {
+    finishRun(id)
+    clearAbortStalled(id)
+    clearForceStopReady(id)
+    activeTurnPolicies.delete(id)
+    markQueueStalled(id, false)
+    beginNewRun(id)
+    forceStopGuard.set(id, {
+      epoch: currentRunEpoch(id),
+      until: Date.now() + FORCE_STOP_GUARD_MS,
+    })
+    update(id, conversation => ({
+      ...conversation,
+      messages: [
+        ...settleRunningToolMessages(withoutBlankAssistantMessages(conversation.messages)),
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant' as const,
+          content: t(
+            '本轮已强制停止（引擎未确认）',
+            'This turn was force-stopped (the engine never confirmed)',
+          ),
+          timestamp: Date.now(),
+          status: 'done' as const,
+        },
+      ],
+    }))
+    s.hardStopFailedIds = new Set([...s.hardStopFailedIds].filter(item => item !== id))
+    try {
+      await invokeCommand('stop_coding_session', { conversationId: id })
+    } catch {
+      // 硬停只是尽力而为：本地结算已经发生，把失败记下来给界面说真话。
+      s.hardStopFailedIds = new Set(s.hardStopFailedIds).add(id)
+    }
   }
 
   function markQueueStalled(id: string, stalled: boolean) {
@@ -1162,6 +1236,16 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   ))
   const activeAbortStalled = (() => (
     s.activeId ? s.abortStalledIds.has(s.activeId) : false
+  ))
+  // 搬运自本地分支：三级停止的三个派生值。
+  const activeStopPendingAck = (() => (
+    s.activeId ? s.abortingIds.has(s.activeId) : false
+  ))
+  const activeForceStopReady = (() => (
+    s.activeId ? s.forceStopReadyIds.has(s.activeId) : false
+  ))
+  const activeHardStopFailed = (() => (
+    s.activeId ? s.hardStopFailedIds.has(s.activeId) : false
   ))
   const activeMessageQueue = (() => {
     const empty: CodingMessageQueue = { steering: [], followUp: [] }
@@ -3021,6 +3105,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
 
   async function listen() {
     disposeEvents = await listenEvent<AgentEvent>('engine-event', event => {
+      // 搬运自本地分支：被本地强制停掉的回合，不能被迟到的引擎事件复活。
+      // 只守那一个回合：epoch 一变（用户又发了一轮）立刻失效。
+      const forceStoppedId = String(event.payload?.sessionId ?? '')
+      const forceStopped = forceStopGuard.get(forceStoppedId)
+      if (forceStopped
+        && forceStopped.epoch === currentRunEpoch(forceStoppedId)
+        && Date.now() < forceStopped.until) {
+        return
+      }
       const {
         sessionId,
         type,
@@ -3661,6 +3754,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get activeToolRunning() { return activeToolRunning() },
     get activeEngineAlive() { return activeEngineAlive() },
     get activeQueuedBehind() { return activeQueuedBehind() },
+    get activeStopPendingAck() { return activeStopPendingAck() },
+    get activeForceStopReady() { return activeForceStopReady() },
+    get activeHardStopFailed() { return activeHardStopFailed() },
+    forceStopConversation,
     get engineNotice() { return s.engineNotice },
     get engineNoticeRepeat() { return s.engineNoticeRepeat },
     get busySend() { return s.busySend },

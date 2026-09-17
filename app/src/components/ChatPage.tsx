@@ -2555,7 +2555,18 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                     `Tool running… (${streamStaleSeconds}s without output)`,
                   )
                 ) : stuckTurn ? (
-                  <span>{t(`引擎 ${streamStaleSeconds}s 没有响应。`, `The engine has not answered for ${streamStaleSeconds}s.`)}</span>
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span>{t(`引擎 ${streamStaleSeconds}s 没有响应。`, `The engine has not answered for ${streamStaleSeconds}s.`)}</span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      data-testid="cancel-stuck-turn"
+                      onClick={() => void conversations.forceStopConversation(conversation?.id ?? '')}
+                    >
+                      {t('取消该回合', 'Cancel this turn')}
+                    </Button>
+                  </span>
                 ) : (
                   t(`等待中（已 ${streamStaleSeconds}s）`, `Waiting… (${streamStaleSeconds}s)`)
                 )}
