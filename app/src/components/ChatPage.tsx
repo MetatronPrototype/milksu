@@ -102,7 +102,7 @@ import {
   LOCAL_CODING_SHELL_ID,
   shouldRememberCodingProject,
 } from '@/lib/codingProjectMemory'
-import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply } from '@/lib/chatActivity'
+import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, type ChatTranscriptBlock } from '@/lib/chatActivity'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
 import { latestCodingPlan } from '@/lib/codingPlan'
 import {
@@ -892,13 +892,23 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   // 跟随输出增长用的康价指纹。一轮里的正文和工具块都挂在**同一条** assistant 消息下，
   // 所以 messages.length 不变而内容在涨；只看条数的话视图会停在原处，
   // 读者看到一片空白，会以为“它没动静”（用户实测就是这个现象）。
-  const transcriptContentRevision = useMemo(() => (
-    chatTranscript.map(block => (
-      block.kind === 'message'
-        ? `${block.message.id}:${block.message.content?.length ?? 0}`
-        : block.kind
-    )).join('|')
-  ), [chatTranscript])
+  const transcriptContentRevision = useMemo(() => {
+    // 三种块都要看：正文块看正文长度；工具/活动块看条数、运行状态与内部正文+耗时之和；
+    // 折叠的过程块递归进去。只写 kind 的话，长命令跑着时这些块在变也不会跟随。
+    const fingerprint = (block: ChatTranscriptBlock): string => {
+      if (block.kind === 'message') {
+        return `${block.id}:${block.message.content?.length ?? 0}`
+      }
+      if (block.kind === 'process') {
+        return `${block.id}[${block.blocks.map(fingerprint).join(',')}]`
+      }
+      return `${block.id}:${block.running ? 1 : 0}:${block.messages.length}:${block.messages.reduce(
+        (sum, item) => sum + (item.content?.length ?? 0) + (item.durationMs ?? 0),
+        0,
+      )}`
+    }
+    return chatTranscript.map(fingerprint).join('|')
+  }, [chatTranscript])
   chatTranscriptLengthRef.current = chatTranscript.length
   const recoverableFailureId = useMemo(() => (
     recoverableAgentFailureId(conversation?.messages ?? [], running)
