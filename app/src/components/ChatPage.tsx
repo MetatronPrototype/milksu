@@ -52,7 +52,7 @@ import {
 import { invokeCommand, listenEvent } from '@/desktop'
 import { toastError } from '@/lib/appToast'
 import { isAskMessage } from '@/lib/agentAsk'
-import { nextChatAutoScrollPinned } from '@/lib/chatAutoScroll'
+import { chatNeedsAnotherFollowScroll, nextChatAutoScrollPinned } from '@/lib/chatAutoScroll'
 import { assessApprovalRequest } from '@/lib/destructiveTarget'
 import { isGeneratedScratchWorkspace } from '@/lib/codingConversationGroups'
 import AgentPixelLoader from '@/components/AgentPixelLoader'
@@ -430,6 +430,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   }, [pendingApprovalMessage?.approvalState])
   const chatAutoScrollPinned = useRef(true)
   const lastChatScrollTop = useRef(0)
+  // 我们自己发起的跟随滚动的时间戳：在那之后的一小段里，滚动事件不得被当成“读者往上翻”。
+  const programmaticScrollUntil = useRef(0)
   const [workshopState, setWorkshopState] = useState<CTFToolWorkshopState | null>(null)
   const [environmentOpen, setEnvironmentOpen] = useState(false)
   const [contextRailWidth, setContextRailWidth] = useState<number | null>(readCodingRailWidth())
@@ -2173,28 +2175,32 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     if (element.scrollTop <= 8 && hiddenTranscriptBlocks > 0) {
       mountEarlierTranscriptBlocks(TRANSCRIPT_TOP_REFILL_CHUNK)
     }
-    chatAutoScrollPinned.current = nextChatAutoScrollPinned(
-      lastChatScrollTop.current,
-      element.scrollTop,
-      element.clientHeight,
-      element.scrollHeight,
-    )
+    // 我们自己发起的跟随滚动不能被当成“读者往上翻”——长内容里这个误判会永久关掉跟随。
+    if (Date.now() > programmaticScrollUntil.current) {
+      chatAutoScrollPinned.current = nextChatAutoScrollPinned(
+        lastChatScrollTop.current,
+        element.scrollTop,
+        element.clientHeight,
+        element.scrollHeight,
+      )
+    }
     lastChatScrollTop.current = element.scrollTop
   }
 
   async function scrollChatToBottom(force = false) {
     if (!force && !chatAutoScrollPinned.current) return
-    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-    if (!force && !chatAutoScrollPinned.current) return
-    const element = scrollArea.current
-    if (!element) return
-    element.scrollTop = element.scrollHeight
-    lastChatScrollTop.current = element.scrollTop
-    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-    if (!force && !chatAutoScrollPinned.current) return
-    if (scrollArea.current) {
-      scrollArea.current.scrollTop = scrollArea.current.scrollHeight
-      lastChatScrollTop.current = scrollArea.current.scrollTop
+    // 长内容会在滚动之后继续变高（markdown、代码块、图片、分批挂载）——
+    // 只转两帧就收手会停在半路，之后就被判成“离底部太远”而不再跟随。
+    // 所以少量重试，直到真的贴到底（最多 6 帧）。
+    for (let pass = 0; pass < 6; pass += 1) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      if (!force && !chatAutoScrollPinned.current) return
+      const element = scrollArea.current
+      if (!element) return
+      if (!chatNeedsAnotherFollowScroll(element.scrollTop, element.clientHeight, element.scrollHeight)) return
+      programmaticScrollUntil.current = Date.now() + 200
+      element.scrollTop = element.scrollHeight
+      lastChatScrollTop.current = element.scrollTop
     }
   }
 

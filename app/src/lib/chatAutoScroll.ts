@@ -17,6 +17,21 @@ export function shouldFollowChatOutput(
   return remaining <= Math.max(0, threshold)
 }
 
+/**
+ * 跟随滚动要不要再试一次。
+ *
+ * 长内容（markdown、代码块、图片、分批挂载）会在我们滚动之后继续变高，
+ * 只转两帧就收手会停在半路、然后被判成“离底部太远”而不再跟随。
+ * 只要还差得远就再滚一次，直到真的贴到底。
+ */
+export function chatNeedsAnotherFollowScroll(
+  scrollTop: number,
+  clientHeight: number,
+  scrollHeight: number,
+): boolean {
+  return Math.max(0, scrollHeight - scrollTop - clientHeight) > 1
+}
+
 export function nextChatAutoScrollPinned(
   previousScrollTop: number,
   scrollTop: number,
