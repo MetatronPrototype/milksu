@@ -960,6 +960,9 @@ type ConversationsState = {
   hardStopFailedIds: Set<string>
   // 搬运自本地分支（C）：另一个对话交过来的消息，在转写里显示为只读提示。
   crossConversationNotices: CrossConversationNotice[]
+  // 搬运自本地分支（A 引导）：已经交给正在跑的这一轮的引导，以及“队列已被中断”标记。
+  injectedSteering: Map<string, string[]>
+  interruptedQueueIds: Set<string>
   continuity: CodingContinuityState
   turnStatusById: Map<string, SessionTurnSnapshot>
   conversationActionError: string
@@ -1078,6 +1081,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     forceStopReadyIds: new Set<string>(),
     hardStopFailedIds: new Set<string>(),
     crossConversationNotices: [],
+    injectedSteering: new Map<string, string[]>(),
+    interruptedQueueIds: new Set<string>(),
     continuity: createCodingContinuityState(),
     turnStatusById: new Map<string, SessionTurnSnapshot>(),
     conversationActionError: '',
@@ -1147,6 +1152,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set hardStopFailedIds(value) { store.setState({ hardStopFailedIds: value }) },
     get crossConversationNotices() { return store.getState().crossConversationNotices },
     set crossConversationNotices(value) { store.setState({ crossConversationNotices: value }) },
+    get injectedSteering() { return store.getState().injectedSteering },
+    set injectedSteering(value) { store.setState({ injectedSteering: value }) },
+    get interruptedQueueIds() { return store.getState().interruptedQueueIds },
+    set interruptedQueueIds(value) { store.setState({ interruptedQueueIds: value }) },
     get stalledQueueIds() { return store.getState().stalledQueueIds },
     set stalledQueueIds(value) { store.setState({ stalledQueueIds: value }) },
     get continuity() { return store.getState().continuity },
@@ -1319,12 +1328,105 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.activeId ? s.crossConversationNotices.filter(item => item.conversationId === s.activeId) : []
   ))
 
+  // 搬运自本地分支（A 引导）：队列被中断（例如强制停止）时界面要说出来。
+  const activeQueuedGuidanceInterrupted = (() => (
+    s.activeId ? s.interruptedQueueIds.has(s.activeId) : false
+  ))
+  // 已经交给正在跑的这一轮的引导：显示出来免得看起来像凭空消失，但它已经不再排队等。
+  const activeInjectedGuidance = (() => (
+    s.activeId ? (s.injectedSteering.get(s.activeId) ?? []) : []
+  ))
+
+  /**
+   * 搬运自本地分支（A 引导）：把一条排队中的引导并进**正在跑的这一轮**，不打断它。
+   * 只有 pi 内核支持中途加入；失败时整个操作不落地，并把原因写进转写（不装作成功）。
+   */
+  async function injectQueuedGuidance(index: number) {
+    const conversationId = s.activeId
+    if (!conversationId) return false
+    const queue = s.messageQueues.get(conversationId) ?? { steering: [], followUp: [] }
+    const prompt = queue.steering[index]
+    if (!prompt) return false
+    const conversation = s.conversations.find(item => item.id === conversationId)
+    if ((conversation?.kernel ?? 'pi') !== 'pi') return false
+    try {
+      await invokeCommand('steer_message', { conversationId, prompt })
+    } catch (reason) {
+      update(conversationId, current => ({
+        ...current,
+        messages: [...current.messages, {
+          id: crypto.randomUUID(),
+          role: 'assistant' as const,
+          content: t(
+            `引导未加入当前回合：${agentErrorMessage(reason)}`,
+            `Guidance was not added to this turn: ${agentErrorMessage(reason)}`,
+          ),
+          timestamp: Date.now(),
+          status: 'done' as const,
+        }],
+      }))
+      return false
+    }
+    setMessageQueue(conversationId, {
+      steering: queue.steering.filter((_item, itemIndex) => itemIndex !== index),
+      followUp: queue.followUp,
+    })
+    const injected = new Map(s.injectedSteering)
+    injected.set(conversationId, [...(injected.get(conversationId) ?? []), prompt])
+    s.injectedSteering = injected
+    // 显示在转写里：读者把它并进了本轮，它就该看得见，而不是只存在于 pi 内部。
+    update(conversationId, current => ({
+      ...current,
+      messages: [...current.messages, {
+        id: crypto.randomUUID(),
+        role: 'user' as const,
+        content: prompt,
+        timestamp: Date.now(),
+        status: 'done' as const,
+        fromQueuedGuidance: true,
+      }],
+    }))
+    // 手动加入就是读者接管了：队列重新被信任。
+    markQueueInterrupted(conversationId, false)
+    return true
+  }
+
+  /** 搬运自本地分支（A 引导）：调整排队引导的先后顺序（拖动排序用）。 */
+  function reorderQueuedGuidance(from: number, to: number) {
+    const conversationId = s.activeId
+    if (!conversationId) return
+    const queue = s.messageQueues.get(conversationId) ?? { steering: [], followUp: [] }
+    if (
+      from === to
+      || from < 0 || to < 0
+      || from >= queue.steering.length || to >= queue.steering.length
+    ) {
+      return
+    }
+    const steering = [...queue.steering]
+    const [moved] = steering.splice(from, 1)
+    if (moved === undefined) return
+    steering.splice(to, 0, moved)
+    setMessageQueue(conversationId, { ...queue, steering })
+  }
+
+  /** 搬运自本地分支（A 引导）：“队列里的东西已被中断”这个标记（强制停止会用到）。 */
+  function markQueueInterrupted(id: string, interrupted: boolean) {
+    if (s.interruptedQueueIds.has(id) === interrupted) return
+    const next = new Set(s.interruptedQueueIds)
+    if (interrupted) next.add(id)
+    else next.delete(id)
+    s.interruptedQueueIds = next
+  }
+
   async function forceStopConversation(id: string) {
     finishRun(id)
     clearAbortStalled(id)
     clearForceStopReady(id)
     activeTurnPolicies.delete(id)
     markQueueStalled(id, false)
+    // 被强制停止时，队列里已经排着的东西也不算“还会照常跑”，要说出来。
+    if (s.messageQueues.get(id)?.steering.length) markQueueInterrupted(id, true)
     beginNewRun(id)
     forceStopGuard.set(id, {
       epoch: currentRunEpoch(id),
@@ -3982,6 +4084,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     pushCrossConversationNotice,
     dismissCrossConversationNotice,
     get activeCrossConversationNotices() { return activeCrossConversationNotices() },
+    get activeInjectedGuidance() { return activeInjectedGuidance() },
+    get activeQueuedGuidanceInterrupted() { return activeQueuedGuidanceInterrupted() },
+    injectQueuedGuidance,
+    reorderQueuedGuidance,
     get engineNotice() { return s.engineNotice },
     get engineNoticeRepeat() { return s.engineNoticeRepeat },
     get busySend() { return s.busySend },

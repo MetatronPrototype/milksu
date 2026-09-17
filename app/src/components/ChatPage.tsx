@@ -2804,6 +2804,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             compacting={compacting}
             runPhase={runPhase}
             queuedGuidance={messageQueue?.steering ?? []}
+            injectedGuidance={conversations.activeInjectedGuidance}
+            queuedGuidanceInterrupted={conversations.activeQueuedGuidanceInterrupted}
+            onInjectQueuedGuidance={index => void conversations.injectQueuedGuidance(index)}
+            onReorderQueuedGuidance={(from, to) => conversations.reorderQueuedGuidance(from, to)}
             queuedGuidanceAwaitingTool={queuedGuidanceAwaitingTool}
             queuedGuidanceStalled={messageQueue?.stalled === true}
             abortStalled={abortStalled}

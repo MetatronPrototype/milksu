@@ -442,6 +442,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   queuedGuidance?: string[]
   queuedGuidanceAwaitingTool?: boolean
   queuedGuidanceStalled?: boolean
+  // 搬运自本地分支（A 引导）：已经交给本轮的引导，以及“队列已被中断”的标记。
+  injectedGuidance?: string[]
+  queuedGuidanceInterrupted?: boolean
   abortStalled?: boolean
   onSend?: (text: string, visibleText?: string, attachments?: CodingAttachment[], scopeToken?: ComposerScopeToken) => void
   onAbort?: () => void
@@ -466,6 +469,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   onCreateBranch?: (branch: string) => void
   onCancelQueuedGuidance?: (index: number) => void
   onEditQueuedGuidance?: (index: number) => void
+  onInjectQueuedGuidance?: (index: number) => void
+  onReorderQueuedGuidance?: (from: number, to: number) => void
 }>(function ChatComposer(props, ref) {
   const t = useT()
   const {
@@ -478,6 +483,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     mcpCatalog, mcpConfigDigest, conversationKey, queuedGuidance,
     queuedGuidanceAwaitingTool: queuedGuidanceAwaitingToolProp,
     queuedGuidanceStalled, abortStalled: abortStalledProp,
+    injectedGuidance, queuedGuidanceInterrupted,
+    onInjectQueuedGuidance, onReorderQueuedGuidance,
   } = props
 
   const reviewedComposerSkills: ComposerSkillOption[] = CODING_SKILLS.map(skill => ({
@@ -650,7 +657,14 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   const queuedGuidanceAwaitingTool = Boolean(queuedGuidanceAwaitingToolProp)
   const queuedGuidanceIsStalled = Boolean(queuedGuidanceStalled)
   const abortStalled = Boolean(abortStalledProp)
-  const queuedGuidanceStatus = queuedGuidanceIsStalled
+  // 搬运自本地分支（A 引导）：队列被中断时要说出来，别让它看起来还在等。
+  const queuedGuidanceIsInterrupted = Boolean(queuedGuidanceInterrupted)
+  // 拖动排序用的落点（-1 = 没有落点）。
+  const [queuedDropIndex, setQueuedDropIndex] = useState(-1)
+  const queuedDragIndex = useRef(-1)
+  const queuedGuidanceStatus = queuedGuidanceIsInterrupted
+    ? t('队列已被中断，不会自动继续', 'The queue was interrupted; it will not resume on its own')
+    : queuedGuidanceIsStalled
     ? t('本回合已结束，未送达；可撤回后重发', 'The turn ended before this was delivered. Withdraw it to send again.')
     : busySend === 'queue'
       ? t('将在下一回合发送', 'Sends on the next turn')
@@ -1518,6 +1532,22 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
             </p>
           ) : null}
 
+          {/* 搬运自本地分支（A 引导）：已经交给本轮的引导也要看得见，
+              否则读者会以为它凭空消失了。 */}
+          {injectedGuidance?.length ? (
+            <section className="chat-composer__queued-guidance" aria-label={t('已加入本轮的引导', 'Steering merged into this turn')}>
+              <div className="flex items-center gap-2 text-caption font-medium text-muted-foreground">
+                <Check className="size-3.5" />
+                <span>{t(`${injectedGuidance.length} 条引导已加入本轮`, `${injectedGuidance.length} steering messages merged into this turn`)}</span>
+              </div>
+              {injectedGuidance.map((message, index) => (
+                <div key={`injected:${index}:${message}`} className="mt-1 flex items-center gap-2 rounded-xl border border-border/70 bg-background/55 px-2 py-1.5">
+                  <p className="min-w-0 flex-1 truncate text-caption text-muted-foreground" title={message}>{message}</p>
+                </div>
+              ))}
+            </section>
+          ) : null}
+
           {queuedGuidance?.length ? (
             <section className="chat-composer__queued-guidance" aria-label={t('待应用引导', 'Queued steering')}>
               <div className="flex items-center gap-2 text-caption font-medium text-primary">
@@ -1528,8 +1558,43 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                 <span className="font-normal text-muted-foreground">{queuedGuidanceStatus}</span>
               </div>
               {queuedGuidance.map((message, index) => (
-                <div key={`${index}:${message}`} className="mt-1 flex items-center gap-2 rounded-xl border border-border/70 bg-background/55 px-2 py-1.5">
+                <div
+                  key={`${index}:${message}`}
+                  className={`mt-1 flex items-center gap-2 rounded-xl border border-border/70 bg-background/55 px-2 py-1.5${queuedDropIndex === index ? ' is-queued-drop-target' : ''}`}
+                  draggable={Boolean(onReorderQueuedGuidance)}
+                  onDragStart={event => {
+                    queuedDragIndex.current = index
+                    event.dataTransfer.effectAllowed = 'move'
+                  }}
+                  onDragOver={event => {
+                    if (!onReorderQueuedGuidance) return
+                    event.preventDefault()
+                    setQueuedDropIndex(index)
+                  }}
+                  onDragLeave={() => setQueuedDropIndex(current => (current === index ? -1 : current))}
+                  onDrop={event => {
+                    if (!onReorderQueuedGuidance) return
+                    event.preventDefault()
+                    const from = queuedDragIndex.current
+                    queuedDragIndex.current = -1
+                    setQueuedDropIndex(-1)
+                    if (from >= 0 && from !== index) onReorderQueuedGuidance(from, index)
+                  }}
+                  onDragEnd={() => {
+                    queuedDragIndex.current = -1
+                    setQueuedDropIndex(-1)
+                  }}
+                >
                   <p className="min-w-0 flex-1 truncate text-caption text-foreground" title={message}>{message}</p>
+                  {kernel === 'pi' ? (
+                    <Button type="button" variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground hover:text-foreground" aria-label={t(`把排队消息 ${index + 1} 加入当前对话`, `Add queued message ${index + 1} to the conversation`)} title={t('加入当前对话（不打断本轮）', 'Add to the current conversation without interrupting it')} onClick={() => onInjectQueuedGuidance?.(index)}>
+                      <Play className="size-3.5" />
+                    </Button>
+                  ) : (
+                    <span className="shrink-0 text-muted-foreground" aria-label={t(`排队消息 ${index + 1} 会在本回合结束后自动进入`, `Queued message ${index + 1} starts after this turn`)} title={t('当前运行时不支持中途加入；本回合结束后会自动进入下一轮', 'This runtime cannot inject mid-turn; the message starts automatically after this turn')}>
+                      <Clock3 className="size-3.5" />
+                    </span>
+                  )}
                   <Button type="button" variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground hover:text-foreground" aria-label={t(`编辑排队消息 ${index + 1}`, `Edit queued message ${index + 1}`)} title={t('撤回并编辑', 'Withdraw and edit')} onClick={() => props.onEditQueuedGuidance?.(index)}>
                     <Pencil className="size-3.5" />
                   </Button>
