@@ -2,6 +2,7 @@
 
 // 搬运自本地分支（C）：后端只校验+喊话，真正把消息送进目标对话并回执是渲染层的活。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { buildExternalMessageEnvelope } from '@/composables/useConversations'
 
 type EventHandler = (event: { payload: unknown }) => void
 
@@ -39,6 +40,22 @@ function conversation(id: string, messages: Record<string, unknown>[] = []) {
 }
 
 describe('cross-conversation delivery', () => {
+  it('puts the source conversation id in the envelope, so the receiver can answer', () => {
+    const envelope = buildExternalMessageEnvelope(
+      {
+        conversationId: 'conversation-source',
+        conversationTitle: '来源会话',
+        agent: 'MilkSU agent',
+      },
+      '正文',
+      'request',
+    )
+    // 信封必须在最前面（侧车用 trimStart().startsWith 判定这是外来内容）
+    expect(envelope.startsWith('[MilkSU-XCONV]')).toBe(true)
+    // 回信地址：只写标题的话，即使对方拿到了“允许回复我”，它也不知道往哪回
+    // （实测：对方明确说“这条跨会话消息里没有带来源会话 id”）。
+    expect(envelope).toContain('conversation-source')
+  })
   beforeEach(() => {
     handlers.clear()
     commandCalls.length = 0
