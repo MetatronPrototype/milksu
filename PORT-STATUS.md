@@ -491,3 +491,11 @@ Go 全绿（含 `go vet`）、前端 `tsc` + 627 测试、侧车 736/736。
 1. A 的 4 项引导（`injectQueuedGuidance` / `reorderQueuedGuidance` /
    `activeInjectedGuidance` / `activeQueuedGuidanceInterrupted`）——与输入区耦合最紧
 2. 重编 beta.19 装进试验田
+
+## 界面层搬运全部完成 ✅（B、E、A、C + A 的引导四项；D 上游已有而跳过）
+
+最后一个提交：`0583a61`（A 引导四项：并入本轮 / 拖动重排 / 中断标记）。
+
+`PORT-UI-INVENTORY.md` 里列的界面缺项至此全部处理完毕。剩下的只有两件非代码的事：
+1. 打包 beta.19 并装进试验田（用 `试验田打包安装.sh`，脚本自带门牌号校验、旧包自动留 .bak）
+2. 上机验收：B/E/A 的存活与停止指示、C 的跨对话投递、引导的加入本轮
