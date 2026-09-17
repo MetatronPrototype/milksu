@@ -444,3 +444,29 @@ Go 全绿（含 `go vet`）、前端 `tsc` + 627 测试、侧车 736/736。
 
 **注意**：显示侧已就绪，但在第 1 项落地前界面不会出现任何提示（没人调用 push），
 所以这一半单看是"看得见但不会亮"的。
+
+### C 功能侧：动手前已经核实过的事实（2026-09-17 核实）
+
+**第一步已完成**（提交 `ecb8881`）：`send()` 末尾新增两个可选参数
+`targetConversationId?: string` / `origin?: MessageOrigin`，内部只改两行、
+都带 `?? s.activeId` 回退；现有调用方一个没动；tsc + 636 测试与改动前完全一致。
+
+**第二步要用的、已核实的事实**：
+
+1. 事件名 `"agent-delivery"`，由 `App.DeliverAgentMessage` 唯一发出
+   （`cmd/milksu-backend/app_agent_delivery.go:418`）。后端**只校验+发事件+返回 "announced"**，
+   不写目标对话（Go 侧无任何落库路径）。
+2. 渲染层监听方式（已核实 `app/src/desktop.ts:1382` `listenEvent` 会把值包成 `{ payload }`）：
+   `listenEvent<AgentDeliveryEvent>('agent-delivery', event => { const payload = event.payload ... })`
+   参照 `useConversations.ts:3187` 的 `engine-event` 写法；注意 `disposeEvents` 只有一个变量，
+   要另加一个 disposer 并在卸载处一起释放。
+3. 负载字段（`agentDeliveryEvent` 的 json tag，已核实）：
+   `{ targetConversationId, text, origin: { conversationId, conversationTitle, agent, deliveredAt }, kind?, requestId? }`
+4. 回执 RPC（已核实 `app/src/desktop.ts:471`）：
+   `invokeCommand('settle_agent_delivery', { conversationId, requestId, status, detail })`
+   参数名就是 `conversationId / requestId / status / detail`；`status` 是
+   `'delivered' | 'queued' | 'refused'` 字符串。**不调用它，工具会一直等到超时才报“未确认”。**
+5. 处理器应做（对照本地 `useConversations.ts` 约 3360-3412 行）：
+   取 targetId/text/origin/kind/requestId → 用 `send(text, text, [], undefined, undefined, -1, targetId, origin)`
+   投递 → 按真实结果 `settleAgentDelivery(sourceId, requestId, status, detail)` →
+   `pushCrossConversationNotice({ conversationId: targetId, sourceId, kind, summary: text, at })`。
