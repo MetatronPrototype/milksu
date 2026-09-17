@@ -40,6 +40,7 @@ import type { VulnerabilityIntel } from '@/vulnerabilityIntel'
 import { executeVulnerabilityCodingHandoff } from '@/lib/vulnerabilityCodingHandoff'
 import { debugLog } from '@/lib/debugMode'
 import { applyUiLocale } from '@/lib/uiLocale'
+import { withReachableChats } from '@/lib/agentCollaboration'
 import { applyUiFonts } from '@/lib/uiFonts'
 import { applyUiEmphasis } from '@/lib/uiEmphasis'
 import { useT } from '@/hooks/useUiLocale'
@@ -479,6 +480,29 @@ export default function App() {
   async function loadSettings() {
     const value = await invokeCommand<AppSettings>('get_settings')
     applySettings(value)
+  }
+
+  /**
+   * 搬运自本地分支（C）：保存某个对话的「可访问的对话」名单。
+   * 名单是单向的：源对话列出它允许投递到的目标；空名单等于不允许投给任何人。
+   * 「同时允许对方回复我」把反向那格一次配好，且回复只允许“结果”形态。
+   */
+  async function updateAgentCollaboration(
+    sourceId: string,
+    targetIds: string[],
+    allowResultReply = false,
+  ) {
+    const source = String(sourceId ?? '').trim()
+    if (!source) return
+    const previous = settings?.agent_collaboration ?? { allow_cross_conversation: false }
+    const next = withReachableChats(previous, source, targetIds, allowResultReply)
+    // 乐观更新：界面立刻反映新名单（后端命令失败时也保留内存选择，与本地一致）。
+    setSettings(current => (current ? { ...current, agent_collaboration: next } : current))
+    try {
+      await invokeCommand('set_agent_collaboration', { value: next })
+    } catch {
+      // 保留内存里的选择：下一次保存会把它落盘。
+    }
   }
 
   async function loadAccountStatus() {
@@ -1522,6 +1546,8 @@ export default function App() {
           conversations={conv.rows}
           runningConversationIds={conv.runningIds}
           conversationActionError={conv.actionError}
+          agentCollaboration={settings?.agent_collaboration ?? null}
+          onUpdateCollaboration={updateAgentCollaboration}
           accountStatus={accountStatus}
           ctfSection={ctfSection}
           codingContextOpen={codingConversationDrawerOpen}

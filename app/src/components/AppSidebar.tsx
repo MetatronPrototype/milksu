@@ -5,6 +5,8 @@ import type { NormalizedSettingsCategory } from '@/lib/settingsNavigation'
 import type { AppSection, CTFWorkspaceSection, WorkspaceSection } from '@/lib/workspaceNavigation'
 import type { AccountStatus, Conversation, UpdateStatus } from '@/types'
 
+import type { AgentCollaborationConfig } from '@/types'
+
 export default function AppSidebar({
   activeSection,
   accountStatus,
@@ -35,6 +37,8 @@ export default function AppSidebar({
   onMovePinned,
   onReorderPinned,
   onForkConversation,
+  agentCollaboration,
+  onUpdateCollaboration,
   onNavigateCtf,
   onOpenCodingContext,
   onCollapseCodingContext,
@@ -70,6 +74,13 @@ export default function AppSidebar({
   onMovePinned?: (id: string, direction: -1 | 1) => void
   onReorderPinned?: (id: string, beforeId: string) => void
   onForkConversation?: (id: string) => void
+  // 搬运自本地分支（C）：跨项目投递的总开关与每个对话的名单。
+  agentCollaboration?: AgentCollaborationConfig | null
+  onUpdateCollaboration?: (
+    sourceId: string,
+    targetIds: string[],
+    allowResultReply: boolean,
+  ) => void
   onNavigateCtf?: (value: CTFWorkspaceSection) => void
   onOpenCodingContext?: () => void
   onCollapseCodingContext?: () => void
@@ -109,6 +120,8 @@ export default function AppSidebar({
         onMovePinned={onMovePinned}
         onReorderPinned={onReorderPinned}
         onForkConversation={onForkConversation}
+        agentCollaboration={agentCollaboration}
+        onUpdateCollaboration={onUpdateCollaboration}
         onNavigateCtf={onNavigateCtf}
         onNavigate={onNavigate}
         onProfile={onProfile}

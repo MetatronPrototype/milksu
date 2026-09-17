@@ -10,6 +10,7 @@ export type SettingsCategory =
   | 'cve'
   | 'lab'
   | 'chats'
+  | 'agent'
   | 'security-tools'
   | 'ctf'
   | 'eval'
@@ -32,6 +33,7 @@ export const SETTINGS_SIDEBAR_ITEMS = [
   { value: 'skills' as const, label: () => 'Skills' },
   { value: 'mcp' as const, label: () => 'MCP' },
   { value: 'chats' as const, label: () => t('归档聊天', 'Archived chats') },
+  { value: 'agent' as const, label: () => t('Agent 协作', 'Agent collaboration') },
   { value: 'browser' as const, label: () => t('浏览器控制', 'Browser') },
   { value: 'eval' as const, label: () => t('评测', 'Eval') },
   { value: 'plugins' as const, label: () => t('插件', 'Plugins') },

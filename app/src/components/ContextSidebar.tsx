@@ -16,6 +16,7 @@ import {
 } from '@/components/ui'
 import { menuContentClass, menuItemClass, menuSeparatorClass } from '@/components/ui/menu'
 import { conversationCopyText } from '@/lib/conversationActions'
+import type { AgentCollaborationConfig } from '@/types'
 import { formatRelativeAge } from '@/lib/relativeAge'
 import { conversationActivityAt } from '@/lib/workspaceSessionRouting'
 import {
@@ -54,6 +55,7 @@ import {
   SunMoon,
   Trash2,
   UserRound,
+  Users,
 } from 'lucide-react'
 import {
   groupWorkspaceConversations,
@@ -115,6 +117,7 @@ const settingsNavIcons = {
   skills: BookMarked,
   mcp: Plug,
   chats: Archive,
+  agent: Users,
   browser: Globe2,
   eval: Gauge,
   plugins: Puzzle,
@@ -144,6 +147,8 @@ export default function ContextSidebar({
   onMovePinned,
   onReorderPinned,
   onForkConversation,
+  agentCollaboration,
+  onUpdateCollaboration,
   onNavigate,
   onProfile,
   onSettings,
@@ -166,6 +171,13 @@ export default function ContextSidebar({
   collapsed?: boolean
   settingsCategory?: NormalizedSettingsCategory
   updateStatus?: UpdateStatus | null
+  // 搬运自本地分支（C）：跨项目投递的总开关与每个对话的名单。
+  agentCollaboration?: AgentCollaborationConfig | null
+  onUpdateCollaboration?: (
+    sourceId: string,
+    targetIds: string[],
+    allowResultReply: boolean,
+  ) => void
   onNew?: () => void
   onCollapse?: () => void
   onExpand?: () => void
@@ -200,6 +212,52 @@ export default function ContextSidebar({
   const [pendingActionRunning, setPendingActionRunning] = useState(false)
   const [editingConversationId, setEditingConversationId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
+  // 搬运自本地分支（C）：每个对话自己的「可访问的对话」名单（跳项目投递白名单）。
+  const [collaborationSource, setCollaborationSource] = useState<Conversation | null>(null)
+  const [collaborationTargets, setCollaborationTargets] = useState<string[]>([])
+  const [collaborationAllowReply, setCollaborationAllowReply] = useState(false)
+  const [collaborationSearch, setCollaborationSearch] = useState('')
+
+  function openCollaboration(conversation: Conversation) {
+    setCollaborationSource(conversation)
+    setCollaborationTargets([...(agentCollaboration?.allow_by_conversation?.[conversation.id] ?? [])])
+    setCollaborationAllowReply(
+      (agentCollaboration?.result_reply_by_conversation?.[conversation.id] ?? []).length > 0,
+    )
+    setCollaborationSearch('')
+  }
+
+  function closeCollaboration() {
+    setCollaborationSource(null)
+    setCollaborationTargets([])
+    setCollaborationAllowReply(false)
+    setCollaborationSearch('')
+  }
+
+  function toggleCollaborationTarget(id: string) {
+    setCollaborationTargets(current => (
+      current.includes(id) ? current.filter(item => item !== id) : [...current, id]
+    ))
+  }
+
+  function saveCollaboration() {
+    const source = collaborationSource
+    if (!source) return
+    onUpdateCollaboration?.(source.id, [...collaborationTargets], collaborationAllowReply)
+    closeCollaboration()
+  }
+
+  const collaborationCandidates = (() => {
+    const query = collaborationSearch.trim().toLowerCase()
+    return conversations
+      .filter(item => item.id !== collaborationSource?.id)
+      .filter(item => {
+        if (!query) return true
+        const title = String(item.title ?? '').toLowerCase()
+        return title.includes(query) || item.id.toLowerCase().includes(query)
+      })
+  })()
+
   const [conversationMenu, setConversationMenu] = useState<{
     conversation: Conversation
     showPinnedMove: boolean
@@ -1010,6 +1068,70 @@ export default function ContextSidebar({
         </DialogContent>
       </Dialog>
 
+      {/* 搬运自本地分支（C）：名单是单向的，空名单等于不允许投给这个对话。 */}
+      <Dialog open={Boolean(collaborationSource)} onOpenChange={open => { if (!open) closeCollaboration() }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t('可访问的对话', 'Reachable chats')}</DialogTitle>
+            <DialogDescription>
+              {t(
+                `选择「${collaborationSource?.title ?? ''}」可以投递到的对话。名单之外一律拒绡；名单是单向的，对方能不能投回来由它自己的名单决定。需要先在「设置 → Agent 协作」打开总开关，跨项目投递才可能发生。`,
+                `Pick the chats "${collaborationSource?.title ?? ''}" may deliver to. Anything not listed is refused, and the list is one-way: the other side decides its own list. Cross-project delivery also needs the master switch in Settings → Agent collaboration.`,
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            value={collaborationSearch}
+            placeholder={t('搜索对话', 'Search chats')}
+            aria-label={t('搜索对话', 'Search chats')}
+            onChange={event => setCollaborationSearch(event.target.value)}
+          />
+          <div className="max-h-64 overflow-y-auto rounded-[8px] border border-border">
+            {collaborationCandidates.map(item => (
+              <label
+                key={item.id}
+                className="flex cursor-pointer items-center gap-2 px-3 py-2 text-body hover:bg-muted/50"
+                data-testid={`collaboration-target-${item.id}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={collaborationTargets.includes(item.id)}
+                  onChange={() => toggleCollaborationTarget(item.id)}
+                />
+                <span className="min-w-0 flex-1 truncate">{item.title || item.id}</span>
+              </label>
+            ))}
+            {!collaborationCandidates.length ? (
+              <p className="px-3 py-2 text-caption text-muted-foreground">
+                {t('没有其他对话。', 'No other chats.')}
+              </p>
+            ) : null}
+          </div>
+          <label className="flex cursor-pointer items-start gap-2 text-body">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              data-testid="collaboration-allow-reply"
+              checked={collaborationAllowReply}
+              onChange={() => setCollaborationAllowReply(value => !value)}
+            />
+            <span className="min-w-0 flex-1">
+              {t('同时允许对方回复我', 'Also let them answer me')}
+              <span className="mt-0.5 block text-caption text-muted-foreground">
+                {t(
+                  '一次把两个方向都配好；回复只允许“结果”形态，不能反过来下新指令。',
+                  'Pairs the two directions in one step; the answer may only be a result, never a new instruction in reverse.',
+                )}
+              </span>
+            </span>
+          </label>
+          <DialogFooter>
+            <Button variant="ghost" onClick={closeCollaboration}>{t('取消', 'Cancel')}</Button>
+            <Button onClick={saveCollaboration}>{t('保存', 'Save')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {conversationMenu
         ? createPortal(
           <section
@@ -1066,6 +1188,14 @@ export default function ContextSidebar({
               onClick={() => runConversationMenuAction(() => { void copyConversation(conversationMenu.conversation) })}
             >
               <Copy className="size-4" />{t('复制', 'Copy')}
+            </button>
+            <button
+              type="button"
+              className={`${menuItemClass} conversation-row-menu__item`}
+              aria-label={t('可访问的对话', 'Reachable chats')}
+              onClick={() => runConversationMenuAction(() => openCollaboration(conversationMenu.conversation))}
+            >
+              <Users className="size-4" />{t('可访问的对话', 'Reachable chats')}
             </button>
             <div className={menuSeparatorClass} />
             <button

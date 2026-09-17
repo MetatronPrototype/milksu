@@ -1,5 +1,5 @@
 import { createStore, useStore, useStoreRuntime } from '@/lib/reactStore'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   Check,
@@ -354,6 +354,32 @@ export default function SettingsPage({
   const buildTracking = state.buildTracking
   const buildTrackingCopying = state.buildTrackingCopying
   const notice = state.notice
+
+  // 搬运自本地分支（C）：跨项目投递的总开关。它走专用命令立即落盘，
+  // 所以不会被设置页上一份没写完的草稿挡住（后端也是这么设计的）。
+  const [collaborationSaving, setCollaborationSaving] = useState(false)
+  const [collaborationError, setCollaborationError] = useState('')
+  async function setAgentCollaborationEnabled(value: boolean) {
+    const current = state.working
+    if (!current || collaborationSaving) return
+    const next = {
+      allow_cross_conversation: Boolean(value),
+      allow_by_conversation: current.agent_collaboration?.allow_by_conversation ?? {},
+    }
+    setCollaborationSaving(true)
+    setCollaborationError('')
+    try {
+      await invokeCommand('set_agent_collaboration', { value: next })
+      // 成功才改界面：失败时开关留在原处，不显示一个没生效的状态。
+      store.patchWorking(draft => {
+        draft.agent_collaboration = next
+      })
+    } catch (reason) {
+      setCollaborationError(desktopErrorMessage(reason))
+    } finally {
+      setCollaborationSaving(false)
+    }
+  }
   const customModelInput = state.customModelInput
   const thinkingModelKey = state.thinkingModelKey
   const windowModelKey = state.windowModelKey
@@ -787,6 +813,38 @@ export default function SettingsPage({
               </>
             ) : category === 'mcp' ? (
               <SettingsMCPPanel onCodingHandoff={handoff => onSecurityToolCodingHandoff?.(handoff)} />
+            ) : working && category === 'agent' ? (
+              <SettingsSection title={t('Agent 协作', 'Agent collaboration')}>
+                {collaborationError ? (
+                  <p className="px-4 py-3 text-caption text-destructive">{collaborationError}</p>
+                ) : null}
+                <SettingsRow
+                  label={t('允许跨项目投递', 'Allow cross-project delivery')}
+                  description={t(
+                    '默认关闭。关闭时行为与以前一致：同一项目内的对话可以互投，不同项目一律拒绝。打开后，只有源对话的「可访问的对话」名单里的目标才放行；两个对话在 60 秒内互相投递会被熔断 5 分钟。',
+                    "Off by default. When off, behaviour is unchanged: chats inside one project may exchange messages, another project is refused. When on, only the targets in the source chat's list pass, and a ping-pong between two chats is broken for 5 minutes.",
+                  )}
+                  divider={working.settings_integrity_warning === true}
+                  trailing={(
+                    <Switch
+                      checked={working.agent_collaboration?.allow_cross_conversation === true}
+                      aria-label={t('允许跨项目投递', 'Allow cross-project delivery')}
+                      disabled={collaborationSaving}
+                      onCheckedChange={value => void setAgentCollaborationEnabled(Boolean(value))}
+                    />
+                  )}
+                />
+                {working.settings_integrity_warning ? (
+                  <SettingsRow
+                    label={t('设置完整性', 'Settings integrity')}
+                    description={t(
+                      'settings.json 里的「Agent 协作」设置不是本应用写入的，已拒绝生效；协作开关与白名单只能在本界面修改。',
+                      'A collaboration configuration in settings.json was not written by this app, so it was not applied. The switch and the allow lists can only be changed in this UI.',
+                    )}
+                    divider={false}
+                  />
+                ) : null}
+              </SettingsSection>
             ) : category === 'chats' ? (
               <ArchivedConversationsSettings onChanged={onConversationsChanged} />
             ) : working && category === 'browser' ? (
