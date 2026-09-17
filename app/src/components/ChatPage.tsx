@@ -2763,6 +2763,22 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             }}
           />
 
+          {/* 温和停止重试仍失败时，才在输入框右上角外侧给出紧急开关（搬运自本地分支）。
+              它刻意与输入区内的“停止 / 重试停止”分开：温和停止照旧，这个只是兜底。 */}
+          {conversations.activeForceStopReady ? (
+            <div className="flex justify-end pb-1 pr-1">
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                data-testid="force-stop-turn"
+                onClick={() => void conversations.forceStopConversation(conversation?.id ?? '')}
+              >
+                {t('强制停止本回合（引擎未确认）', 'Force-stop this turn (the engine never confirmed)')}
+              </Button>
+            </div>
+          ) : null}
+
           <ChatComposer
             ref={composer}
             conversationKey={composerDraftKey(
