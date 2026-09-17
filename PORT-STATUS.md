@@ -366,3 +366,52 @@ hard-stop           三级停止的硬停
 ## 全绿验证
 
 Go 全绿（含 `go vet`）、前端 `tsc` + 627 测试、侧车 736/736。
+
+---
+
+# 界面层搬运进度（B→D→E→A→C）
+
+分支 `port/backend`（未推送）。每步都已 `tsc` + `vitest` 验证并单独提交。
+
+| 步 | 状态 | 提交 | 说明 |
+|---|---|---|---|
+| **B 存活/卡住指示** | ✅ 完成 | `6461486` | 4 个派生值 + 停止横幅 + 诚实文案；测试 3 条 |
+| **D 空回合提示** | ⏭️ 跳过 | — | 上游已有：`hasEmptyVisibleReply` + `shouldRetainAssistantWithoutText`（含"只有思考没正文"），界面已有「这一轮没有可见正文」+ 继续 |
+| **E 队列可见性** | ✅ 完成 | `566658e` | `sidecarKeyOf` / `turnOwnsSidecar` / `engineHolderFor` / `activeQueuedBehind`；测试 1 条 |
+| **A 三级停止** | ✅ 完成 | `3c45e9a` + `705eda8` | 第 1 级上游已有；补第 2 级（重试仍失败 → 可强制）与第 3 级（本地结算 + 硬停 + 30 秒迟到事件守卫）；紧急开关放**输入框右上角外侧**、仅 `activeForceStopReady` 时出现；测试 1 条 |
+| **C 跨对话界面** | ⏳ 未开始 | — | 见下 |
+
+## C 的现状与实现要点（下一轮直接用）
+
+**上游在渲染层完全没有投递机制**：`submitAgentDelivery` / `settleAgentDelivery` / `settle_agent_delivery` / `deliverAgentMessage` / `CrossConversationNotice` / `normalizeDeliveryKind` / `agentCollaboration` 全是 0 命中。
+（但 `types.ts` 里 `Message.origin` / `MessageOrigin` 已经在 ✅，后端 RPC `DeliverAgentMessage` / `SettleAgentDelivery` 也已在 beta.18 ✅）
+
+要补的 5 项（本地参考：`debug/window-batch2` 的 `useConversations.ts`）：
+
+1. `crossConversationNotices` + 合并逻辑（本地 1066-1105 行）：按 (conversationId, sourceId) 合并、`count` 累加、`summary` 截 120 字
+2. `activeCrossConversationNotices`（按 activeId 过滤）
+3. `dismissCrossConversationNotice(id)`
+4. `deliverAgentMessage(input)` → 依赖本地内部的 `submitAgentDelivery`（本地 2471 行）+ 限流 `allowAgentDelivery`（10 秒内同向最多 5 条）
+5. `setAgentCollaboration(value)`（把 `AgentCollaborationConfig` 镜像进渲染层；注意 `settings.go` 里的封印校验已在后端生效）
+
+另需：
+- 新建 `app/src/components/CrossConversationNotice.tsx`（本地对应 `components-vue/CrossConversationNotice.vue`）
+- 转写里按 `Message.origin` 显示来源徽标
+- `settleAgentDelivery(sourceId, requestId, status, detail)` → `invokeCommand('settle_agent_delivery', …)`（RPC 已有）
+
+## 还剩下的其它活
+
+1. **A 的 4 项引导**（`injectQueuedGuidance` / `reorderQueuedGuidance` / `activeInjectedGuidance` / `activeQueuedGuidanceInterrupted`）——与输入区耦合最紧，放最后
+2. **重编 beta.19** 装进试验田（`MILKSU_REPO=…milksu-react bash 试验田打包安装.sh`），之后才能实际看到 B/E/A
+
+## 用户已拍板的决定（不要再问）
+
+| 事项 | 决定 |
+|---|---|
+| 温和停止 vs 强制停止 | **共存**：正常停止按钮=上游温和停止；温和停止重试仍失败后，在**输入框右上角外侧**出现强制停止 |
+| "第一击就地结算"（`pendingStopAckIds`） | **不搬**，保留上游"等引擎确认"的语义（`activeStopPendingAck` 已按上游语义映射为 `abortingIds`） |
+| 停靠池上限 | 6（硬上限 12） |
+| bash 默认超时 | 600 秒 |
+| `staleSidecarGraceTimeout` | 保留上游 75 分钟（本地 10 分钟会杀掉合法长回合） |
+| A 的 4 项引导 | 要做，放最后 |
+| 重编 | 全部改完再编 beta.19 |
