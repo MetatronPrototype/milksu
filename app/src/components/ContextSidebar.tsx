@@ -1080,6 +1080,13 @@ export default function ContextSidebar({
               )}
             </DialogDescription>
           </DialogHeader>
+          {/* 小备注：无项目（scratch）之间默认互通，这里的选择对它们不生效。 */}
+          <p className="text-caption text-muted-foreground" data-testid="collaboration-scratch-note">
+            {t(
+              '注意：「无项目任务」之间默认互通——同属无项目的对话勾不勾都能互投，这里的选择对它们不生效；它只限制跨项目投递。',
+              'Note: chats with no project are already connected to each other. The ticks here do not apply between them — they can always exchange messages; this list only gates cross-project delivery.',
+            )}
+          </p>
           <Input
             value={collaborationSearch}
             placeholder={t('搜索对话', 'Search chats')}
