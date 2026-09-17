@@ -964,8 +964,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     if (queuedBehindLabel) {
       return t('排队中（同工作区另一个会话在跑）', 'Queued (another conversation in this workspace is running)')
     }
+    // 工具正在跑就直说：引擎这时候正在干活，说成“等待引擎响应”是假话，
+    // 而且会让人以为它卡了（用户实测就是被这句话误导）。
+    if (runningToolActive) return t('工具执行中…', 'Tool running…')
     if (streamStale) {
-      if (runningToolActive) return t('工具执行中…', 'Tool running…')
       if (stuckTurn) return t('引擎没有响应…', 'The engine is not responding…')
       return t('等待中…', 'Waiting…')
     }
