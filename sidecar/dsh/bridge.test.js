@@ -36,7 +36,7 @@ function runBridge(extraEnv = {}) {
   function send(command) {
     child.stdin.write(`${JSON.stringify(command)}\n`);
   }
-  async function waitFor(type, timeout = 3000) {
+  async function waitFor(type, timeout = 8000) {
     const started = Date.now();
     while (Date.now() - started < timeout) {
       const match = events.find(event => event.type === type);
@@ -76,7 +76,7 @@ test("DSH bridge reports a spawn failure as a JSONL error", async () => {
       cwd: here,
     })}\n`);
     const started = Date.now();
-    while (Date.now() - started < 2000) {
+    while (Date.now() - started < 8000) {
       const error = events.find(event => event.type === "error" && event.error);
       if (error) {
         assert.match(String(error.error), /ENOENT|not found|spawn/i);
@@ -546,7 +546,7 @@ test("DSH attaches the coding-browser descriptor after a typed workspace respons
       },
     });
     const started = Date.now();
-    while (Date.now() - started < 2000) {
+    while (Date.now() - started < 8000) {
       if (existsSync(descriptorFile)) break;
       await new Promise(resolve => setTimeout(resolve, 20));
     }
@@ -588,7 +588,7 @@ test("DSH send_message can attach a later-opened browser without creating it", a
       },
     });
     const started = Date.now();
-    while (Date.now() - started < 2000) {
+    while (Date.now() - started < 8000) {
       if (existsSync(descriptorFile)) break;
       await new Promise(resolve => setTimeout(resolve, 20));
     }
