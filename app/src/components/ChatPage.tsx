@@ -69,6 +69,7 @@ import CodingChangesPanel from '@/components/CodingChangesPanel'
 import CodingComputerUsePanel from '@/components/CodingComputerUsePanel'
 import CodingComputerUsePermissionDialog from '@/components/CodingComputerUsePermissionDialog'
 import CodingMCPReviewCard from '@/components/CodingMCPReviewCard'
+import { CrossConversationNotice } from '@/components/CrossConversationNotice'
 import MarkdownContent from '@/components/MarkdownContent'
 import ContextRail from '@/components/ContextRail'
 import WorkspaceModuleTopBar from '@/components/WorkspaceModuleTopBar'
@@ -2532,6 +2533,17 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
             onScroll={handleChatScroll}
           >
+            {/* 搬运自本地分支（C）：别的对话交过来的提示。只读、可关闭，永远不入 messages。 */}
+            {conversations.activeCrossConversationNotices.map(notice => (
+              <CrossConversationNotice
+                key={notice.id}
+                notice={notice}
+                onOpen={sourceId => {
+                  conversations.activeId = sourceId
+                }}
+                onDismiss={id => conversations.dismissCrossConversationNotice(id)}
+              />
+            ))}
             {streamStale || queuedBehindLabel ? (
               <div
                 className={cn(

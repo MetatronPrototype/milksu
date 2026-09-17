@@ -957,6 +957,8 @@ type ConversationsState = {
   // 搬运自本地分支：三级停止的第二/三级。
   forceStopReadyIds: Set<string>
   hardStopFailedIds: Set<string>
+  // 搬运自本地分支（C）：另一个对话交过来的消息，在转写里显示为只读提示。
+  crossConversationNotices: CrossConversationNotice[]
   continuity: CodingContinuityState
   turnStatusById: Map<string, SessionTurnSnapshot>
   conversationActionError: string
@@ -979,6 +981,20 @@ type ParkedPendingCanvas = {
   multitask: boolean
   mcpServers: string[]
   mcpConfigDigest: string
+}
+
+export interface CrossConversationNotice {
+  /** 稳定 id，供关闭使用（合并后的条目沿用同一个 id）。 */
+  id: string
+  /** 这条提示属于哪个对话 —— 也就是收到消息的那个。 */
+  conversationId: string
+  sourceId: string
+  sourceTitle: string
+  /** `not-applied` 用来告诉发送方：它排的队最终没有被应用。 */
+  kind: 'request' | 'result' | 'not-applied'
+  summary: string
+  at: number
+  count: number
 }
 
 export function createConversationsRuntime(options?: { live?: boolean }) {
@@ -1010,6 +1026,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     stalledQueueIds: new Set<string>(),
     forceStopReadyIds: new Set<string>(),
     hardStopFailedIds: new Set<string>(),
+    crossConversationNotices: [],
     continuity: createCodingContinuityState(),
     turnStatusById: new Map<string, SessionTurnSnapshot>(),
     conversationActionError: '',
@@ -1077,6 +1094,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set forceStopReadyIds(value) { store.setState({ forceStopReadyIds: value }) },
     get hardStopFailedIds() { return store.getState().hardStopFailedIds },
     set hardStopFailedIds(value) { store.setState({ hardStopFailedIds: value }) },
+    get crossConversationNotices() { return store.getState().crossConversationNotices },
+    set crossConversationNotices(value) { store.setState({ crossConversationNotices: value }) },
     get stalledQueueIds() { return store.getState().stalledQueueIds },
     set stalledQueueIds(value) { store.setState({ stalledQueueIds: value }) },
     get continuity() { return store.getState().continuity },
@@ -1173,6 +1192,60 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
    * 第三级：引擎两次都没确认时，就地结算这个回合，并请后端把 sidecar 硬停。
    * 本地结算一定先发生，所以即使硬停请求失败，界面也不会再卡在“停止中”。
    */
+  type DeliveryKind = 'request' | 'result'
+  function normalizeDeliveryKind(value: unknown): DeliveryKind {
+    return String(value ?? '').trim().toLowerCase() === 'result' ? 'result' : 'request'
+  }
+
+  /**
+   * 搬运自本地分支（C）：另一个对话交过来的消息，在转写里显示为一条只读提示。
+   *
+   * 它刻意不是一条消息：永远不进 conversation.messages，所以到达不了模型、起不了回合、
+   * 也不会变成排队引导。同一个来源只留一条，连续到达折进 count 里。
+   */
+  function pushCrossConversationNotice(input: {
+    conversationId: string
+    sourceId: string
+    sourceTitle?: string
+    kind?: string
+    summary?: string
+    at?: number
+  }) {
+    const conversationId = String(input.conversationId ?? '').trim()
+    const sourceId = String(input.sourceId ?? '').trim()
+    if (!conversationId || !sourceId) return
+    const previous = s.crossConversationNotices.find(item => (
+      item.conversationId === conversationId && item.sourceId === sourceId
+    ))
+    const requestedKind = String(input.kind ?? '').trim().toLowerCase()
+    const entry: CrossConversationNotice = {
+      id: previous?.id ?? `cross-notice-${conversationId}-${sourceId}`,
+      conversationId,
+      sourceId,
+      sourceTitle: String(input.sourceTitle ?? '').trim() || previous?.sourceTitle || sourceId,
+      kind: requestedKind === 'not-applied'
+        ? 'not-applied'
+        : normalizeDeliveryKind(requestedKind),
+      // 只要一行，永远不是全文：详情的正文要打开那个对话才读得到。
+      summary: String(input.summary ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
+      at: Number(input.at ?? 0) || Date.now(),
+      count: (previous?.count ?? 0) + 1,
+    }
+    s.crossConversationNotices = previous
+      ? s.crossConversationNotices.map(item => (item.id === previous.id ? entry : item))
+      : [...s.crossConversationNotices, entry]
+  }
+
+  function dismissCrossConversationNotice(id: string) {
+    const noticeId = String(id ?? '').trim()
+    if (!noticeId) return
+    s.crossConversationNotices = s.crossConversationNotices.filter(item => item.id !== noticeId)
+  }
+
+  const activeCrossConversationNotices = (() => (
+    s.activeId ? s.crossConversationNotices.filter(item => item.conversationId === s.activeId) : []
+  ))
+
   async function forceStopConversation(id: string) {
     finishRun(id)
     clearAbortStalled(id)
@@ -3758,6 +3831,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get activeForceStopReady() { return activeForceStopReady() },
     get activeHardStopFailed() { return activeHardStopFailed() },
     forceStopConversation,
+    pushCrossConversationNotice,
+    dismissCrossConversationNotice,
+    get activeCrossConversationNotices() { return activeCrossConversationNotices() },
     get engineNotice() { return s.engineNotice },
     get engineNoticeRepeat() { return s.engineNoticeRepeat },
     get busySend() { return s.busySend },
