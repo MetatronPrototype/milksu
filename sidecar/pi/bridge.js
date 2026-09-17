@@ -2853,6 +2853,18 @@ input.on("line", (line) => {
     }
     return;
   }
+  if (command.action === "delivery_response") {
+    // 这一条必须绕开串行队列（和 approval_response 同理，而且更硬）：
+    // 它回答的是**正在等待的那个投递工具调用**，而那一轮正占着 commandQueue
+    // ——sendMessage 会 await 整轮结束。排队就等于永远等不到：工具 15 秒就超时。
+    // 它本身是同步的（只 resolve 一个 promise），立即处理没有任何风险。
+    try {
+      respondAgentDelivery(command);
+    } catch (error) {
+      emit(command.conversationId ?? null, "error", { error: describeError(error) });
+    }
+    return;
+  }
   if (command.action === "workspace_action_response") {
     void attachCodingBrowserDescriptor(command)
       .catch((error) => {

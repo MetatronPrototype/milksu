@@ -529,3 +529,42 @@ Go 全绿（含 `go vet`）、前端 `tsc` + 627 测试、侧车 736/736。
 **教训**：先前判断"deliverAgentMessage 没用"只查了"有没有组件调用"，
 没查 composable 自己的事件分支；也没意识到"跨语言桥接的结构体字段缺失"
 会让一个功能整条静默失败。
+
+## 跨对话投递的第三个断点：命令队列死锁（已修）
+
+前两个断点修完、beta.21 上机重测**仍然超时**。但这次后端日志给出了关键信息：
+
+```
+[delivery] announced source=6a195ccb… target=4da74902…   ← 请求到了后端
+[delivery] settled   source=6a195ccb… status=delivered    ← 渲染层也结算了
+```
+
+也就是说消息**真的落进目标对话了**，回执也算出了 delivered，但**判决没回到侧车**。
+
+根因在侧车的命令分发：`bridge.js` 用一个 promise 链把命令**严格串行**处理
+
+```js
+commandQueue = commandQueue.then(() => handleCommand(command))
+```
+
+而 `sendMessage` 会 `await` 整轮（`session.prompt`），所以**一轮运行期间整条队列被占住**。
+绕开队列的名单里有 `abort_session` / `approval_response` / `steer_message`（各自有独立队列）
+等——**唯独没有 `delivery_response`**。于是"回答正在等待的那个工具调用"这条命令，
+被排在**正在等它的那一轮**后面，永远排不到；工具 15 秒超时（`DELIVERY_ACK_TIMEOUT_MS`）。
+
+这是**死锁式的设计缺陷，上游和本地都有**（本地也只在 switch 里，没有绕开队列）。
+修法：像 `approval_response` 一样立即处理（它本身是同步的，只 resolve 一个 promise）。
+
+`bridge.js` 是纯执行脚本、没有任何导出，所以这个修复**无法写单测**，只能靠端到端验证
+（侧车 736 个测试全过，但都不覆盖分发顺序）。
+
+### 三次盲测的教训汇总
+
+| # | 断点 | 层次 |
+|---|---|---|
+| 1 | 渲染层没有 `agent.delivery` 分支 | React 前端 |
+| 2 | Go 桥接结构体丢字段（target/origin/text） | Go 引擎 |
+| 3 | `delivery_response` 被串行队列堵死 | 侧车分发 |
+
+**一条功能可以跨三个语言层同时断掉，而每一层单独看都"像是好的"。**
+盲测（真的发一条）是唯一能发现这种事的方法——静态检查、单测全绿都盖不住。
