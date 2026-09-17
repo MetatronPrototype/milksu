@@ -470,3 +470,24 @@ Go 全绿（含 `go vet`）、前端 `tsc` + 627 测试、侧车 736/736。
    取 targetId/text/origin/kind/requestId → 用 `send(text, text, [], undefined, undefined, -1, targetId, origin)`
    投递 → 按真实结果 `settleAgentDelivery(sourceId, requestId, status, detail)` →
    `pushCrossConversationNotice({ conversationId: targetId, sourceId, kind, summary: text, at })`。
+
+## C 全部完成 ✅（`13e5a42` 显示侧、`148b124` 功能侧、`82e11f1` 协作开关界面）
+
+跨对话投递现在真的可用：侧车工具 → 后端校验（同项目/白名单/限流/熔断/封印）
+→ `agent-delivery` 事件 → 渲染层落库 + 回执 + 到达提示。
+
+界面三处：
+1. 到达提示（转写流顶部，只读、可关闭）
+2. 设置 → Agent 协作 → 「允许跨项目投递」总开关（立即落盘；被封印时额外说明）
+3. 会话列表「⋯ → 可访问的对话」：单向名单 + 「同时允许对方回复我」
+
+**没搬的东西（有意为之）**：
+- `deliverAgentMessage` / `submitAgentDelivery` / `buildExternalMessageEnvelope` 的渲染层发送路径
+  —— 本地没有任何界面调用它们（已核实），真实路径是侧车工具 → 后端。
+- 渲染层的投递门禁（`agentDeliveryDecision` / `canReplyTo` / `allowsResultReply`）与
+  `setAgentCollaboration` 的渲染层镜像 —— 权威在后端，渲染层不重复实现一份策略。
+
+**下一步只剩两件**：
+1. A 的 4 项引导（`injectQueuedGuidance` / `reorderQueuedGuidance` /
+   `activeInjectedGuidance` / `activeQueuedGuidanceInterrupted`）——与输入区耦合最紧
+2. 重编 beta.19 装进试验田
