@@ -499,3 +499,33 @@ Go 全绿（含 `go vet`）、前端 `tsc` + 627 测试、侧车 736/736。
 `PORT-UI-INVENTORY.md` 里列的界面缺项至此全部处理完毕。剩下的只有两件非代码的事：
 1. 打包 beta.19 并装进试验田（用 `试验田打包安装.sh`，脚本自带门牌号校验、旧包自动留 .bak）
 2. 上机验收：B/E/A 的存活与停止指示、C 的跨对话投递、引导的加入本轮
+
+## 跨对话投递的两个真断点（盲测发现，已修）
+
+用户要求"真发一条给 TestA/B/C，不准偷看结果"，结果三条全部
+`Unconfirmed: ... did not report the outcome before the wait timed out`。
+查后端日志：**一条 [delivery] announced 都没有**（最后一条停在 9/16 23:42）。
+
+链路本该是两跳，**两跳都缺**：
+
+```
+侧车工具 → broker.request
+  → emit 引擎事件 agent.delivery（stdout JSON 行）
+  → [跳1] 渲染层转给后端 RPC deliver_agent_message（后端校验+发公告）   ← 上游完全没有（本地 useConversations.ts:3711 有）
+  → 后端发桌面事件 agent-delivery
+  → [跳2] 渲染层落库 + settle 回执                                   ← 已在第一次 C 里补好
+  → 侧车 broker.respond → 工具拿到真结果
+```
+
+另外还有一层：**Go 的桥接结构体把字段丢了**。侧车 stdout 写的是
+`{type, id, ...data}` 平铺 JSON，宿主用结构体解析；上游的结构体既没有
+`targetConversationId` / `deliveryOrigin`，也没有 raw 的 `text`
+（本地 supervisor.go 都有：DeliveryOrigin 5 处 / TargetConversationID 3 处），
+于是 Unmarshal 时静默丢掉 → 渲染层收到空壳 → 分支 return → 后端从未被通知。
+
+修复提交：`e93a5cb`（渲染层第 1 跳）+ `cf73d0a`（Go 字段与转发）。
+回归测试：原来那条投递测试只造 `{Type, ID}`，所以字段丢了也测不出来——已补齐断言。
+
+**教训**：先前判断"deliverAgentMessage 没用"只查了"有没有组件调用"，
+没查 composable 自己的事件分支；也没意识到"跨语言桥接的结构体字段缺失"
+会让一个功能整条静默失败。
