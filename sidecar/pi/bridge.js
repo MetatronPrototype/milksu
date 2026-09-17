@@ -2270,6 +2270,7 @@ async function handoffSessionCommand(command) {
       compaction: {
         tokensBefore: compaction?.tokensBefore,
         estimatedTokensAfter: compaction?.estimatedTokensAfter,
+        summary: compaction?.summary || "",
       },
     });
   } catch (error) {

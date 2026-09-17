@@ -3245,6 +3245,174 @@ func TestCompactSessionRequiresRunningSidecar(t *testing.T) {
 	}
 }
 
+func TestHandoffSessionWaitsForSidecarReceipt(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+
+	supervisor := NewSupervisor(nil)
+	supervisor.process = &childProcess{
+		stdin:     writer,
+		workspace: "/workspace",
+	}
+	supervisor.sessions["session-handoff"] = struct{}{}
+	type handoffResult struct {
+		handed SessionHandoffResult
+		err    error
+	}
+	result := make(chan handoffResult, 1)
+	go func() {
+		handed, handoffErr := supervisor.HandoffSession("session-handoff")
+		result <- handoffResult{handed: handed, err: handoffErr}
+	}()
+
+	line, err := bufio.NewReader(reader).ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var command map[string]any
+	if err := json.Unmarshal(line, &command); err != nil {
+		t.Fatal(err)
+	}
+	requestID, _ := command["requestId"].(string)
+	if command["action"] != "handoff_session" ||
+		command["conversationId"] != "session-handoff" ||
+		requestID == "" {
+		t.Fatalf("unexpected handoff command: %#v", command)
+	}
+
+	supervisor.emitEvent(normalizeBridgeEvent(bridgeEvent{
+		Type:            "session_handoff",
+		ID:              "session-handoff",
+		RequestID:       requestID,
+		ForkedSessionID: "session-handoff-next",
+		Compaction: &CompactionResult{
+			TokensBefore:         4000,
+			EstimatedTokensAfter: 900,
+			Summary:              "Goal: keep the dock",
+			SurfaceText:          "User: keep the dock\n\nAssistant: ok",
+		},
+	}))
+
+	select {
+	case handed := <-result:
+		if handed.err != nil {
+			t.Fatal(handed.err)
+		}
+		if handed.handed.SessionID != "session-handoff-next" {
+			t.Fatalf("unexpected forked session: %q", handed.handed.SessionID)
+		}
+		if handed.handed.Summary != "Goal: keep the dock" {
+			t.Fatalf("unexpected handoff summary: %q", handed.handed.Summary)
+		}
+		if handed.handed.SurfaceText != "User: keep the dock\n\nAssistant: ok" {
+			t.Fatalf("unexpected handoff surface: %q", handed.handed.SurfaceText)
+		}
+		supervisor.mu.Lock()
+		_, remembered := supervisor.sessions["session-handoff-next"]
+		supervisor.mu.Unlock()
+		if !remembered {
+			t.Fatal("forked session was not bound")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handoff receipt was not delivered")
+	}
+
+	supervisor.mu.Lock()
+	supervisor.process = nil
+	supervisor.mu.Unlock()
+}
+
+func TestHandoffSessionReportsFailureWithoutAFork(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+
+	supervisor := NewSupervisor(nil)
+	supervisor.process = &childProcess{
+		stdin:     writer,
+		workspace: "/workspace",
+	}
+	supervisor.sessions["session-handoff"] = struct{}{}
+	result := make(chan error, 1)
+	go func() {
+		_, handoffErr := supervisor.HandoffSession("session-handoff")
+		result <- handoffErr
+	}()
+
+	line, err := bufio.NewReader(reader).ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var command map[string]any
+	if err := json.Unmarshal(line, &command); err != nil {
+		t.Fatal(err)
+	}
+	requestID, _ := command["requestId"].(string)
+
+	supervisor.emitEvent(normalizeBridgeEvent(bridgeEvent{
+		Type:      "session_handoff",
+		ID:        "session-handoff",
+		RequestID: requestID,
+		Error:     "DeepSeek Harness host IPC is not configured",
+	}))
+
+	select {
+	case handoffErr := <-result:
+		if handoffErr == nil ||
+			!strings.Contains(handoffErr.Error(), "host IPC is not configured") {
+			t.Fatalf("expected explicit handoff failure, got %v", handoffErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handoff failure receipt was not delivered")
+	}
+
+	supervisor.mu.Lock()
+	supervisor.process = nil
+	supervisor.mu.Unlock()
+}
+
+func TestHandoffSessionRequiresBoundSession(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+
+	supervisor := NewSupervisor(nil)
+	supervisor.process = &childProcess{
+		stdin:     writer,
+		workspace: "/workspace",
+	}
+	_, handoffErr := supervisor.HandoffSession("session-unknown")
+	if handoffErr == nil ||
+		!strings.Contains(handoffErr.Error(), "session not found") {
+		t.Fatalf("expected bound-session rejection, got %v", handoffErr)
+	}
+	read := make(chan struct{})
+	go func() {
+		_, _ = bufio.NewReader(reader).ReadBytes('\n')
+		close(read)
+	}()
+	select {
+	case <-read:
+		t.Fatal("handoff request must not reach the Sidecar for an unbound conversation")
+	case <-time.After(100 * time.Millisecond):
+	}
+	_ = writer.Close()
+
+	supervisor.mu.Lock()
+	supervisor.process = nil
+	supervisor.mu.Unlock()
+}
+
 // A refused deletion and a cross-conversation delivery must reach the renderer under the
 // exact names it switches on. The default arm prefixed them with engine.raw., so the
 // "your delete was refused" status line never appeared.

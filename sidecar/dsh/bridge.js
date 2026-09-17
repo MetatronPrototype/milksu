@@ -22,6 +22,7 @@ import {
   dshModelDeclaresImageInput,
   dshReasoningOptionValue,
   dshRouteModel,
+  dshTalksToTokenFlux,
 } from "./session-config.js";
 import { syncDshSkillCatalog } from "./skill-catalog.js";
 import { createProductIpc } from "./product-ipc.js";
@@ -196,6 +197,7 @@ function writeHostPatch() {
       computerUse: resolveDshPackageDir(here, "@deepseek-ai/dsh-computer-use"),
       autoReview: resolveDshPackageDir(here, "@deepseek-ai/dsh-experimental-auto-review"),
       protocol: String(process.env.MILKSU_DSH_LLM_PROTOCOL ?? "").trim(),
+      tokenflux: dshTalksToTokenFlux(),
     }),
     { encoding: "utf8", mode: 0o600 },
   );
@@ -972,28 +974,46 @@ async function abortSession(command) {
   emit(conversationId || null, "turn_settled", { aborted: true });
 }
 
+async function runCompact(conversationId) {
+  const record = sessionRecord(conversationId);
+  if (!acp || !record) {
+    throw new Error("DeepSeek Harness session is not running");
+  }
+  return await callHost("compact", { sessionId: record.acpSessionId });
+}
+
+function compactionReceipt(result) {
+  return {
+    tokensBefore: Number(result?.tokensBefore ?? 0),
+    estimatedTokensAfter: Number(result?.estimatedTokensAfter ?? result?.tokensAfter ?? 0),
+  };
+}
+
+function handoffCompactionReceipt(result) {
+  return {
+    ...compactionReceipt(result),
+    summary: String(result?.summary ?? "").trim(),
+    surfaceText: String(result?.surfaceText ?? "").trim(),
+  };
+}
+
 async function compactSession(command) {
   const conversationId = String(command.conversationId ?? "").trim();
   const requestId = String(command.requestId ?? "").trim();
   emit(conversationId, "compaction_start", { requestId });
-  const record = sessionRecord(conversationId);
   try {
-    if (!acp || !record) {
-      throw new Error("DeepSeek Harness session is not running");
-    }
-    const result = await callHost("compact", { sessionId: record.acpSessionId });
+    const result = await runCompact(conversationId);
     emit(conversationId, "compaction_end", {
       requestId,
-      compaction: {
-        tokensBefore: Number(result?.tokensBefore ?? 0),
-        estimatedTokensAfter: Number(result?.estimatedTokensAfter ?? result?.tokensAfter ?? 0),
-      },
+      compaction: compactionReceipt(result),
     });
+    return result;
   } catch (error) {
     emit(conversationId, "compaction_end", {
       requestId,
       error: describeError(error),
     });
+    throw error;
   }
 }
 
@@ -1068,18 +1088,34 @@ async function respondWorkspaceAction(command) {
 async function handoffSession(command) {
   const conversationId = String(command.conversationId ?? "").trim();
   const requestId = String(command.requestId ?? "").trim();
-  const record = sessionRecord(conversationId);
-  if (!record) throw new Error("Nothing to hand off");
-  await compactSession({ conversationId, requestId: `${requestId}_compact` });
-  const forkedSessionId = `dsh_${crypto.randomUUID()}`;
-  await createSession({
-    ...record.createCommand,
-    conversationId: forkedSessionId,
-  });
-  emit(conversationId, "session_handoff", {
-    requestId,
-    forkedSessionId,
-  });
+  try {
+    const record = sessionRecord(conversationId);
+    if (!record) throw new Error("Nothing to hand off");
+    const compacted = await runCompact(conversationId);
+    const seed = String(compacted?.surfaceText || compacted?.summary || "").trim();
+    const forkedSessionId = `dsh_${crypto.randomUUID()}`;
+    await createSession({
+      ...record.createCommand,
+      conversationId: forkedSessionId,
+    });
+    const forked = sessionRecord(forkedSessionId);
+    if (seed && forked?.acpSessionId) {
+      await callHost("seed_context", {
+        sessionId: forked.acpSessionId,
+        text: seed,
+      });
+    }
+    emit(conversationId, "session_handoff", {
+      requestId,
+      forkedSessionId,
+      compaction: handoffCompactionReceipt(compacted),
+    });
+  } catch (error) {
+    emit(conversationId || null, "session_handoff", {
+      requestId,
+      error: describeError(error),
+    });
+  }
 }
 
 async function followupParent(command) {
@@ -1112,7 +1148,11 @@ async function handleCommand(command) {
       await abortSession(command);
       break;
     case "compact_session":
-      await compactSession(command);
+      try {
+        await compactSession(command);
+      } catch {
+        // compactSession already emitted compaction_end with the requestId.
+      }
       break;
     case "destroy_session":
       await destroySession(command);

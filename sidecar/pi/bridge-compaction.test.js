@@ -4,10 +4,12 @@ import {
   armAutoCompactionDeadline,
   clearAutoCompactionDeadline,
   compactSession,
+  compactSummaryText,
   compactionInstructions,
   CONTEXT_COMPACTION_RATIO,
   contextUsageSnapshot,
   DEFAULT_COMPACTION_TIMEOUT_MS,
+  isNothingToCompactError,
   projectCompactionEvent,
   trackCompaction,
   waitForCompaction,
@@ -51,7 +53,7 @@ test("compacts an idle session with the fixed structured instructions", async ()
   });
   const result = await compactSession(session);
   assert.equal(receivedInstructions, compactionInstructions);
-  assert.deepEqual(result, { tokensBefore: 3000, estimatedTokensAfter: 500 });
+  assert.deepEqual(result, { tokensBefore: 3000, estimatedTokensAfter: 500, summary: "s" });
 });
 
 test("requires an existing session", async () => {
@@ -70,7 +72,7 @@ test("manual compact still calls Pi on a busy session so Pi can abort then compa
     },
   });
   assert.equal(compacted, true);
-  assert.deepEqual(result, { tokensBefore: 3000, estimatedTokensAfter: 500 });
+  assert.deepEqual(result, { tokensBefore: 3000, estimatedTokensAfter: 500, summary: "" });
 });
 
 test("rejects an already-compacting session", async () => {
@@ -80,13 +82,18 @@ test("rejects an already-compacting session", async () => {
   );
 });
 
-test("surfaces Pi failures such as nothing to compact without faking success", async () => {
+test("treats a session that is too small as a successful no-op", async () => {
   const session = idleSession({
     compact: async () => {
       throw new Error("Nothing to compact (session too small)");
     },
   });
-  await assert.rejects(compactSession(session), /Nothing to compact/);
+  assert.equal(isNothingToCompactError(new Error("Nothing to compact (session too small)")), true);
+  assert.deepEqual(await compactSession(session), {
+    tokensBefore: 0,
+    estimatedTokensAfter: 0,
+    summary: "",
+  });
 });
 
 test("surfaces model/auth failures without faking success", async () => {
@@ -152,6 +159,11 @@ test("fixed instructions cover goal, constraints, progress, decisions, next step
   }
 });
 
+test("keeps Pi's compact summary for handoff without inventing one", () => {
+  assert.equal(compactSummaryText({ summary: "  Goal: keep the dock  " }), "Goal: keep the dock");
+  assert.equal(compactSummaryText({ tokensBefore: 3 }), "");
+});
+
 test("projects Pi native compaction events without exposing the summary", () => {
   assert.deepEqual(
     projectCompactionEvent(
@@ -188,6 +200,26 @@ test("projects Pi native compaction events without exposing the summary", () => 
     },
   });
   assert.equal(JSON.stringify(completed).includes("must stay inside Pi"), false);
+});
+
+test("projects a session-too-small compaction as a successful no-op", () => {
+  assert.deepEqual(projectCompactionEvent({
+    type: "compaction_end",
+    reason: "manual",
+    aborted: false,
+    errorMessage: "Compaction failed: Nothing to compact (session too small)",
+  }, "request-small"), {
+    type: "compaction_end",
+    data: {
+      requestId: "request-small",
+      reason: "manual",
+      aborted: false,
+      compaction: {
+        tokensBefore: 0,
+        estimatedTokensAfter: 0,
+      },
+    },
+  });
 });
 
 test("projects a failed Pi compaction as an error without a result", () => {
