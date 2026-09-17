@@ -105,49 +105,60 @@ type ApprovalJustification struct {
 	Safety  string `json:"safety,omitempty"`
 }
 
+// DeliveryOrigin identifies the conversation (and agent) that handed a message over.
+type DeliveryOrigin struct {
+	ConversationID    string `json:"conversationId,omitempty"`
+	ConversationTitle string `json:"conversationTitle,omitempty"`
+	Agent             string `json:"agent,omitempty"`
+}
+
 type Event struct {
-	SchemaVersion      int                      `json:"schemaVersion"`
-	Engine             string                   `json:"engine"`
-	SessionID          string                   `json:"sessionId,omitempty"`
-	Type               string                   `json:"type"`
-	Timestamp          string                   `json:"timestamp"`
-	Text               string                   `json:"text,omitempty"`
-	ToolName           string                   `json:"toolName,omitempty"`
-	ToolCallID         string                   `json:"toolCallId,omitempty"`
-	DurationMS         int64                    `json:"durationMs,omitempty"`
-	Error              string                   `json:"error,omitempty"`
-	Done               bool                     `json:"done,omitempty"`
-	Tools              []string                 `json:"tools,omitempty"`
-	Extensions         []string                 `json:"extensions,omitempty"`
-	Skills             []string                 `json:"skills,omitempty"`
-	ExecutionMode      string                   `json:"executionMode,omitempty"`
-	ApprovalPolicy     string                   `json:"approvalPolicy,omitempty"`
-	Capabilities       []CodingCapabilityStatus `json:"capabilities,omitempty"`
-	RequestID          string                   `json:"requestId,omitempty"`
-	Input              string                   `json:"input,omitempty"`
-	Reason             string                   `json:"reason,omitempty"`
-	Approved           *bool                    `json:"approved,omitempty"`
-	Grantable          bool                     `json:"grantable,omitempty"`
-	Justification      *ApprovalJustification   `json:"justification,omitempty"`
-	Notice             string                   `json:"notice,omitempty"`
-	Choice             string                   `json:"choice,omitempty"`
-	BackgroundTasks    []BackgroundTask         `json:"backgroundTasks,omitempty"`
-	SubagentTasks      []SubagentTask           `json:"subagentTasks,omitempty"`
-	Jobs               []DshJob                 `json:"jobs,omitempty"`
-	Commands           []DshCommandDescriptor   `json:"commands,omitempty"`
-	PlanMode           *DshPlanMode             `json:"planMode,omitempty"`
-	Command            *DshCommandResult        `json:"command,omitempty"`
-	Goal               *CodingGoalState         `json:"goal,omitempty"`
-	Resumed            bool                     `json:"resumed,omitempty"`
-	Aborted            bool                     `json:"aborted,omitempty"`
-	Compaction         *CompactionResult        `json:"compaction,omitempty"`
-	Steering           []string                 `json:"steering,omitempty"`
-	FollowUp           []string                 `json:"followUp,omitempty"`
-	ModelSource        string                   `json:"modelSource,omitempty"`
-	Module             string                   `json:"module,omitempty"`
-	Usage              *ModelUsage              `json:"usage,omitempty"`
-	ContextComposition *ContextComposition      `json:"contextComposition,omitempty"`
-	ForkedSessionID    string                   `json:"forkedSessionId,omitempty"`
+	SchemaVersion  int                      `json:"schemaVersion"`
+	Engine         string                   `json:"engine"`
+	SessionID      string                   `json:"sessionId,omitempty"`
+	Type           string                   `json:"type"`
+	Timestamp      string                   `json:"timestamp"`
+	Text           string                   `json:"text,omitempty"`
+	ToolName       string                   `json:"toolName,omitempty"`
+	ToolCallID     string                   `json:"toolCallId,omitempty"`
+	DurationMS     int64                    `json:"durationMs,omitempty"`
+	Error          string                   `json:"error,omitempty"`
+	Done           bool                     `json:"done,omitempty"`
+	Tools          []string                 `json:"tools,omitempty"`
+	Extensions     []string                 `json:"extensions,omitempty"`
+	Skills         []string                 `json:"skills,omitempty"`
+	ExecutionMode  string                   `json:"executionMode,omitempty"`
+	ApprovalPolicy string                   `json:"approvalPolicy,omitempty"`
+	Capabilities   []CodingCapabilityStatus `json:"capabilities,omitempty"`
+	RequestID      string                   `json:"requestId,omitempty"`
+	Input          string                   `json:"input,omitempty"`
+	Reason         string                   `json:"reason,omitempty"`
+	Approved       *bool                    `json:"approved,omitempty"`
+	Grantable      bool                     `json:"grantable,omitempty"`
+	Justification  *ApprovalJustification   `json:"justification,omitempty"`
+	Notice         string                   `json:"notice,omitempty"`
+	// A cross-conversation delivery announced by a pi tool. Without these fields the
+	// renderer receives an event it cannot act on, so the message vanished silently.
+	TargetConversationID string                 `json:"targetConversationId,omitempty"`
+	DeliveryOrigin       *DeliveryOrigin        `json:"deliveryOrigin,omitempty"`
+	Choice               string                 `json:"choice,omitempty"`
+	BackgroundTasks      []BackgroundTask       `json:"backgroundTasks,omitempty"`
+	SubagentTasks        []SubagentTask         `json:"subagentTasks,omitempty"`
+	Jobs                 []DshJob               `json:"jobs,omitempty"`
+	Commands             []DshCommandDescriptor `json:"commands,omitempty"`
+	PlanMode             *DshPlanMode           `json:"planMode,omitempty"`
+	Command              *DshCommandResult      `json:"command,omitempty"`
+	Goal                 *CodingGoalState       `json:"goal,omitempty"`
+	Resumed              bool                   `json:"resumed,omitempty"`
+	Aborted              bool                   `json:"aborted,omitempty"`
+	Compaction           *CompactionResult      `json:"compaction,omitempty"`
+	Steering             []string               `json:"steering,omitempty"`
+	FollowUp             []string               `json:"followUp,omitempty"`
+	ModelSource          string                 `json:"modelSource,omitempty"`
+	Module               string                 `json:"module,omitempty"`
+	Usage                *ModelUsage            `json:"usage,omitempty"`
+	ContextComposition   *ContextComposition    `json:"contextComposition,omitempty"`
+	ForkedSessionID      string                 `json:"forkedSessionId,omitempty"`
 }
 
 // ModelUsage is the bounded, credential-free projection emitted by Pi after
@@ -362,49 +373,54 @@ type CodingCollaborationWorktree struct {
 }
 
 type bridgeEvent struct {
-	Type               string                   `json:"type"`
-	ID                 string                   `json:"id"`
-	Delta              string                   `json:"delta"`
-	Content            string                   `json:"content"`
-	Error              string                   `json:"error"`
-	ToolName           string                   `json:"toolName"`
-	ToolCallID         string                   `json:"toolCallId"`
-	DurationMS         int64                    `json:"durationMs"`
-	IsError            bool                     `json:"isError"`
-	Tools              []string                 `json:"tools"`
-	Extensions         []string                 `json:"extensions"`
-	Skills             []string                 `json:"skills"`
-	ExecutionMode      string                   `json:"executionMode"`
-	ApprovalPolicy     string                   `json:"approvalPolicy"`
-	Capabilities       []CodingCapabilityStatus `json:"capabilities"`
-	RequestID          string                   `json:"requestId"`
-	Action             string                   `json:"action"`
-	Input              string                   `json:"input"`
-	Reason             string                   `json:"reason"`
-	Approved           *bool                    `json:"approved"`
-	Grantable          bool                     `json:"grantable"`
-	Notice             string                   `json:"notice"`
-	Justification      *ApprovalJustification   `json:"justification"`
-	Choice             string                   `json:"choice"`
-	Tasks              []BackgroundTask         `json:"tasks"`
-	SubagentTasks      []SubagentTask           `json:"subagentTasks"`
-	Jobs               []DshJob                 `json:"jobs"`
-	Commands           []DshCommandDescriptor   `json:"commands"`
-	PlanMode           *DshPlanMode             `json:"planMode"`
-	Command            *DshCommandResult        `json:"command"`
-	Goal               *CodingGoalState         `json:"goal"`
-	Resumed            bool                     `json:"resumed"`
-	Aborted            bool                     `json:"aborted"`
-	Compaction         *CompactionResult        `json:"compaction"`
-	Steering           []string                 `json:"steering"`
-	FollowUp           []string                 `json:"followUp"`
-	Source             string                   `json:"source"`
-	From               string                   `json:"from"`
-	To                 string                   `json:"to"`
-	Module             string                   `json:"module"`
-	Usage              *ModelUsage              `json:"usage"`
-	ContextComposition *ContextComposition      `json:"contextComposition"`
-	ForkedSessionID    string                   `json:"forkedSessionId"`
+	Type           string                   `json:"type"`
+	ID             string                   `json:"id"`
+	Delta          string                   `json:"delta"`
+	Content        string                   `json:"content"`
+	Error          string                   `json:"error"`
+	ToolName       string                   `json:"toolName"`
+	ToolCallID     string                   `json:"toolCallId"`
+	DurationMS     int64                    `json:"durationMs"`
+	IsError        bool                     `json:"isError"`
+	Tools          []string                 `json:"tools"`
+	Extensions     []string                 `json:"extensions"`
+	Skills         []string                 `json:"skills"`
+	ExecutionMode  string                   `json:"executionMode"`
+	ApprovalPolicy string                   `json:"approvalPolicy"`
+	Capabilities   []CodingCapabilityStatus `json:"capabilities"`
+	RequestID      string                   `json:"requestId"`
+	Action         string                   `json:"action"`
+	Input          string                   `json:"input"`
+	Reason         string                   `json:"reason"`
+	Approved       *bool                    `json:"approved"`
+	Grantable      bool                     `json:"grantable"`
+	Notice         string                   `json:"notice"`
+	// Some sidecar payloads carry their body in a top-level text field (deliveries,
+	// status notices). Without this field the body was dropped during Unmarshal.
+	Text                 string                 `json:"text"`
+	TargetConversationID string                 `json:"targetConversationId"`
+	DeliveryOrigin       *DeliveryOrigin        `json:"deliveryOrigin"`
+	Justification        *ApprovalJustification `json:"justification"`
+	Choice               string                 `json:"choice"`
+	Tasks                []BackgroundTask       `json:"tasks"`
+	SubagentTasks        []SubagentTask         `json:"subagentTasks"`
+	Jobs                 []DshJob               `json:"jobs"`
+	Commands             []DshCommandDescriptor `json:"commands"`
+	PlanMode             *DshPlanMode           `json:"planMode"`
+	Command              *DshCommandResult      `json:"command"`
+	Goal                 *CodingGoalState       `json:"goal"`
+	Resumed              bool                   `json:"resumed"`
+	Aborted              bool                   `json:"aborted"`
+	Compaction           *CompactionResult      `json:"compaction"`
+	Steering             []string               `json:"steering"`
+	FollowUp             []string               `json:"followUp"`
+	Source               string                 `json:"source"`
+	From                 string                 `json:"from"`
+	To                   string                 `json:"to"`
+	Module               string                 `json:"module"`
+	Usage                *ModelUsage            `json:"usage"`
+	ContextComposition   *ContextComposition    `json:"contextComposition"`
+	ForkedSessionID      string                 `json:"forkedSessionId"`
 }
 
 type childProcess struct {
@@ -3493,6 +3509,9 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 	// default arm would prefix them with engine.raw. and they could never match.
 	case "destructive.blocked", "agent.delivery":
 		event.Type = raw.Type
+		event.Text = raw.Text
+		event.TargetConversationID = raw.TargetConversationID
+		event.DeliveryOrigin = raw.DeliveryOrigin
 	case "approval_resolved":
 		event.Type = "approval.resolved"
 		event.Done = true

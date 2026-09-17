@@ -3430,11 +3430,29 @@ func TestNormalizeBridgeEventPassesStatusNoticesThrough(t *testing.T) {
 	}
 
 	delivery := normalizeBridgeEvent(bridgeEvent{
-		Type: "agent.delivery",
-		ID:   "session-1",
+		Type:                 "agent.delivery",
+		ID:                   "session-1",
+		Text:                 "交给别的对话处理",
+		TargetConversationID: "session-2",
+		DeliveryOrigin: &DeliveryOrigin{
+			ConversationID:    "session-1",
+			ConversationTitle: "来源会话",
+			Agent:             "MilkSU agent",
+		},
 	}, KernelPi)
 	if delivery.Type != "agent.delivery" {
 		t.Fatalf("type = %q, want agent.delivery", delivery.Type)
+	}
+	// 这几个字段被丢掉时，渲染层收到的是一个无法处理的事件，消息会静默消失：
+	// 正文没了、目标没了、来源没了，发信方只能等到超时。
+	if delivery.Text != "交给别的对话处理" {
+		t.Fatalf("text = %q, want the delivery body", delivery.Text)
+	}
+	if delivery.TargetConversationID != "session-2" {
+		t.Fatalf("target = %q, want session-2", delivery.TargetConversationID)
+	}
+	if delivery.DeliveryOrigin == nil || delivery.DeliveryOrigin.ConversationID != "session-1" {
+		t.Fatalf("deliveryOrigin = %+v, want the source conversation", delivery.DeliveryOrigin)
 	}
 
 	// Anything unknown keeps the prefixed name, so it is never mistaken for a real event.
