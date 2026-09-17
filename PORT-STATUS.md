@@ -223,3 +223,55 @@ git checkout main && git branch -D port/backend   # 完全丢弃
 
 `bridge.js` 有 9 处冲突，其中 **1 处是真设计差异**：流式合并
 （上游 `queueTextDelta` 只合并正文；我们的 `streamDeltas` 连"思考"增量也合并）。
+
+---
+
+# 完成（第四次）：a 已接上，搬运收尾
+
+提交：**`057c501`** `port(sidecar): 接上 bridge.js（a）——思考增量也合并`
+
+## 全绿验证（可复现）
+
+```bash
+cd ~/MilkSU/Coding/milksu-react
+export PATH=/opt/homebrew/bin:$PATH
+export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+export TMPDIR=/tmp/mk
+
+go build ./...                                      # 通过
+go test ./internal/... ./cmd/milksu-backend/        # 全绿
+(cd app && ./node_modules/.bin/tsc -b)              # 通过
+npm --prefix app run test                           # 101 文件 / 627 测试全过
+npm run test:sidecar                                # 736 / 736
+```
+
+## 这一轮解决的冲突（a：bridge.js 9 处）
+
+| 处 | 内容 | 规则 |
+|---|---|---|
+| 1、2 | 导入（补 background-wake / stream-delta / destructiveDeleteApproval） | 并集 |
+| 3、8、9 | 会话状态表 | 并集 |
+| **4、6** | **流式合并实现** | **取本地（streamDeltas：思考+正文共用 60ms 管道）** |
+| 5 | 工具注册 | 并集（`request_destructive_delete` + `deliver_to_conversation` 都要） |
+| 7 | 注释 | 取本地 |
+
+## 顺带修正：`bridge-workflow-prompt.js`
+
+上游把 **subagent / isolated browser 两段引导从系统提示里移除了**（上游测试用 `doesNotMatch` 明确锁住这一点，
+这也是它删掉 `subagentGuidance`/`browserGuidance` 变量的原因）。
+所以这里**不能取本地版本**，做法是：保留上游结构 + 只追加我们的两段
+（`visibleProgressRule`、「跨对话内容」铁律），并补一个只针对"工具调用前必须有可见正文"的测试。
+
+## 仍未搬运的（明确记录，都是刻意决定）
+
+| 项 | 原因 |
+|---|---|
+| `internal/engine/supervisor.go` 的 18 处设计冲突 | 上游已并行演进（有停靠池硬上限、停止事件）；本地那 5 项微调未搬 |
+| `sidecar/dsh/bridge.js` | 本地是旧版（−671 行），搬过去会回退上游 DSH |
+| 本地引擎 5 项微调 | `parkedSidecarBusy` / `processBusyLocked` / `parkedTurnStaleWindow` / `decrementActiveTurns` / 停止原因上报 |
+| bash 默认超时 | 现在是本地的 **120 秒**；上游是 600 秒（待决定） |
+
+## 下一步（未执行）
+
+用这个分支重新构建试验田（`MILKSU_REPO=~/MilkSU/Coding/milksu-react bash 试验田打包安装.sh`），
+得到 `beta.18` = React 界面 + 上面这些搬过来的修复。
