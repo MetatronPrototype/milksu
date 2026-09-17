@@ -821,8 +821,8 @@ export default function SettingsPage({
                 <SettingsRow
                   label={t('允许跨项目投递', 'Allow cross-project delivery')}
                   description={t(
-                    '默认关闭。关闭时行为与以前一致：同一项目内的对话可以互投，不同项目一律拒绝。打开后，只有源对话的「可访问的对话」名单里的目标才放行；两个对话在 60 秒内互相投递会被熔断 5 分钟。',
-                    "Off by default. When off, behaviour is unchanged: chats inside one project may exchange messages, another project is refused. When on, only the targets in the source chat's list pass, and a ping-pong between two chats is broken for 5 minutes.",
+                    '默认关闭。同一项目内的对话一直可以互投，这个开关和名单都管不到它们。打开后才允许跨项目投递，而且只有源对话的「可访问的对话」名单里点过名的目标才放行；两个对话在 60 秒内互相投递会被熔断 5 分钟。',
+                    "Off by default. Chats inside one project may always exchange messages — neither this switch nor the allow list applies to them. Turning it on allows cross-project delivery, and only targets named in the source chat's allow list pass; a ping-pong between two chats is broken for 5 minutes.",
                   )}
                   divider={working.settings_integrity_warning === true}
                   trailing={(

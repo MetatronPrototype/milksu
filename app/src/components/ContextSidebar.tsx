@@ -1075,8 +1075,8 @@ export default function ContextSidebar({
             <DialogTitle>{t('可访问的对话', 'Reachable chats')}</DialogTitle>
             <DialogDescription>
               {t(
-                `选择「${collaborationSource?.title ?? ''}」可以投递到的对话。名单之外一律拒绡；名单是单向的，对方能不能投回来由它自己的名单决定。需要先在「设置 → Agent 协作」打开总开关，跨项目投递才可能发生。`,
-                `Pick the chats "${collaborationSource?.title ?? ''}" may deliver to. Anything not listed is refused, and the list is one-way: the other side decides its own list. Cross-project delivery also needs the master switch in Settings → Agent collaboration.`,
+                `选择「${collaborationSource?.title ?? ''}」可以跨项目投递到的对话。名单只对跨项目生效：同一个项目内的对话不受名单限制，始终可以互投。名单是单向的，对方能不能投回来由它自己的名单决定。需要先在「设置 → Agent 协作」打开总开关。`,
+                `Pick the chats "${collaborationSource?.title ?? ''}" may deliver to across projects. The list applies to cross-project delivery only: chats inside the same project are never restricted by it and can always exchange messages. The list is one-way, and the other side decides its own list. Cross-project delivery also needs the master switch in Settings → Agent collaboration.`,
               )}
             </DialogDescription>
           </DialogHeader>
