@@ -874,6 +874,11 @@ func (a *App) EnsureCodingArtifactWorkspace(conversationID string) (string, erro
 
 func (a *App) SaveSettingsCmd(settings config.AppSettings) error {
 	previous := a.settings.Get()
+	// What a sidecar is started with, before the save. Only a real change here may rotate the
+	// live sidecars: a UI-only setting (the collaboration gate, a project pin) must never
+	// restart a process the reader is watching. 搬运自本地分支（上游有 SidecarConfigFingerprint
+	// 但没有人调用它，于是每次保存任何设置都会把所有 sidecar 标成过期）。
+	beforeSidecarConfig := engine.SidecarConfigFingerprint(a.settings.GetResolved())
 	err := a.settings.Save(settings)
 	if err != nil && !hasSessionOnlyCredential(a.settings.Get()) {
 		return err
@@ -884,7 +889,11 @@ func (a *App) SaveSettingsCmd(settings config.AppSettings) error {
 	// while a turn (or a model probe) that is already streaming finishes on the process
 	// it started on. A credential the user withdrew is not a replacement and gets no
 	// such grace, or a running child would keep it usable after it was taken away.
-	a.rotateEngineCredentials("settings saved")
+	if engine.SidecarConfigFingerprint(a.settings.GetResolved()) != beforeSidecarConfig {
+		a.rotateEngineCredentials("settings saved")
+	}
+	// A withdrawn credential is not a replacement and gets no lazy grace, so this stays
+	// unconditional and outside the fingerprint gate above.
 	if credentialWithdrawn(previous, a.settings.Get()) {
 		a.stopSidecarsHoldingWithdrawnCredential("settings saved")
 	}
