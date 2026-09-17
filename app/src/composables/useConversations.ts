@@ -958,6 +958,9 @@ type ConversationsState = {
   turnStatusById: Map<string, SessionTurnSnapshot>
   conversationActionError: string
   pendingComposerDraft: PendingComposerDraft | null
+  // 搬运自本地分支：存活/卡住指示需要这两个字段（见 noteToolRunning / noteTurnHeartbeat）。
+  runningTools: Map<string, Set<string>>
+  heartbeatTick: number
 }
 
 type ParkedPendingCanvas = {
@@ -1006,6 +1009,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     turnStatusById: new Map<string, SessionTurnSnapshot>(),
     conversationActionError: '',
     pendingComposerDraft: null,
+    // 搬运自本地分支：存活/卡住指示需要的粗粒度状态。
+    // 只有“工具集合”和“心跳计数器”进 store（它们必须触发渲染）；
+    // 事件时间戳放在闭包里（见下），避免每个流式事件都写一次 store。
+    runningTools: new Map<string, Set<string>>(),
+    heartbeatTick: 0,
   })
   const s = {
     get conversations() { return store.getState().conversations },
@@ -1048,6 +1056,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set abortingIds(value) { store.setState({ abortingIds: value }) },
     get messageQueues() { return store.getState().messageQueues },
     set messageQueues(value) { store.setState({ messageQueues: value }) },
+    get runningTools() { return store.getState().runningTools },
+    set runningTools(value) { store.setState({ runningTools: value }) },
+    get heartbeatTick() { return store.getState().heartbeatTick },
+    set heartbeatTick(value) { store.setState({ heartbeatTick: value }) },
     get engineNotice() { return store.getState().engineNotice },
     set engineNotice(value) { store.setState({ engineNotice: value }) },
     get engineNoticeRepeat() { return store.getState().engineNoticeRepeat },
@@ -1160,6 +1172,67 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   const activeQueuedGuidanceStalled = (() => (
     s.activeId ? s.stalledQueueIds.has(s.activeId) : false
   ))
+
+  // ---- 存活与卡住指示（搬运自本地分支）----
+  // 以前界面只能从“安静”推出“引擎没响应”，于是一个长时间的工其或慢模型调用就被读成
+  // “连接掉了”。现在分开两件事：事件=有进展；心跳=引擎还在，但不是进展。
+  const STREAM_STALE_THRESHOLD_MS = 18_000
+  const ENGINE_HEARTBEAT_GRACE_MS = 15_000
+  const lastStreamEventByConversation = new Map<string, number>()
+  const heartbeatAtByConversation = new Map<string, number>()
+  function noteStreamEvent(conversationId: string, at = Date.now()) {
+    if (conversationId) lastStreamEventByConversation.set(conversationId, at)
+  }
+  function noteTurnHeartbeat(conversationId: string | undefined, at = Date.now()) {
+    if (!conversationId) return
+    heartbeatAtByConversation.set(conversationId, at)
+    s.heartbeatTick = s.heartbeatTick + 1
+  }
+  function noteToolRunning(
+    conversationId: string | undefined,
+    toolCallId?: string,
+    _toolName?: string,
+    running = true,
+  ) {
+    if (!conversationId) return
+    const key = String(toolCallId ?? '')
+    if (!key) return
+    const next = new Map(s.runningTools)
+    const current = new Set(next.get(conversationId) ?? [])
+    if (running) current.add(key)
+    else current.delete(key)
+    if (current.size) next.set(conversationId, current)
+    else next.delete(conversationId)
+    s.runningTools = next
+  }
+  function lastEventForConversation(conversationId: string | null) {
+    if (!conversationId) return 0
+    return lastStreamEventByConversation.get(conversationId) ?? 0
+  }
+  // 这三个在渲染时用 Date.now() 求职：重渲染的节奏由页面上已有的“每秒时钟”驱动，
+  // 不在 store 里再造一个时钟。
+  const streamStale = (() => {
+    const conversationId = s.activeId
+    if (!conversationId || !s.runningIds.has(conversationId)) return false
+    const last = lastEventForConversation(conversationId)
+    return last > 0 && Date.now() - last >= STREAM_STALE_THRESHOLD_MS
+  })
+  const streamStaleSeconds = (() => {
+    const last = lastEventForConversation(s.activeId)
+    return last > 0 ? Math.max(0, Math.floor((Date.now() - last) / 1000)) : 0
+  })
+  const activeToolRunning = (() => {
+    const id = s.activeId
+    return Boolean(id && (s.runningTools.get(id)?.size ?? 0) > 0)
+  })
+  const activeEngineAlive = (() => {
+    const id = s.activeId
+    if (!id) return false
+    // Read the tick so a heartbeat re-renders the wording even without other events.
+    void s.heartbeatTick
+    const at = heartbeatAtByConversation.get(id) ?? 0
+    return at > 0 && Date.now() - at < ENGINE_HEARTBEAT_GRACE_MS
+  })
   const activeResumed = (() => (
     s.activeId ? s.continuity.resumed.has(s.activeId) : false
   ))
@@ -2946,6 +3019,21 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         contextComposition,
         sessions,
       } = event.payload
+      // 搬运自本地分支：任何事件都证明这个对话的流又活了——但心跳除外。
+      // 心跳只是“引擎还在”，不是“有进展”；把心跳算成进展会让“安静但活着”
+      // 和“已经没了”在界面上看起来一模一样。
+      if (type !== 'turn.heartbeat') {
+        noteStreamEvent(String(sessionId ?? '') || String(s.activeId ?? ''))
+      }
+      if (type === 'turn.heartbeat') {
+        noteTurnHeartbeat(sessionId)
+        return
+      }
+      if (type === 'tool.started' || type === 'tool.progress') {
+        noteToolRunning(sessionId, toolCallId, toolName, true)
+      } else if (type === 'tool.completed') {
+        noteToolRunning(sessionId, toolCallId, toolName, false)
+      }
       if (!sessionId && (type === 'engine.stopped' || type === 'engine.protocol_error')) {
         // Scope the stop to the sessions the stopped engine instance actually
         // served. Without that identity there is nothing safe to notify: a
@@ -3529,6 +3617,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get activeAbortStalled() { return activeAbortStalled() },
     get activeMessageQueue() { return activeMessageQueue() },
     get activeQueuedGuidanceStalled() { return activeQueuedGuidanceStalled() },
+    get streamStale() { return streamStale() },
+    get streamStaleSeconds() { return streamStaleSeconds() },
+    get activeToolRunning() { return activeToolRunning() },
+    get activeEngineAlive() { return activeEngineAlive() },
     get engineNotice() { return s.engineNotice },
     get engineNoticeRepeat() { return s.engineNoticeRepeat },
     get busySend() { return s.busySend },

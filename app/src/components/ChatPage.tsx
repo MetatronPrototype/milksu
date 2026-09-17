@@ -931,6 +931,27 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const waitingElapsed = waitingStartedAt == null
     ? ''
     : formatDemoElapsed(Math.max(0, waitingNow - waitingStartedAt))
+  // ---- 搬运自本地分支：诚实文案 ----
+  // “事件=有进展”与“心跳=引擎还在”是两件事。以前只看安静，于是长工具/慢模型都被读成
+  // “连接掉了”；现在分开，并且只有“安静 + 没有工具在跑 + 引擎心跳也没了”才说引擎没响应。
+  const streamStale = conversations.streamStale
+  const streamStaleSeconds = conversations.streamStaleSeconds
+  const runningToolActive = conversations.activeToolRunning
+  const engineAlive = conversations.activeEngineAlive
+  const STUCK_TURN_EXIT_SECONDS = 45
+  const stuckTurn = streamStale
+    && !runningToolActive
+    && engineAlive === false
+    && streamStaleSeconds >= STUCK_TURN_EXIT_SECONDS
+  /** “等待”必须说清在等什么；无声地计数就是在说“模型正在回复”——那和连接断了一模一样。 */
+  const waitingLabel = (() => {
+    if (streamStale) {
+      if (runningToolActive) return t('工具执行中…', 'Tool running…')
+      if (stuckTurn) return t('引擎没有响应…', 'The engine is not responding…')
+      return t('等待中…', 'Waiting…')
+    }
+    return t('等待引擎响应…', 'Waiting for the engine…')
+  })()
   const latestJudge = ctfProjection?.judgeReceipts.at(-1)
   const contextPanelTitle = ({
     domain: ctfSession ? t('CTF 领域上下文', 'CTF domain context') : vulnerabilitySession ? t('CVE 领域上下文', 'CVE domain context') : t('领域上下文', 'Domain context'),
@@ -2503,6 +2524,28 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
             onScroll={handleChatScroll}
           >
+            {streamStale ? (
+              <div
+                className={cn(
+                  'mx-auto mb-2 w-[72%] rounded-xl border px-3 py-1.5 text-caption',
+                  stuckTurn
+                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                    : 'border-border/70 bg-muted/50 text-muted-foreground',
+                )}
+                data-testid="stream-stale"
+              >
+                {runningToolActive ? (
+                  t(
+                    `工具执行中…（已 ${streamStaleSeconds}s 无输出）`,
+                    `Tool running… (${streamStaleSeconds}s without output)`,
+                  )
+                ) : stuckTurn ? (
+                  <span>{t(`引擎 ${streamStaleSeconds}s 没有响应。`, `The engine has not answered for ${streamStaleSeconds}s.`)}</span>
+                ) : (
+                  t(`等待中（已 ${streamStaleSeconds}s）`, `Waiting… (${streamStaleSeconds}s)`)
+                )}
+              </div>
+            ) : null}
             {engineNotice ? (
               <div
                 className="mx-auto mb-2 w-[72%] rounded-xl border border-border/70 bg-muted/50 px-3 py-1.5 text-caption text-muted-foreground"
@@ -2611,7 +2654,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                 {waitingForModel && !compacting ? (
                   <p className="chat-model-loading">
                     <AgentPixelLoader
-                      label={t('模型回复中', 'Model is replying')}
+                      label={waitingLabel}
                       elapsed={waitingElapsed}
                       running
                     />
