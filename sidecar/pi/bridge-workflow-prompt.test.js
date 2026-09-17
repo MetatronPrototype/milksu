@@ -40,3 +40,17 @@ test("workflow prompt skips optional surfaces that are off", () => {
   assert.doesNotMatch(prompt, /subagent/);
   assert.doesNotMatch(prompt, /isolated browser/);
 });
+
+// 搬运自本地分支：每次工具调用前都必须留可见正文（整条"可见进度"规则）。
+// 上游把 subagent / isolated browser 两段引导从系统提示里移除了（上面的 doesNotMatch 就是为此），
+// 但"工具调用前先写一句人话"这条是本地新增、且与本基线实现一致，所以保留。
+test("workflow prompt asks for visible text before every tool call", () => {
+  for (const sessionRole of ["", "solver", "strategist", "tool-builder"]) {
+    const prompt = composeMilkSUWorkflowSystemPrompt("base", {
+      sessionRole,
+      policy: { workspace: "/workspace", uiLocale: "zh-CN" },
+    });
+    assert.match(prompt, /Before every tool call, write one short sentence of visible text/);
+    assert.match(prompt, /thinking is not the answer/);
+  }
+});

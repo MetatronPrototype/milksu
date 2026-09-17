@@ -38,6 +38,18 @@ import {
   normalizeCodingProductAction,
 } from "./bridge-policy.js";
 import { createApprovalBroker } from "./bridge-approval.js";
+import { createDeliveryBroker } from "./bridge-delivery.js";
+import { isExternalMessagePrompt } from "./bridge-external-content.js";
+import { startTurnHeartbeat } from "./bridge-turn-heartbeat.js";
+import {
+  PROTECTED_ROOTS_ENV,
+  dataDirectoryFromEnvironment,
+  derivedProtectedRoots,
+  mergeProtectedRoots,
+  parseProtectedRoots,
+  protectedCommandViolation,
+  protectedWriteViolation,
+} from "./bridge-protected-paths.js";
 import {
   codingCollaborationRequiresApproval,
   codingMcpOperationRequiresApproval,
@@ -113,6 +125,9 @@ import {
   withCodingTurnContract,
 } from "./bridge-turn-contract.js";
 import {
+  withVisibleProgressReminder,
+} from "./bridge-visible-progress.js";
+import {
   codingCollaborationChanged,
   codingCollaborationToolName,
   formatSubagentApproval,
@@ -139,6 +154,11 @@ import { resolveCodingSkillPaths, reviewedCodingSkillPaths } from "./bridge-skil
 import { createToolResultBoundExtension } from "./bridge-tool-result-bound.js";
 import { createHangGuardExtension } from "./bridge-hang-guard.js";
 import {
+  registerBackgroundWakeNotifier,
+  unregisterBackgroundWakeNotifier,
+} from "./bridge-background-wake.js";
+import { createDeltaAwareWriter, createStreamDeltaCoalescer } from "./bridge-stream-delta.js";
+import {
   createSubagentYieldExtension,
   formatSubagentToolInput,
   projectSubagentRosterEnd,
@@ -152,6 +172,7 @@ import {
 } from "./bridge-steering.js";
 import {
   commandForTool,
+  destructiveDeleteApproval,
   destructiveDeleteDecision,
   destructiveJustification,
   issueDestructiveDeleteCredential,
@@ -202,6 +223,9 @@ const suppressedQueueUpdates = new Set();
 const sessionTurnContracts = new Map();
 const reasoningOnlyRecovered = new Map();
 const reasoningOnlyPreviousTools = new Map();
+// Set while a turn runs when its prompt was a cross-conversation delivery, so the tool guard
+// can require the user's own approval instead of trusting the policy's auto modes.
+const sessionExternalTurns = new Map();
 const sessionModelSources = new Map();
 const sessionConfiguredProviders = new Map();
 const abortedSessions = new Set();
@@ -228,38 +252,48 @@ const sidecarResourceDirectory = existsSync(join(bridgeDirectory, "skills"))
   ? bridgeDirectory
   : resolve(bridgeDirectory, "..", "..");
 const approvalRequiredCodingTools = new Set(["bash", "edit", "write"]);
-// Streaming text is coalesced into ~60ms batches: one desktop event per batch instead
-// of one per token. Any other event flushes the pending text first, so ordering holds.
-const TEXT_DELTA_FLUSH_MS = 60;
-const pendingTextDeltas = new Map();
-let textDeltaTimer = null;
-
-function flushTextDeltas() {
-  if (textDeltaTimer !== null) {
-    clearTimeout(textDeltaTimer);
-    textDeltaTimer = null;
-  }
-  if (!pendingTextDeltas.size) return;
-  const batches = [...pendingTextDeltas.entries()];
-  pendingTextDeltas.clear();
-  for (const [id, delta] of batches) {
-    emit(id, "text_delta", { delta });
-  }
-}
-
-function queueTextDelta(conversationId, delta) {
-  if (!delta) return;
-  pendingTextDeltas.set(
-    conversationId,
-    `${pendingTextDeltas.get(conversationId) ?? ""}${delta}`,
-  );
-  if (textDeltaTimer !== null) return;
-  textDeltaTimer = setTimeout(flushTextDeltas, TEXT_DELTA_FLUSH_MS);
-}
-
-function emit(conversationId, type, data = {}) {
-  if (type !== "text_delta") flushTextDeltas();
+// Streaming deltas are coalesced into ~60ms batches: one desktop event per batch instead
+// of one per token, for both answer text and thinking. Every event goes through one writer
+// that flushes the pending batch first, so a tool call can never overtake (or drop) the
+// paragraph that came before it.
+function writeEngineEvent(conversationId, type, data) {
   process.stdout.write(`${JSON.stringify({ type, id: conversationId ?? null, ...data })}\n`);
+}
+
+const streamDeltas = createStreamDeltaCoalescer({
+  onFlush: batches => {
+    for (const { type, id, delta } of batches) {
+      writeEngineEvent(id, type, { delta });
+    }
+  },
+});
+
+const emit = createDeltaAwareWriter({ coalescer: streamDeltas, write: writeEngineEvent });
+
+/**
+ * The delivery tool must report what the host confirmed - never a bare "handed over".
+ * A queued delivery names the conversation it waits behind, so the caller knows the wait
+ * is real work in progress and not a lost message.
+ */
+function formatDeliveryOutcome(outcome, target) {
+  const status = String(outcome?.status ?? "").trim();
+  const detail = String(outcome?.detail ?? "").trim();
+  if (status === "queued") {
+    const behind = detail ? ` behind ${detail}` : " behind another running conversation";
+    return `Queued: MilkSU accepted the message for ${target}, but another conversation in`
+      + ` the same workspace is running, so it waits${behind} and starts by itself when`
+      + " that turn ends.";
+  }
+  if (status === "delivered") {
+    return `Delivered: MilkSU accepted the message for ${target} and dispatched it.`;
+  }
+  if (status === "refused") {
+    return `Refused: MilkSU did not deliver the message to ${target}:`
+      + ` ${detail || "no reason given"}.`;
+  }
+  return `Unconfirmed: MilkSU received the request for ${target} but did not report the`
+    + " outcome before the wait timed out. It may still be queued; the outcome is also"
+    + " written to this conversation.";
 }
 
 function applyWorkerModelOverride(worker) {
@@ -338,10 +372,23 @@ function projectedBackgroundTasks(conversationId) {
 function createReviewedBackgroundTasksExtension(conversationId) {
   return (pi) => {
     backgroundTaskControllers.set(conversationId, pi);
+    registerBackgroundWakeNotifier(pi, (payload) => {
+      const tasks = Array.isArray(payload?.tasks)
+        ? payload.tasks.map(task => ({
+          id: String(task?.id ?? ""),
+          name: String(task?.name ?? ""),
+          status: String(task?.status ?? ""),
+          endedAt: Number(task?.endedAt ?? 0),
+        })).filter(task => task.id)
+        : [];
+      if (!tasks.length) return;
+      emit(conversationId, "background.wake", { tasks, wakeAt: Number(payload?.at ?? Date.now()) });
+    });
     pi.on("session_shutdown", () => {
       if (backgroundTaskControllers.get(conversationId) === pi) {
         backgroundTaskControllers.delete(conversationId);
       }
+      unregisterBackgroundWakeNotifier(pi);
     });
     piBackgroundTasksExtension(pi);
   };
@@ -373,6 +420,50 @@ function emitGoalState(conversationId, session) {
 }
 
 const approvalBroker = createApprovalBroker(emit);
+
+// The protected roots an agent may never write to. Resolved once: one sidecar serves one
+// workspace, and the host's list is fixed for its lifetime.
+let protectedRootsCache;
+function sessionProtectedRoots(workspace) {
+  if (!protectedRootsCache) {
+    protectedRootsCache = mergeProtectedRoots(
+      parseProtectedRoots(process.env[PROTECTED_ROOTS_ENV]),
+      derivedProtectedRoots({
+        workspace,
+        userHome: process.env.MILKSU_USER_HOME,
+        dataDirectory: dataDirectoryFromEnvironment(process.env),
+      }),
+    );
+  }
+  return protectedRootsCache;
+}
+
+function protectedViolationFor(event, workspace) {
+  const roots = sessionProtectedRoots(workspace);
+  if (event.toolName === "bash") {
+    return protectedCommandViolation(event.input?.command, {
+      roots,
+      ownWorkspace: workspace,
+      // The shell runs in the session's own workspace, so a relative write target resolves
+      // against it - exactly where the shell would put the file.
+      cwd: workspace,
+    });
+  }
+  if (event.toolName === "edit" || event.toolName === "write") {
+    const target = typeof event.input?.path === "string" ? event.input.path : "";
+    return protectedWriteViolation(target, { roots, ownWorkspace: workspace });
+  }
+  return null;
+}
+
+function protectedAlarmNotice(violation, locale) {
+  const label = violation?.label ?? "protected";
+  return String(locale ?? "") === "en"
+    ? `Blocked: the agent tried to write a protected path (rule: ${label}). The turn was stopped and the attempt was logged.`
+    : `已拦截：Agent 试图写入受保护路径（命中规则：${label}）。本轮已停止，并已记入审计。`;
+}
+// Settles the delivery tool's own request/response round trip with the host.
+const deliveryBroker = createDeliveryBroker(emit);
 const workspaceActionBroker = createWorkspaceActionBroker(emit);
 const pendingWorkspaceCompaction = new Set();
 const sessionContextUsage = new Map();
@@ -509,6 +600,98 @@ function createMilkSUWorkflowExtension(sessionRole, getPolicy, getSession, conve
       },
     });
     pi.registerTool({
+      name: "deliver_to_conversation",
+      label: "MilkSU cross-conversation delivery",
+      description: "Hand a message to another conversation. Use it to let a sibling task know something instead of asking the user to copy it over. The target receives it in its own schedule; the user is not moved to that conversation. MilkSU stamps the message with its real source conversation and agent, so do not describe where it came from in the text. Use kind=\"result\" when you are answering a request another conversation sent you; a result reply needs no allow list entry of your own if that conversation granted replies.",
+      parameters: Type.Object({
+        targetConversationId: Type.String({ minLength: 1, maxLength: 128 }),
+        text: Type.String({ minLength: 1, maxLength: 4000 }),
+        kind: Type.Optional(Type.Union([
+          Type.Literal("request"),
+          Type.Literal("result"),
+        ])),
+      }),
+      async execute(_toolCallId, params) {
+        const target = String(params.targetConversationId ?? "").trim();
+        const body = String(params.text ?? "").trim();
+        const kind = params.kind === "result" ? "result" : "request";
+        if (!target || !body) throw new Error("targetConversationId and text are required");
+        if (target === conversationId) throw new Error("a conversation cannot deliver to itself");
+        // The host owns the verdict: it alone knows the project boundary, the rate limit
+        // and whether the target is queued behind a running sibling. Wait for it instead
+        // of claiming success up front. The source id is the only provenance sent: the
+        // host resolves the title and agent from the conversation record.
+        const outcome = await deliveryBroker.request({
+          conversationId,
+          targetConversationId: target,
+          text: body,
+          kind,
+          origin: { conversationId: conversationId ?? "" },
+        });
+        return {
+          content: [{
+            type: "text",
+            text: formatDeliveryOutcome(outcome, target),
+          }],
+          details: {
+            targetConversationId: target,
+            status: outcome.status || "unknown",
+            ...(outcome.detail ? { queuedBehind: outcome.detail } : {}),
+          },
+        };
+      },
+    });
+    pi.registerTool({
+      name: "request_destructive_delete",
+      label: "MilkSU destructive delete",
+      description: "Ask the user before deleting something recursively. Fill in purpose (why this deletion is needed) and safety (what it is and whether it can be restored). A recursive delete that does not go through this tool is refused, so use it whenever you need to remove a tree.",
+      parameters: Type.Object({
+        path: Type.String({ minLength: 1, maxLength: 4096 }),
+        purpose: Type.String({ minLength: 1, maxLength: 2000 }),
+        safety: Type.String({ minLength: 1, maxLength: 2000 }),
+      }),
+      async execute(_toolCallId, params) {
+        const target = String(params.path ?? "").trim();
+        const purpose = String(params.purpose ?? "").trim();
+        const safety = String(params.safety ?? "").trim();
+        if (!target || !purpose || !safety) {
+          throw new Error("path, purpose and safety are all required");
+        }
+        const policy = await loadSessionPolicy(process.cwd(), "", {});
+        const decision = await destructiveDeleteDecision({
+          toolName: "bash",
+          input: { command: `rm -rf ${JSON.stringify(target)}` },
+          policy,
+        });
+        if (decision?.action === "block") {
+          emit(conversationId, "destructive.blocked", { notice: decision.reason });
+          throw new Error(decision.reason);
+        }
+        // The card judges a *delete*, so the approval always carries the delete in the shape
+        // the guard uses (see destructiveDeleteApproval).
+        const approval = destructiveDeleteApproval({
+          target,
+          decision,
+          chinese: policy?.uiLocale !== "en",
+        });
+        const approved = await approvalBroker.request({
+          conversationId,
+          toolName: "destructive-delete",
+          content: approval.content,
+          input: truncate(approval.input, 16000),
+          justification: { purpose, safety },
+        });
+        if (!approved) {
+          return { content: [{ type: "text", text: "MilkSU user denied this deletion." }] };
+        }
+        await rm(target, { recursive: true, force: true });
+        return {
+          content: [{ type: "text", text: `Deleted ${target}` }],
+          details: { path: target, purpose, safety },
+        };
+      },
+    });
+    pi.registerTool({
       name: "milksu_progress",
       label: "MilkSU progress",
       description: "Publish or update a short execution plan (summary + up to 8 steps) when the task has more than one concrete step. Skip one-shot replies. Keep the in-progress step updated.",
@@ -561,6 +744,7 @@ function createCodingPermissionExtension(
   getPolicy,
   getTurnContract,
   registerController,
+  getExternalTurn = () => false,
 ) {
   return (pi) => {
     const repeatGuard = createToolRepeatGuard();
@@ -571,10 +755,16 @@ function createCodingPermissionExtension(
       repeatGuard.reset();
     });
     pi.on("context", async (event) => {
-      const messages = filterCodingTurnContractMessages(
+      const filtered = filterCodingTurnContractMessages(
         event.messages,
         getTurnContract(),
       );
+      // The reader sees text blocks, not thinking. When the model's last step called a tool with
+      // no visible text, it gets a reminder injected into its own context before the next
+      // request - request-scoped and not displayed. Nothing is blocked: beta.15 tried blocking
+      // the call and the step then reached the reader with no text at all, which is the very
+      // defect this contract exists to prevent.
+      const messages = withVisibleProgressReminder(filtered) ?? filtered;
       if (
         messages.length === event.messages.length
         && messages.every((message, index) => message === event.messages[index])
@@ -587,6 +777,29 @@ function createCodingPermissionExtension(
     pi.on("tool_call", async (event) => {
       const policy = getPolicy();
       if (!policy) return undefined;
+      // A turn triggered by another conversation may not inherit auto-approval or a grant
+      // the user gave for their own work: every dangerous tool has to come back to them.
+      const externalTurn = getExternalTurn() === true;
+      const externalApprovalNotice = () => (
+        policy.uiLocale === "en"
+          ? "This request came from another conversation, not from you. Confirm you want it run:\n\n"
+          : "这条请求来自另一个会话（跨会话消息），不是用户本人的操作。请确认你本人要执行：\n\n"
+      );
+      // A write to a protected path is never an approval question: it stops the turn, tells
+      // the reader, and leaves an audit line. The session is marked aborted so nothing queued
+      // runs after it.
+      const protectedViolation = protectedViolationFor(event, policy.workspace);
+      if (protectedViolation) {
+        const reason = `MilkSU blocked a write to a protected path (${protectedViolation.label}): `
+          + protectedViolation.path;
+        emit(conversationId, "guard.alarm", {
+          toolName: event.toolName,
+          reason,
+          notice: protectedAlarmNotice(protectedViolation, policy.uiLocale),
+        });
+        abortedSessions.add(conversationId);
+        return { block: true, terminate: true, reason };
+      }
       if (codingTurnContractBlocksTool(getTurnContract())) {
         return {
           block: true,
@@ -634,7 +847,9 @@ function createCodingPermissionExtension(
         const approved = await approvalBroker.request({
           conversationId,
           toolName: "destructive-delete",
-          content: deleteDecision.content,
+          content: externalTurn
+            ? `${externalApprovalNotice()}${deleteDecision.content}`
+            : deleteDecision.content,
           input: truncate(deleteDecision.input, 16000),
           justification: {
             purpose: justification.purpose,
@@ -696,17 +911,24 @@ function createCodingPermissionExtension(
             reason: error instanceof Error ? error.message : String(error),
           };
         }
-        if (codingCollaborationRequiresApproval(policy.approvalPolicy)) {
+        if (codingCollaborationRequiresApproval(policy.approvalPolicy) || externalTurn) {
           const approved = await approvalBroker.request({
             conversationId,
             toolName: codingCollaborationToolName,
-            content: formatSubagentApproval(
-              event.input,
-              policy.codingCollaboration,
-              policy.workspace,
-            ),
+            content: externalTurn
+              ? `${externalApprovalNotice()}${formatSubagentApproval(
+                event.input,
+                policy.codingCollaboration,
+                policy.workspace,
+              )}`
+              : formatSubagentApproval(
+                event.input,
+                policy.codingCollaboration,
+                policy.workspace,
+              ),
             input: truncate(JSON.stringify(event.input ?? {}, null, 2), 16000),
-            grantKey: codingCollaborationToolName,
+            // No grant reuse on an external turn: the user must answer each time.
+            ...(externalTurn ? {} : { grantKey: codingCollaborationToolName }),
           });
           if (!approved) {
             return {
@@ -732,6 +954,12 @@ function createCodingPermissionExtension(
           )}: ${policy.executionMode}/${policy.approvalPolicy}`,
         };
       }
+      // A turn started by another conversation used to force every bash/edit/write through the
+      // user. That made dispatch-driven work unusable: a single cross-conversation delivery
+      // produced dozens of approval prompts for ordinary in-workspace work. The protections
+      // that matter are kept without the blanket rule - a write to a protected path still stops
+      // the turn, a recursive delete still asks, no grant is ever reused on an external turn,
+      // and any card that does appear says the request came from another conversation.
       if (
         policy.approvalPolicy === "ask"
         && !destructiveDeleteApproved
@@ -743,9 +971,12 @@ function createCodingPermissionExtension(
         const approved = await approvalBroker.request({
           conversationId,
           toolName: event.toolName,
-          content: formatToolInput(event.toolName, event.input),
+          content: externalTurn
+            ? `${externalApprovalNotice()}${formatToolInput(event.toolName, event.input)}`
+            : formatToolInput(event.toolName, event.input),
           input: truncate(JSON.stringify(event.input ?? {}, null, 2), 16000),
-          grantKey: event.toolName,
+          // No grant reuse or remembering on an external turn.
+          ...(externalTurn ? {} : { grantKey: event.toolName }),
         });
         if (!approved) {
           return {
@@ -756,19 +987,24 @@ function createCodingPermissionExtension(
       }
       if (
         event.toolName === "mcp"
-        && codingMcpOperationRequiresApproval(
-          event.input,
-          policy.approvalPolicy,
-          selectedMcpServer(policy, event.input),
+        && (
+          externalTurn
+          || codingMcpOperationRequiresApproval(
+            event.input,
+            policy.approvalPolicy,
+            selectedMcpServer(policy, event.input),
+          )
         )
       ) {
         const serverName = selectedMcpServer(policy, event.input);
         const approved = await approvalBroker.request({
           conversationId,
           toolName: `mcp:${serverName}`,
-          content: formatMcpApprovalInput(event.input, serverName),
+          content: externalTurn
+            ? `${externalApprovalNotice()}${formatMcpApprovalInput(event.input, serverName)}`
+            : formatMcpApprovalInput(event.input, serverName),
           input: truncate(JSON.stringify(event.input ?? {}, null, 2), 16000),
-          grantKey: mcpConversationGrantKey(event.input, serverName),
+          ...(externalTurn ? {} : { grantKey: mcpConversationGrantKey(event.input, serverName) }),
         });
         if (!approved) {
           return {
@@ -1219,7 +1455,7 @@ function subscribeSession(
         emit(conversationId, "thinking_start", {});
       } else if (update.type === "thinking_delta") {
         thinkingStreamed = true;
-        emit(conversationId, "thinking_delta", { delta: update.delta ?? "" });
+        streamDeltas.queue("thinking_delta", conversationId, update.delta);
       } else if (update.type === "thinking_end") {
         thinkingStreamed = true;
         const startedAt = thinkingStartedAt.get(conversationId);
@@ -1230,7 +1466,7 @@ function subscribeSession(
         });
       } else if (update.type === "text_delta") {
         assistantTextStreamed = true;
-        queueTextDelta(conversationId, String(update.delta ?? ""));
+        streamDeltas.queue("text_delta", conversationId, update.delta);
       }
       return;
     }
@@ -1425,6 +1661,7 @@ function createMilkSUResourceLoader(
         getPolicy,
         () => sessionTurnContracts.get(conversationId),
         registerPolicyController,
+        () => sessionExternalTurns.get(conversationId) === true,
       ),
       createReviewedLspExtension(
         piLspExtension,
@@ -1472,8 +1709,8 @@ function createMilkSUResourceLoader(
   if (mcpConfig) {
     extensionFactories.push(createMcpAdapter({ config: mcpConfig }));
   }
-  // Bash safety: Pi treats the bash timeout as optional, so one call can hold a turn
-  // open indefinitely. Give every call a default bound and explain the ones that hit it.
+  // Bash safety: default timeout for every bash call, plus a preflight that refuses
+  // bulk scans inside iCloud-evicted directories (files present only in the cloud).
   extensionFactories.push(createHangGuardExtension());
   // Last: Pi tool_result middleware. Every tool, including MCP, is clipped to
   // Pi's 50KB/2000-line contract before the result enters model context.
@@ -1965,25 +2202,37 @@ async function sendMessage(command) {
     if (contract && !controller) {
       throw new Error("MilkSU Coding permission controller is unavailable");
     }
-    await withCodingTurnContract({
-      contracts: sessionTurnContracts,
-      conversationId,
-      contract,
-      getActiveTools: () => session.getActiveToolNames(),
-      setActiveTools: tools => {
-        if (controller) controller.setActiveTools(tools);
-      },
-      onApplied: tools => emit(conversationId, "turn_policy", {
-        tools,
-        reason: contract?.reason,
-      }),
-      onRestored: tools => emit(conversationId, "turn_policy_cleared", {
-        tools,
-      }),
-    }, () => session.prompt(
-      prompt,
-      prepared.images.length ? { images: prepared.images } : undefined,
-    ));
+    // A turn driven by a cross-conversation delivery must not be able to auto-approve the
+    // dangerous tools; the permission extension reads this while the turn runs.
+    const externalTurn = isExternalMessagePrompt(prompt);
+    // A turn that is alive keeps saying so; without this the UI could not tell a busy engine
+    // from one that never picked the turn up, and it guessed "not responding".
+    const stopHeartbeat = startTurnHeartbeat({ emit, conversationId });
+    sessionExternalTurns.set(conversationId, externalTurn);
+    try {
+      await withCodingTurnContract({
+        contracts: sessionTurnContracts,
+        conversationId,
+        contract,
+        getActiveTools: () => session.getActiveToolNames(),
+        setActiveTools: tools => {
+          if (controller) controller.setActiveTools(tools);
+        },
+        onApplied: tools => emit(conversationId, "turn_policy", {
+          tools,
+          reason: contract?.reason,
+        }),
+        onRestored: tools => emit(conversationId, "turn_policy_cleared", {
+          tools,
+        }),
+      }, () => session.prompt(
+        prompt,
+        prepared.images.length ? { images: prepared.images } : undefined,
+      ));
+    } finally {
+      stopHeartbeat();
+      sessionExternalTurns.delete(conversationId);
+    }
     await compactIfContextNearLimit(conversationId, session);
   });
   promptQueues.set(conversationId, next.catch(() => undefined));
@@ -1995,11 +2244,27 @@ async function sendMessage(command) {
   }
 }
 
+// Drop every pending steering message Pi still holds for a conversation. A queue that
+// was restored from disk must never be consumed as a fresh turn on its own.
+async function clearQueuedMessages(command) {
+  const conversationId = String(command?.conversationId ?? "").trim();
+  if (!conversationId) throw new Error("conversationId is required");
+  const session = sessions.get(conversationId);
+  if (!session) return;
+  try {
+    session.clearQueue?.();
+  } catch {
+    // Older Pi builds may not expose clearQueue; the renderer keeps its own queue.
+  }
+  emit(conversationId, "queue_update", { steering: [], followUp: [] });
+}
+
 async function abortSession(command) {
   const conversationId = command.conversationId;
   if (!conversationId) throw new Error("conversationId is required");
   abortedSessions.add(conversationId);
   approvalBroker.cancelConversation(conversationId, "turn aborted");
+  deliveryBroker.cancelConversation(conversationId);
   workspaceActionBroker.cancelConversation(conversationId, "turn aborted");
   pendingWorkspaceCompaction.delete(conversationId);
   const session = sessions.get(conversationId);
@@ -2017,6 +2282,14 @@ async function abortSession(command) {
     // Nothing was compacting, or Pi already settled it.
   }
   await session.abort();
+  // The turn was stopped deliberately: pi must not keep steering messages it could
+  // later consume as a fresh turn. Leaving them queued is what made a stopped
+  // conversation keep sending its queued messages on its own.
+  try {
+    session.clearQueue?.();
+  } catch {
+    // Older pi builds may not expose clearQueue; aborting is still the main path.
+  }
   // Do not synthesize empty message_done (it became a blank assistant bubble).
   // If Pi already emitted agent_settled, a second turn_settled is harmless in
   // the UI (finishRun is idempotent). If abort raced past agent_settled, this
@@ -2092,6 +2365,7 @@ async function destroySession(command) {
   }
   approvalBroker.cancelConversation(conversationId, "session destroyed");
   approvalBroker.clearConversationGrants(conversationId);
+  deliveryBroker.cancelConversation(conversationId);
   workspaceActionBroker.cancelConversation(conversationId, "session destroyed");
   pendingWorkspaceCompaction.delete(conversationId);
   sessionContextUsage.delete(conversationId);
@@ -2101,6 +2375,7 @@ async function destroySession(command) {
   sessionTurnContracts.delete(conversationId);
   reasoningOnlyRecovered.delete(conversationId);
   reasoningOnlyPreviousTools.delete(conversationId);
+  sessionExternalTurns.delete(conversationId);
   await disposeAgentSession(session);
   sessions.delete(conversationId);
   sessionPolicies.delete(conversationId);
@@ -2133,6 +2408,23 @@ function respondToolApproval(command) {
     approved: command.approved === true,
     scope: command.scope,
     choice: command.choice,
+  });
+}
+
+/**
+ * The host answers an outstanding deliver_to_conversation call. A late or unknown answer
+ * is dropped: the tool already returned its own "unconfirmed" outcome.
+ */
+function respondAgentDelivery(command) {
+  const conversationId = String(command.conversationId ?? "").trim();
+  const requestId = String(command.requestId ?? "").trim();
+  if (!conversationId) throw new Error("conversationId is required");
+  if (!requestId) throw new Error("requestId is required");
+  deliveryBroker.respond({
+    conversationId,
+    requestId,
+    status: command.status,
+    detail: command.detail,
   });
 }
 
@@ -2479,11 +2771,17 @@ async function handleCommand(command) {
     case "remove_queued_message":
       await removeQueuedMessageCommand(command);
       break;
+    case "clear_queued_messages":
+      await clearQueuedMessages(command);
+      break;
     case "abort_session":
       await abortSession(command);
       break;
     case "approval_response":
       respondToolApproval(command);
+      break;
+    case "delivery_response":
+      respondAgentDelivery(command);
       break;
     case "workspace_action_response":
       respondWorkspaceAction(command);
@@ -2603,6 +2901,7 @@ async function disposeAllSessions() {
   sessionTurnContracts.clear();
   reasoningOnlyRecovered.clear();
   reasoningOnlyPreviousTools.clear();
+  sessionExternalTurns.clear();
   await Promise.all(
     [...sessions.values()].map(session => disposeAgentSession(session)),
   );
