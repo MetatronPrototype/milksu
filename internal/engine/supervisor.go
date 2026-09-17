@@ -3700,3 +3700,65 @@ func projectRootContainsSidecar(root string) bool {
 	}
 	return true
 }
+
+// 以下三个方法由本地分支搬入（React 基线适配版）：
+//
+//	SettleAgentDelivery  跨对话投递的回执
+//	HardStopSession      三级停止里的"硬停"
+//	ClearQueuedMessages  清掉 pi 仍持有的排队消息
+//
+// 它们只使用上游已有的内部函数，不改动停靠/回收等既有设计。
+func (s *Supervisor) SettleAgentDelivery(sessionID, requestID, status, detail string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	requestID = strings.TrimSpace(requestID)
+	if sessionID == "" {
+		return fmt.Errorf("session id is required")
+	}
+	if requestID == "" {
+		return fmt.Errorf("delivery request id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.sessions[sessionID]; !exists {
+		return s.sessionMissingError(sessionID)
+	}
+	command := map[string]any{
+		"action":         "delivery_response",
+		"conversationId": sessionID,
+		"requestId":      requestID,
+		"status":         strings.TrimSpace(status),
+	}
+	if trimmed := strings.TrimSpace(detail); trimmed != "" {
+		command["detail"] = trimmed
+	}
+	return s.writeToSessionLocked(sessionID, command)
+}
+
+func (s *Supervisor) HardStopSession(sessionID string) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	s.mu.Lock()
+	process := s.processForSessionLocked(sessionID)
+	s.mu.Unlock()
+	if process == nil {
+		return
+	}
+	stopChildProcess(process)
+}
+
+func (s *Supervisor) ClearQueuedMessages(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("session id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.sessions[sessionID]; !exists {
+		return s.sessionMissingError(sessionID)
+	}
+	return s.writeToSessionLocked(sessionID, map[string]any{
+		"action":         "clear_queued_messages",
+		"conversationId": sessionID,
+	})
+}

@@ -31,6 +31,19 @@ type StoredMessage struct {
 	// card so a reloaded conversation still shows why a deletion was allowed.
 	ApprovalJustification *StoredApprovalJustification `json:"approvalJustification,omitempty"`
 	Attachments           []StoredAttachment           `json:"attachments,omitempty"`
+	// Origin marks a message another conversation handed over. Persisting it is what keeps
+	// the source badge after a reload; the title and agent inside are host-resolved.
+	Origin *StoredMessageOrigin `json:"origin,omitempty"`
+}
+
+// StoredMessageOrigin is the host-resolved provenance of a cross-conversation message. The
+// title and agent come from the source conversation record, never from the caller, so an
+// agent cannot label its message as coming from somewhere else.
+type StoredMessageOrigin struct {
+	ConversationID    string `json:"conversationId"`
+	ConversationTitle string `json:"conversationTitle"`
+	Agent             string `json:"agent"`
+	DeliveredAt       uint64 `json:"deliveredAt"`
 }
 
 // StoredApprovalJustification mirrors the approval card's purpose/safety note.
@@ -69,11 +82,12 @@ type StoredGoal struct {
 }
 
 type StoredConversation struct {
-	ID                   string              `json:"id"`
-	Title                string              `json:"title"`
-	CreatedAt            uint64              `json:"createdAt"`
-	WorkspacePath        string              `json:"workspacePath,omitempty"`
-	Kernel               string              `json:"kernel,omitempty"`
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	CreatedAt     uint64 `json:"createdAt"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
+	Kernel        string `json:"kernel,omitempty"`
+	// 以下两个字段来自上游 26.917.1（多任务子对话），搬运时保留。
 	ParentConversationID string              `json:"parentConversationId,omitempty"`
 	Multitask            bool                `json:"multitask,omitempty"`
 	ModelMode            string              `json:"modelMode,omitempty"`
@@ -97,7 +111,14 @@ type StoredConversation struct {
 	ArchivedAt           uint64              `json:"archivedAt,omitempty"`
 	Pinned               bool                `json:"pinned,omitempty"`
 	PinnedOrder          *int64              `json:"pinnedOrder,omitempty"`
+	MessageQueue         *StoredMessageQueue `json:"messageQueue,omitempty"`
 	Messages             []StoredMessage     `json:"messages"`
+}
+
+// StoredMessageQueue persists the Codex-style scheduling queue with the conversation.
+type StoredMessageQueue struct {
+	Steering []string `json:"steering,omitempty"`
+	FollowUp []string `json:"followUp,omitempty"`
 }
 
 type StoredContextUsage struct {

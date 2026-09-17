@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MilkSU-Official/milksu/internal/agentresources"
@@ -34,6 +36,7 @@ import (
 	"github.com/MilkSU-Official/milksu/internal/modelusage"
 	"github.com/MilkSU-Official/milksu/internal/nssctf"
 	pluginruntime "github.com/MilkSU-Official/milksu/internal/plugin"
+	"github.com/MilkSU-Official/milksu/internal/remotecontrol"
 	"github.com/MilkSU-Official/milksu/internal/securityruntime"
 	"github.com/MilkSU-Official/milksu/internal/securitytools"
 	"github.com/MilkSU-Official/milksu/internal/sessionindex"
@@ -80,12 +83,33 @@ type App struct {
 	evalSuite         *evalsuite.Service
 	lifespanStart     appdata.LifespanStart
 	lifespanHandle    appdata.LifespanHandle
+	// remoteControls serves the LAN companion page; it is created on first use so a
+	// user who never enables it never gets a state file either.
+	remoteControlMu sync.Mutex
+	remoteControls  *remotecontrol.Manager
+	// approvalMu guards the permission prompts waiting for the user, which the remote
+	// page may show.
+	approvalMu       sync.Mutex
+	pendingApprovals map[string]remotecontrol.Approval
+	// turnActivity records when a conversation last produced an engine event, so the
+	// remote page can mark the conversations that are actually working. The engine's
+	// own status is per kernel, not per conversation.
+	turnActivityMu sync.Mutex
+	turnActivity   map[string]time.Time
+	// remoteTurns records the turns a remote device started, because the renderer is
+	// what normally persists conversation messages.
+	remoteTurns *remoteTurnRecorder
 }
 
 func newAppWithDesktopHost(host desktopHost) (*App, error) {
 	dataDirectory, err := appdata.Ensure()
 	if err != nil {
 		return nil, err
+	}
+	// Finder-launched apps keep no stdout: mirror the Go runtime log to disk so a
+	// killed sidecar leaves a reason= trace in runtime/backend.log.
+	if backendLog, logErr := appdata.OpenBackendLogFile(dataDirectory); logErr == nil {
+		log.SetOutput(io.MultiWriter(os.Stderr, backendLog))
 	}
 	restoreResult, err := appdata.ApplyPendingRestore(dataDirectory)
 	if err != nil {
@@ -102,6 +126,12 @@ func newAppWithDesktopHost(host desktopHost) (*App, error) {
 	settings, err := config.NewStore()
 	if err != nil {
 		return nil, fmt.Errorf("create settings store: %w", err)
+	}
+	if settings.IntegrityWarning() {
+		// settings.json named a collaboration configuration this app never wrote. It was not
+		// applied; say so in the backend log and the audit trail, not just in the UI.
+		log.Printf("[settings] integrity warning: settings.json carried a collaboration configuration the app did not write; the sealed value was used")
+		_ = appdata.AppendEventLog(dataDirectory, appdata.PersistedSettingsIntegrityWarning)
 	}
 	conversations, err := conversation.NewStore()
 	if err != nil {
@@ -425,9 +455,17 @@ func (a *App) Startup(ctx context.Context) {
 		time.Since(vulnRecoverStarted).Milliseconds(),
 		time.Since(startupBegan).Milliseconds(),
 	)
+	// The LAN companion page only listens when the user turned it on; Apply is a no-op
+	// while it is off.
+	if status := a.syncRemoteControl(); status.Enabled && status.Error != "" {
+		a.diagnostics.Record("remote-control", "warning", "remote control did not start: "+status.Error)
+	}
 }
 
 func (a *App) Shutdown(_ context.Context) {
+	if a.remoteControls != nil {
+		_ = a.remoteControls.Close()
+	}
 	_ = a.vulnJobs.Close()
 	_ = a.ctfMemory.Close()
 	_ = a.ctfJobs.Close()
@@ -939,6 +977,11 @@ func (a *App) ListConversations() ([]conversation.StoredConversation, error) {
 }
 
 func (a *App) SaveConversation(value conversation.StoredConversation) error {
+	// The renderer owns this conversation from now on, so the backend must stop
+	// recording it: two writers would duplicate messages.
+	if a.remoteTurns != nil {
+		a.remoteTurns.release(value.ID)
+	}
 	value.Kernel = conversation.NormalizeKernel(value.Kernel)
 	if existing, err := a.conversations.Get(value.ID); err == nil && conversation.HasStarted(existing) {
 		value.Kernel = conversation.NormalizeKernel(existing.Kernel)
@@ -1357,6 +1400,13 @@ func (a *App) AbortSubagent(conversationID string, subagentID string) error {
 	return a.engines.AbortMessage(conversationID, subagentID)
 }
 
+// StopCodingSession is the hard stop: the renderer calls it when the soft abort was not
+// confirmed in time, and the sidecar for that conversation is terminated outright.
+func (a *App) StopCodingSession(conversationID string) error {
+	a.engines.HardStopSession(conversationID)
+	return nil
+}
+
 func (a *App) SteerMessage(conversationID, prompt string) error {
 	return a.engines.SteerMessage(conversationID, prompt)
 }
@@ -1383,6 +1433,11 @@ func (a *App) ControlDshGoal(conversationID, action, objective string) error {
 
 func (a *App) KillDshJob(conversationID, jobID string) error {
 	return a.engines.KillDshJob(conversationID, jobID)
+}
+
+// ClearQueuedMessages drops the steering messages Pi still holds for a conversation.
+func (a *App) ClearQueuedMessages(conversationID string) error {
+	return a.engines.ClearQueuedMessages(conversationID)
 }
 
 func (a *App) RemoveQueuedMessage(
@@ -2163,6 +2218,8 @@ func (a *App) CancelVulnJob(id string) error {
 }
 
 func (a *App) emitEngineEvent(event engine.Event) {
+	a.trackRemoteViewEvent(event)
+	a.recordRemoteTurnEvent(event)
 	if event.Error != "" {
 		// The renderer projects a bounded, actionable message. Keep the exact
 		// runtime failure only in the existing diagnostic recorder, which applies
@@ -2176,6 +2233,17 @@ func (a *App) emitEngineEvent(event engine.Event) {
 		event.Type == "engine.stopped" ||
 		event.Type == "engine.sidecar_stopped" {
 		a.diagnostics.Record("coding-engine", "info", event.Type)
+	} else if event.Type == "guard.alarm" {
+		// An agent tried to write a protected path. Keep the concrete reason in the backend
+		// log and the audit trail, not only in the renderer.
+		log.Printf(
+			"[guard] alarm session=%s tool=%s reason=%q",
+			event.SessionID,
+			event.ToolName,
+			event.Reason,
+		)
+		a.diagnostics.Record("coding-engine", "warning", "agent guard alarm: "+event.Reason)
+		_ = appdata.AppendEventLog(a.dataDirectory, appdata.PersistedAgentGuardAlarm)
 	}
 	switch event.Type {
 	case "engine.started":

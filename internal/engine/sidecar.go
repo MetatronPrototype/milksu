@@ -3,11 +3,13 @@ package engine
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -30,6 +32,10 @@ const (
 	dshLLMProtocolEnvironment   = "MILKSU_DSH_LLM_PROTOCOL"
 	officialDeepSeekAPIRoot     = "https://api.deepseek.com"
 	tokenfluxChatCompletionsURL = "https://tokenflux.dev/v1"
+	// protectedRootsEnvironment carries the absolute paths an agent may never write to. The
+	// sidecar is where the tools run, so the host hands the roots over at spawn instead of
+	// trusting the agent's own working directory.
+	protectedRootsEnvironment = "MILKSU_PROTECTED_ROOTS"
 )
 
 type sidecarRuntime struct {
@@ -96,6 +102,9 @@ func sidecarEnvironment(settings config.AppSettings) ([]string, error) {
 		// reject accidental broad grants without guessing from its isolated HOME.
 		"MILKSU_USER_HOME="+canonicalUserHome,
 	)
+	if protected := protectedRootsVariable(); protected != "" {
+		environment = append(environment, protected)
+	}
 	if catalogPath := strings.TrimSpace(settings.RuntimeModelCatalogPath); catalogPath != "" {
 		environment = append(environment, "MILKSU_MODEL_CATALOG_PATH="+catalogPath)
 	}
@@ -455,6 +464,79 @@ func sidecarWorkspace() (string, error) {
 		return "", fmt.Errorf("create Sidecar discovery boundary: %w", err)
 	}
 	return workspace, nil
+}
+
+// SidecarConfigFingerprint digests everything a sidecar is started with - credentials, proxy,
+// model routing, skills, catalog path. A settings save rotates the live sidecars only when
+// this changes, so flipping a UI-only setting (the collaboration gate, a project pin) no
+// longer restarts a sidecar and interrupts the turn the reader is watching.
+func SidecarConfigFingerprint(settings config.AppSettings) string {
+	environment, err := sidecarEnvironment(settings)
+	if err != nil {
+		return ""
+	}
+	sorted := append([]string(nil), environment...)
+	sort.Strings(sorted)
+	sum := sha256.Sum256([]byte(strings.Join(sorted, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+// protectedRoot is one absolute path an agent may never write to, with the label the audit
+// log uses. The list is passed to the sidecar at spawn because that is where the tools run.
+type protectedRoot struct {
+	Path  string `json:"path"`
+	Label string `json:"label"`
+}
+
+// protectedRootsVariable renders MILKSU_PROTECTED_ROOTS. Empty when nothing could be
+// resolved, so the sidecar falls back to its own derived roots instead of failing to start.
+func protectedRootsVariable() string {
+	roots := make([]protectedRoot, 0, 4)
+	if dataDirectory, err := appdata.Directory(); err == nil && dataDirectory != "" {
+		// Covers settings.json, conversations/**, credentials.db and the scratch workspaces.
+		roots = append(roots, protectedRoot{Path: dataDirectory, Label: "runtime-data"})
+		if runtimeHome, err := sidecarRuntimeHome(); err == nil && runtimeHome != "" {
+			roots = append(roots, protectedRoot{
+				Path:  filepath.Join(runtimeHome, "pi", "sessions"),
+				Label: "pi-sessions",
+			})
+		}
+	}
+	if bundle := appBundleRoot(); bundle != "" {
+		roots = append(roots, protectedRoot{Path: bundle, Label: "app-bundle"})
+	}
+	if projectRoot, err := findProjectRoot(); err == nil && projectRoot != "" {
+		roots = append(roots, protectedRoot{Path: projectRoot, Label: "app-sources"})
+	}
+	if len(roots) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(roots)
+	if err != nil {
+		return ""
+	}
+	return protectedRootsEnvironment + "=" + string(encoded)
+}
+
+// appBundleRoot walks up from the running executable to the packaging root. Empty in
+// development, where the project root covers the source tree instead.
+func appBundleRoot() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	directory := filepath.Dir(executable)
+	for range 6 {
+		if strings.HasSuffix(directory, ".app") {
+			return directory
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			break
+		}
+		directory = parent
+	}
+	return ""
 }
 
 func sidecarRuntimeHome() (string, error) {

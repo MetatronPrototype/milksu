@@ -1,6 +1,7 @@
 import { recordRpcCall } from '@/lib/debugMode'
 import {
   type AccountStatus,
+  type AgentCollaborationConfig,
   type AppSettings,
   type DshCommandDescriptor,
   type DshCommandResult,
@@ -17,6 +18,10 @@ import {
   type LocalDiagnosticExport,
   type ModelProbeResult,
   type ModelCatalogSnapshot,
+  type NetworkProbeResult,
+  type NetworkStatus,
+  type RemoteAuditEntry,
+  type RemoteControlStatus,
   type StartupRecoveryStatus,
   type UpdateStatus,
 } from './types'
@@ -185,6 +190,20 @@ interface DesktopAppBindings {
   GetSettings(): Promise<AppSettings>
   GetModelCatalog(): Promise<ModelCatalogSnapshot>
   SaveSettingsCmd(settings: AppSettings): Promise<void>
+  GetNetworkStatus(): Promise<NetworkStatus>
+  SetNetworkProxy(useProxy: boolean, proxyURL: string): Promise<void>
+  TestNetworkConnectivity(): Promise<NetworkProbeResult[]>
+  GetRemoteControlStatus(): Promise<RemoteControlStatus>
+  SetRemoteControl(enabled: boolean, bindMode: string, port: number): Promise<void>
+  RotateRemotePassword(): Promise<string>
+  RevokeRemoteDevice(id: string): Promise<void>
+  IssueRemotePairingCode(deviceId: string): Promise<RemoteControlStatus>
+  SetRemoteDeviceCapability(id: string, capability: string): Promise<void>
+  RenewRemoteDevice(id: string): Promise<void>
+  ApproveRemoteDeviceNetwork(id: string): Promise<void>
+  ForgetRemoteDeviceNetwork(id: string, subnet: string): Promise<void>
+  GetRemoteAudit(limit: number): Promise<RemoteAuditEntry[]>
+  SetRemoteDangerousTools(allowed: boolean): Promise<void>
   ListSecurityTools(): Promise<SecurityToolSnapshot[]>
   SetSecurityToolEnabled(id: string, enabled: boolean): Promise<void>
   StartSecurityToolSetup(id: string): Promise<SecurityToolSetupSnapshot>
@@ -293,6 +312,7 @@ interface DesktopAppBindings {
   HandoffCodingSession(conversationId: string, kernel?: string): Promise<CodingSessionHandoffResult>
   AbortMessage(conversationId: string): Promise<void>
   AbortSubagent(conversationId: string, subagentId: string): Promise<void>
+  StopCodingSession(conversationId: string): Promise<void>
   RespondToolApproval(
     conversationId: string,
     requestId: string,
@@ -436,6 +456,26 @@ interface DesktopAppBindings {
   ControlDshGoal(conversationId: string, action: string, objective?: string): Promise<void>
   KillDshJob(conversationId: string, jobId: string): Promise<void>
   InspectDestructiveTarget(path: string): Promise<DestructiveTargetInspection>
+  DeliverAgentMessage(input: {
+    targetConversationId: string
+    text: string
+    // "request" (default) or "result". A result is an answer to an earlier request and is
+    // the only form a conversation may send back to one that asked it.
+    kind?: string
+    // Only the source id: the backend resolves the title and agent from the conversation
+    // record, so a caller cannot choose how its message is labelled.
+    origin: { conversationId: string }
+    /** Correlates with the sidecar tool call waiting on the delivery verdict. */
+    requestId?: string
+  }): Promise<{ delivered: string; targetConversationId: string }>
+  SettleAgentDelivery(
+    conversationId: string,
+    requestId: string,
+    status: string,
+    detail: string,
+  ): Promise<void>
+  SetAgentCollaboration(value: AgentCollaborationConfig): Promise<void>
+  ClearQueuedMessages(conversationId: string): Promise<void>
   RemoveQueuedMessage(
     conversationId: string,
     queue: string,
@@ -612,6 +652,38 @@ export async function invokeCommand<T = unknown>(command: string, args?: Command
         return app.GetCodingUsageSnapshot() as Promise<T>
       case 'save_settings_cmd':
         return app.SaveSettingsCmd(args?.newSettings as AppSettings) as Promise<T>
+      case 'get_network_status':
+        return app.GetNetworkStatus() as Promise<T>
+      case 'set_network_proxy':
+        return app.SetNetworkProxy(args?.useProxy as boolean, args?.proxyUrl as string) as Promise<T>
+      case 'test_network_connectivity':
+        return app.TestNetworkConnectivity() as Promise<T>
+      case 'get_remote_control_status':
+        return app.GetRemoteControlStatus() as Promise<T>
+      case 'set_remote_control':
+        return app.SetRemoteControl(
+          args?.enabled as boolean,
+          args?.bindMode as string,
+          args?.port as number,
+        ) as Promise<T>
+      case 'rotate_remote_password':
+        return app.RotateRemotePassword() as Promise<T>
+      case 'revoke_remote_device':
+        return app.RevokeRemoteDevice(args?.id as string) as Promise<T>
+      case 'issue_remote_pairing_code':
+        return app.IssueRemotePairingCode((args?.deviceId as string) ?? '') as Promise<T>
+      case 'set_remote_device_capability':
+        return app.SetRemoteDeviceCapability(args?.id as string, args?.capability as string) as Promise<T>
+      case 'renew_remote_device':
+        return app.RenewRemoteDevice(args?.id as string) as Promise<T>
+      case 'approve_remote_device_network':
+        return app.ApproveRemoteDeviceNetwork(args?.id as string) as Promise<T>
+      case 'forget_remote_device_network':
+        return app.ForgetRemoteDeviceNetwork(args?.id as string, args?.subnet as string) as Promise<T>
+      case 'get_remote_audit':
+        return app.GetRemoteAudit(args?.limit as number) as Promise<T>
+      case 'set_remote_dangerous_tools':
+        return app.SetRemoteDangerousTools(args?.allowed as boolean) as Promise<T>
       case 'list_plugins':
         return app.ListPlugins() as Promise<T>
       case 'set_plugin_enabled':
@@ -755,6 +827,8 @@ export async function invokeCommand<T = unknown>(command: string, args?: Command
           args?.conversationId as string,
           (args?.kernel as string) ?? '',
         ) as Promise<T>
+      case 'stop_coding_session':
+        return app.StopCodingSession(args?.conversationId as string) as Promise<T>
       case 'abort_message':
         return (args?.subagentId
           ? app.AbortSubagent(args.conversationId as string, args.subagentId as string)
@@ -794,6 +868,29 @@ export async function invokeCommand<T = unknown>(command: string, args?: Command
         ) as Promise<T>
       case 'inspect_destructive_target':
         return app.InspectDestructiveTarget(args?.path as string) as Promise<T>
+      case 'deliver_agent_message':
+        return app.DeliverAgentMessage(args as {
+          targetConversationId: string
+          text: string
+          kind?: string
+          origin: { conversationId: string }
+          requestId?: string
+        }) as Promise<T>
+      case 'settle_agent_delivery':
+        return app.SettleAgentDelivery(
+          args?.conversationId as string,
+          args?.requestId as string,
+          (args?.status as string) ?? '',
+          (args?.detail as string) ?? '',
+        ) as Promise<T>
+      case 'set_agent_collaboration':
+        return app.SetAgentCollaboration(
+          (args?.value ?? { allow_cross_conversation: false }) as AgentCollaborationConfig,
+        ) as Promise<T>
+      case 'clear_queued_messages':
+        return app.ClearQueuedMessages(
+          args?.conversationId as string,
+        ) as Promise<T>
       case 'remove_queued_message':
         return app.RemoveQueuedMessage(
           args?.conversationId as string,

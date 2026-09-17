@@ -60,6 +60,13 @@ export interface CodingAttachmentPreview {
   text?: string
 }
 
+export interface MessageOrigin {
+  conversationId: string
+  conversationTitle: string
+  agent: string
+  deliveredAt: number
+}
+
 export interface Message {
   id: string
   role: MessageRole
@@ -75,6 +82,14 @@ export interface Message {
   approvalReason?: string
   /** The requester's own purpose/safety note for a destructive approval. */
   approvalJustification?: { purpose?: string; safety?: string }
+  /** True for a queued message the reader merged into the running turn. */
+  fromQueuedGuidance?: boolean
+  /**
+   * Set when another conversation delivered this message. The id is frozen at the
+   * moment of delivery, so switching views, ending a turn, reconnecting or restarting
+   * can never move the entry to a different conversation.
+   */
+  origin?: MessageOrigin
   approvalGrantable?: boolean
   approvalChoiceId?: string
   attachments?: CodingAttachment[]
@@ -191,6 +206,8 @@ export interface Conversation {
   pinned?: boolean
   /** Manual order inside the pinned section; smaller comes first. */
   pinnedOrder?: number
+  /** Codex-style scheduling queue, persisted with the conversation record. */
+  messageQueue?: { steering: string[]; followUp: string[] }
   workspacePath?: string
   /** Agent runtime pinned for this conversation. Missing records are Pi. */
   kernel?: import('@/lib/agentKernel').AgentKernel
@@ -342,6 +359,97 @@ export interface ModelThinkingConfig {
   default_level?: ModelThinkingLevel
 }
 
+export interface NetworkConfig {
+  use_proxy: boolean
+  proxy_url?: string
+}
+
+// The LAN companion server. The access password and the paired devices are held by the
+// backend manager, so they are not part of the settings payload.
+export interface RemoteControlConfig {
+  enabled: boolean
+  bind_mode?: 'lan' | 'local'
+  port?: number
+  // Absent means allowed; turning it off keeps bash/edit/write approvals local.
+  allow_dangerous_tools?: boolean
+}
+
+export interface AgentCollaborationConfig {
+  // Off by default: the previous behaviour (same project allowed, another project refused)
+  // is exactly what "off" means. On only opens the boundary the source allowlist names.
+  allow_cross_conversation: boolean
+  // Keyed by source conversation id; the targets that source may reach across projects.
+  allow_by_conversation?: Record<string, string[]>
+  // Keyed by the conversation that was asked; the repliers it allows a result reply from.
+  // A reply is result-only: a request in the reverse direction still needs the replier's
+  // own allowlist.
+  result_reply_by_conversation?: Record<string, string[]>
+}
+
+// NetworkStatus reports the proxy preference together with the proxy that actually
+// applies, so a stale proxy port is visible inside the app.
+export interface NetworkStatus {
+  use_proxy: boolean
+  proxy_url?: string
+  effective_source: 'none' | 'custom' | 'environment' | 'system' | 'invalid'
+  effective_url?: string
+  system_url?: string
+  detail?: string
+  sidecar_covered: boolean
+}
+
+export interface NetworkProbeResult {
+  target: string
+  url: string
+  ok: boolean
+  status?: number
+  latency_ms: number
+  error?: string
+}
+
+export interface RemoteControlDevice {
+  id: string
+  name: string
+  ip: string
+  // Networks the host approved for this device; a new one needs verification.
+  networks?: string[]
+  pending_subnet?: string
+  capability: 'view' | 'control' | string
+  state: 'active' | 'expired' | 'network-changed' | string
+  expires_at: string
+  first_seen_at: string
+  last_seen_at: string
+  can_control: boolean
+}
+
+export interface RemoteAuditEntry {
+  at: string
+  device_id: string
+  device_name: string
+  ip: string
+  action: string
+  detail?: string
+  ok: boolean
+  error?: string
+}
+
+// RemoteControlStatus is the LAN companion server state shown in Settings.
+export interface RemoteControlStatus {
+  enabled: boolean
+  running: boolean
+  bind_mode: 'lan' | 'local' | string
+  port: number
+  url?: string
+  password?: string
+  pairing_code?: string
+  pairing_expires_at?: string
+  // pairing_device_id is set when the code was issued for one specific device.
+  pairing_device_id?: string
+  session_ttl_hours: number
+  devices: RemoteControlDevice[]
+  error?: string
+}
+
 export interface AppSettings {
   active_provider: string
   active_model: string
@@ -351,8 +459,13 @@ export interface AppSettings {
   model_routing: ModelRoutingConfig
   relay?: RelayConfig
   nssctf_arena?: NSSCTFArenaConfig
+  network?: NetworkConfig
+  remote_control?: RemoteControlConfig
+  agent_collaboration?: AgentCollaborationConfig
   locale?: 'en' | 'zh'
   disabled_skills?: string[]
+  /** Project group keys pinned as a whole (survives a restart). */
+  pinned_projects?: string[]
   enabled_optional_skills?: string[]
   worker_provider?: string
   worker_model?: string
@@ -369,6 +482,9 @@ export interface AppSettings {
   lab?: LabConfig
   providers: Record<string, ProviderConfig>
   removed_preset_services?: string[]
+  // Runtime-only: the backend read a collaboration configuration from settings.json that it
+  // never wrote, so it refused to apply it and the sealed value stayed in force.
+  settings_integrity_warning?: boolean
 }
 
 export interface LabConfig {
