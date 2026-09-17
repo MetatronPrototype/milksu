@@ -38,6 +38,27 @@ function message(
 }
 
 describe('buildChatTranscript', () => {
+  it('keeps a queued user message out of the transcript until it is actually applied', () => {
+    const base = [
+      message('u1', 'user', '先跑起来'),
+      message('a1', 'assistant', '好，开始。'),
+      message('u2', 'user', '排队中的补充', { status: 'queued' }),
+    ]
+
+    // 还在排队的消息此刻还没送进对话，不能在转写里显示成“已发出”。
+    const queued = buildChatTranscript(base, true)
+    expect(queued.some(block => block.kind === 'message' && block.message.id === 'u2')).toBe(false)
+    expect(queued).toHaveLength(2)
+
+    // 真正被应用（status 变 done）之后才出现在对话里。
+    const applied = buildChatTranscript(
+      [base[0], base[1], { ...base[2], status: 'done' as const }],
+      true,
+    )
+    expect(applied.some(block => block.kind === 'message' && block.message.id === 'u2')).toBe(true)
+    expect(applied).toHaveLength(3)
+  })
+
   it('keeps staged assistant text in the open thread and folds finished tools', () => {
     const transcript = buildChatTranscript([
       message('u1', 'user', '完成任务'),

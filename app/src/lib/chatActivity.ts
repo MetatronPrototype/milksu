@@ -308,6 +308,10 @@ export function buildChatTranscript(
 
   for (const message of messages) {
     if (isBlankAssistantMessage(message)) continue
+    // 还在排队的用户消息不进转写：它此刻还没送进对话，显示成“已发出”就是误导。
+    // 它只在输入区的排队列表里显示（可加入本轮 / 编辑 / 撤回），
+    // 等真正被应用（status 变 done）那一刻才出现在对话里。
+    if (message.role === 'user' && message.status === 'queued') continue
 
     if (message.role === 'tool' && !isApproval(message)) {
       if (String(message.toolName ?? '') === codingAskToolName) continue
