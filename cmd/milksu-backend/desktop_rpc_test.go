@@ -31,6 +31,7 @@ func TestDesktopAppMethodsMatchRendererBindings(t *testing.T) {
 		"GetUpdateStatus":   true,
 		"CheckForUpdates":   true,
 		"DownloadUpdate":    true,
+		"CancelUpdate":      true,
 		"InstallUpdate":     true,
 		"GetBuildTracking":  true,
 	}
