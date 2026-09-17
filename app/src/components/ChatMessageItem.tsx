@@ -833,6 +833,20 @@ export default function ChatMessageItem({
           </div>
         </form>
       ) : null}
+      {/* 排队中的消息必须自己说明还没送到：它和“已经发出去了”长得一模一样，
+          读者无从判断对方收到没有（而且是对方正在忙的时候最容易踩到）。
+          status 会在引导真正被应用时改成 done，所以这条备注会自己消失。 */}
+      {message.role === 'user' && message.status === 'queued' ? (
+        <p
+          className="mt-1 text-caption text-muted-foreground"
+          data-testid="message-queued-note"
+        >
+          {t(
+            '排队中：还没有送进对话——等当前这轮的工具调用结束后才会送到。',
+            'Queued: not sent yet — it is handed to the conversation once the current tool call finishes.',
+          )}
+        </p>
+      ) : null}
       {showMessageActions ? (
         <div className={`agent-turn-actions${canRewind ? ' agent-turn-actions--visible' : ''}`}>
           <button
