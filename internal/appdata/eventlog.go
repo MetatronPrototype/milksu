@@ -11,6 +11,10 @@ import (
 
 const (
 	eventLogRelativePath = "runtime/milksu.log"
+	// backendLogRelativePath mirrors the Go runtime log next to milksu.log. An app
+	// launched from Finder keeps no stdout, so a killed sidecar would otherwise
+	// leave no reason behind to inspect.
+	backendLogRelativePath = "runtime/backend.log"
 	// maxEventLogBytes bounds the active log file; at the cap it is rotated to
 	// milksu.log.1, keeping at most two files on disk.
 	maxEventLogBytes = 1024 * 1024
@@ -41,6 +45,12 @@ const (
 	PersistedBackgroundRecoveryFailed    PersistedEvent = "background.recovery_failed"
 	PersistedBackgroundTaskStarted       PersistedEvent = "background.task_started"
 	PersistedBackgroundTaskStopped       PersistedEvent = "background.task_stopped"
+	// PersistedAgentGuardAlarm records that an agent tried to write a protected path. The
+	// accompanying line in backend.log carries the concrete reason.
+	PersistedAgentGuardAlarm PersistedEvent = "agent.guard_alarm"
+	// PersistedSettingsIntegrityWarning records that settings.json held a collaboration
+	// configuration this app never wrote, so it was not applied.
+	PersistedSettingsIntegrityWarning PersistedEvent = "settings.integrity_warning"
 )
 
 type persistedEventSpec struct {
@@ -68,6 +78,8 @@ var persistedEventSpecs = map[PersistedEvent]persistedEventSpec{
 	PersistedBackgroundRecoveryFailed:    {category: "coding-engine", level: "warning"},
 	PersistedBackgroundTaskStarted:       {category: "coding-engine", level: "info"},
 	PersistedBackgroundTaskStopped:       {category: "coding-engine", level: "info"},
+	PersistedAgentGuardAlarm:             {category: "coding-engine", level: "warning"},
+	PersistedSettingsIntegrityWarning:    {category: "settings", level: "warning"},
 }
 
 var eventLogMu sync.Mutex
@@ -150,6 +162,29 @@ func ensureEventLogDirectory(directory string) error {
 		return fmt.Errorf("protect event log directory: %w", err)
 	}
 	return nil
+}
+
+// OpenBackendLogFile opens the plain-text mirror of the Go runtime log next to
+// milksu.log. Finder-launched apps keep no stdout, so backend diagnostics must
+// reach disk on their own or a killed sidecar leaves no reason to inspect.
+func OpenBackendLogFile(dataDirectory string) (*os.File, error) {
+	directory := filepath.Join(dataDirectory, "runtime")
+	if err := ensureEventLogDirectory(directory); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(
+		filepath.Join(directory, filepath.Base(backendLogRelativePath)),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY|noFollowOpenFlag(),
+		0o600,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open backend log: %w", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("protect backend log: %w", err)
+	}
+	return file, nil
 }
 
 func rotateEventLogIfNeeded(path string, additionalBytes int64) error {

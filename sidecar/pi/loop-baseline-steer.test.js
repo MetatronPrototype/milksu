@@ -13,7 +13,7 @@ test("baseline: old Pi steer-after-tools contract was replaced by mid-turn abort
     "utf8",
   );
   // Historical Pi 0.84.1 comment: native steer() still waits for the tool batch.
-  // MilkSU now queues steer then aborts the assistant stream when no bash is running.
+  // MilkSU now queues the steer and never interrupts the running turn.
   assert.match(
     source,
     /Delivered after the current assistant turn finishes executing its tool calls/,
@@ -38,5 +38,5 @@ test("baseline: old Pi steer-after-tools contract was replaced by mid-turn abort
     conversationId: "c1",
     prompt: "改用另一条路径",
   });
-  assert.deepEqual(calls, [["steer", "改用另一条路径"], "abort"]);
+  assert.deepEqual(calls, [["steer", "改用另一条路径"]]);
 });

@@ -131,3 +131,138 @@ index 9d82042..414c25a 100644
    return join(tmpdir(), "pi-better-background-tasks");
  }
  
+diff --git a/node_modules/pi-better-background-tasks/src/runtime.ts b/node_modules/pi-better-background-tasks/src/runtime.ts
+index 292fe9e..9d2c4e3 100644
+--- a/node_modules/pi-better-background-tasks/src/runtime.ts
++++ b/node_modules/pi-better-background-tasks/src/runtime.ts
+@@ -3,6 +3,10 @@ import { appendLine, appendWatchResult, retainLogTail, resolveMaxLogBytes } from
+ import { evaluateCondition } from "./conditions.js";
+ import { processExists, runCommandOnce, spawnCommand, stopProcessGroup } from "./process.js";
+ import { ensureTaskDir, logPathFor, nextTaskId, readMeta, writeMeta } from "./registry.js";
++import {
++  createBackgroundWakeBatcher,
++  milkSUWakeNotifier,
++} from "../../../sidecar/pi/bridge-background-wake.js";
+ import type { BackgroundTaskCallbackOrigin, BackgroundTaskMeta, CommandSpec, Condition, TerminalResult } from "./types.js";
+ import { isTerminalStatus } from "./types.js";
+ 
+@@ -11,6 +15,29 @@ const activePolls = new Set<string>();
+ const logRetentionTimers = new Map<string, ReturnType<typeof setInterval>>();
+ const LOG_RETENTION_CHECK_MS = 1000;
+ 
++// MilkSU: terminal callbacks are opt-in and coalesced. A burst of tasks that end
++// together must wake the agent once, not once per task, and a task that nobody
++// subscribed to must never wake it at all.
++interface WakeBatchTask {
++  id: string;
++  name?: string;
++  status: string;
++  endedAt?: number;
++}
++const wakeBatchers = new WeakMap<object, ReturnType<typeof createBackgroundWakeBatcher>>();
++
++function wakeBatcherFor(pi: ExtensionAPI, getActiveSession?: ActiveSessionProvider) {
++  const key = pi as unknown as object;
++  let batcher = wakeBatchers.get(key);
++  if (!batcher) {
++    batcher = createBackgroundWakeBatcher({
++      onFlush: tasks => deliverWakeBatch(pi, tasks as WakeBatchTask[], getActiveSession),
++    });
++    wakeBatchers.set(key, batcher);
++  }
++  return batcher;
++}
++
+ export const DEFAULT_WATCH_TIMEOUT_SECONDS = 15 * 60;
+ 
+ export type ActiveSessionProvider = () => BackgroundTaskCallbackOrigin | undefined;
+@@ -297,6 +324,9 @@ async function notifyTerminal(
+   meta: BackgroundTaskMeta,
+   getActiveSession?: ActiveSessionProvider,
+ ): Promise<void> {
++  // Unsubscribed tasks still never wake the agent. `callback: false` is the explicit
++  // opt-out (the terminal UI sets it), and a task whose origin is not this session is
++  // suppressed below. Subscribed tasks are coalesced by the batcher.
+   if (meta.callback === false || meta.callbackSentAt || meta.callbackSuppressedAt) return;
+   const latest = readMeta(meta.id) ?? meta;
+   if (latest.callback === false || latest.callbackSentAt || latest.callbackSuppressedAt) return;
+@@ -307,14 +337,62 @@ async function notifyTerminal(
+     writeMeta(latest);
+     return;
+   }
+-  const label = latest.name ? `${latest.name} (${latest.id})` : latest.id;
++  wakeBatcherFor(pi, getActiveSession).enqueue({
++    id: latest.id,
++    name: latest.name,
++    status: latest.status,
++    endedAt: latest.endedAt,
++  });
++}
++
++async function deliverWakeBatch(
++  pi: ExtensionAPI,
++  queued: WakeBatchTask[],
++  getActiveSession?: ActiveSessionProvider,
++): Promise<void> {
++  if (!queued.length) return;
++  const activeSession = getActiveSession?.();
++  const deliverable = queued.filter(task => {
++    const latest = readMeta(task.id);
++    return Boolean(latest)
++      && latest!.callback !== false
++      && !latest!.callbackSentAt
++      && !latest!.callbackSuppressedAt
++      && !getCallbackSuppressionReason(latest!, activeSession);
++  });
++  if (!deliverable.length) return;
++  const notifier = milkSUWakeNotifier(pi);
++  if (notifier) {
++    try {
++      notifier({
++        at: Date.now(),
++        tasks: deliverable.map(task => ({
++          id: task.id,
++          name: task.name,
++          status: task.status,
++          endedAt: task.endedAt,
++        })),
++      });
++    } catch {
++      // A broken renderer hook must never stop the agent from being woken.
++    }
++  }
++  const label = deliverable
++    .map(task => (task.name ? `${task.name} (${task.id})` : task.id))
++    .join(", ");
++  const statuses = deliverable.map(task => `${task.id}=${task.status}`).join(", ");
+   try {
+     await pi.sendUserMessage(
+-      `Background task ${label} reached terminal status ${latest.status}. Inspect the compact result with bg_task_status id=${latest.id}; call bg_task_log only if the status summary is insufficient.`,
++      `Background task${deliverable.length > 1 ? "s" : ""} ${label} reached terminal status. Inspect the compact result with bg_task_status, one id at a time (${statuses}); call bg_task_log only if the status summary is insufficient.`,
+       { deliverAs: "followUp" },
+     );
+-    latest.callbackSentAt = Date.now();
+-    writeMeta(latest);
++    const sentAt = Date.now();
++    for (const task of deliverable) {
++      const latest = readMeta(task.id);
++      if (!latest) continue;
++      latest.callbackSentAt = sentAt;
++      writeMeta(latest);
++    }
+   } catch {
+     // Leave callbackSentAt unset so the originating session can attempt delivery once.
+   }
+diff --git a/node_modules/pi-better-background-tasks/src/tools.ts b/node_modules/pi-better-background-tasks/src/tools.ts
+index ef46a8a..4a0df4d 100644
+--- a/node_modules/pi-better-background-tasks/src/tools.ts
++++ b/node_modules/pi-better-background-tasks/src/tools.ts
+@@ -23,7 +23,7 @@ const CommandFields = {
+   cwd: Type.Optional(Type.String({ description: "Working directory. Defaults to the current pi cwd." })),
+   env: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Extra environment variables." })),
+   max_log_bytes: Type.Optional(Type.Number({ description: "Maximum retained raw-log bytes. Default 4194304 (4 MiB). Older output is compacted while the task runs." })),
+-  callback: Type.Optional(Type.Boolean({ description: "Queue a follow-up when the task reaches a terminal state. Default true." })),
++  callback: Type.Optional(Type.Boolean({ description: "Queue a follow-up when the task reaches a terminal state. Default true; pass false to only update the task panel. Tasks that end within the same 10s window are reported in one wake." })),
+   timeout_seconds: Type.Optional(Type.Number({ description: "Optional timeout in seconds. Command watchers default to 900 seconds when omitted; pass 0 to disable. Spawned processes have no default timeout." })),
+ };
+ 

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { codingSessionToolNames } from "./bridge-coding-policy.js";
+import { readFileSync } from "node:fs";
 import {
   access,
   mkdtemp,
@@ -113,6 +115,8 @@ test("Coding sessions expose Pi native file and shell tools without MilkSU works
       "prepare_computer_use_driver",
       "computer_use",
       "milksu_archify",
+      "deliver_to_conversation",
+      "request_destructive_delete",
       "lsp_diagnostics",
       "lsp_fix",
       "web_search",
@@ -1835,5 +1839,25 @@ test("copilot bash ignores retired MilkSU CTF timeout fields", async () => {
     undefined,
     undefined,
     {},
+  );
+});
+
+// Every tool registered in bridge.js must be part of the session catalog: Pi builds its
+// tool list when the session is created and setActiveTools() cannot add definitions
+// afterwards, so a missing name means the tool can never be called. The names are read
+// from the source, never from a second hand-written list.
+const bridgeSource = readFileSync(new URL("./bridge.js", import.meta.url), "utf8");
+function registeredToolNames() {
+  return [...bridgeSource.matchAll(/pi\.registerTool\(\{\s*name:\s*"([^"]+)"/g)].map(match => match[1]);
+}
+
+test("every tool registered in bridge.js is part of the session catalog", () => {
+  const registered = registeredToolNames();
+  assert.ok(registered.length >= 3, `expected registrations, found ${registered.length}`);
+  const missing = registered.filter(name => !codingSessionToolNames.includes(name));
+  assert.deepEqual(
+    missing,
+    [],
+    "these tools are registered but absent from codingSessionToolNames, so no session can ever call them",
   );
 });

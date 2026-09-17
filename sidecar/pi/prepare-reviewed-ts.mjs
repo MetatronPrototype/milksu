@@ -1,7 +1,7 @@
 // Node refuses to strip types under node_modules. Compile the reviewed
 // TypeScript extensions to sidecar/pi/reviewed-ts before development loads.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
@@ -36,6 +36,14 @@ function fingerprintReviewedTypeScript() {
   const hash = createHash("sha256");
   hash.update(readFileSync(entryFile));
   hash.update(readFileSync(fileURLToPath(import.meta.url)));
+  // The reviewed extensions import the sidecar's own bridge helpers (the patched
+  // background-task package points at sidecar/pi/bridge-background-process.js). Those
+  // files decide the bundle, so they belong in the fingerprint: without them a change
+  // here kept the previous extensions.js and shipped a stale sidecar inside the app.
+  for (const name of readdirSync(sidecarDirectory).filter(entry => entry.endsWith(".js")).sort()) {
+    hash.update(name);
+    hash.update(readFileSync(join(sidecarDirectory, name)));
+  }
   for (const name of reviewedPackages) {
     const manifest = packageJSON(name);
     if (!existsSync(manifest)) {

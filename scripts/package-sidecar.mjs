@@ -2841,11 +2841,23 @@ async function installSidecar(platform, binaryPath) {
     application,
   ])
   const packagedNode = join(destination, 'node')
-  const { stdout: packagedNodeVersion } = await execFileAsync(
-    packagedNode,
-    ['--version'],
-    { timeout: 15_000 },
-  )
+  // Verifying the signed runtime is slower than it looks: the first execution also
+  // validates the signature and pages in a ~115 MB binary, which can exceed a short
+  // timeout on a busy machine and would otherwise fail the whole build. Allow for that
+  // and retry once instead of reporting a false failure.
+  const readPackagedNodeVersion = async () => {
+    const { stdout } = await execFileAsync(packagedNode, ['--version'], { timeout: 90_000 })
+    return stdout
+  }
+  let packagedNodeVersion = ''
+  try {
+    packagedNodeVersion = await readPackagedNodeVersion()
+  } catch (error) {
+    process.stdout.write(
+      `MilkSU packaged Node check retrying: ${String(error?.message ?? error)}\n`,
+    )
+    packagedNodeVersion = await readPackagedNodeVersion()
+  }
   if (packagedNodeVersion.trim() !== `v${nodeVersion}`) {
     throw new Error(
       `signed packaged Node failed version check: ${packagedNodeVersion.trim() || '(empty)'}`,

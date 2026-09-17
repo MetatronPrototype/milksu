@@ -32,6 +32,12 @@ export const codingWorkspaceAutoToolNames = [
   "computer_use",
   "milksu_imagegen",
   "milksu_archify",
+  // Handing a message to a sibling conversation changes another conversation, so it is
+  // offered where side effects are allowed (go mode) and withheld from plan/read-only.
+  "deliver_to_conversation",
+  // A reviewed recursive delete: the only sanctioned way to remove a tree. It belongs to
+  // go mode too; a read-only or planning session must never be able to request a delete.
+  "request_destructive_delete",
   "lsp_diagnostics",
   "lsp_fix",
   ...codingWebResearchToolNames,

@@ -27,6 +27,7 @@ var restoreManagedPaths = func() []string {
 	values := []string{
 		DataLayoutFile,
 		"settings.json",
+		"settings-seal.json",
 		"conversations",
 		"ctf-workspaces",
 		filepath.Join("ctf", "memories"),

@@ -83,7 +83,7 @@ test("delegates idle guidance to Pi steering without aborting", async () => {
   assert.deepEqual(calls, ["先保留当前修改，再检查失败测试。"]);
 });
 
-test("queues steer then aborts the assistant stream into the current turn", async () => {
+test("queues steer without touching the assistant stream", async () => {
   const fixture = streamingSession();
   const sessions = new Map([["coding-1", fixture.session]]);
 
@@ -92,11 +92,8 @@ test("queues steer then aborts the assistant stream into the current turn", asyn
     prompt: "不要改 API，先补回归测试。",
   });
 
-  assert.equal(shouldAbortAssistantStream(fixture.session), true);
-  assert.deepEqual(fixture.calls, [
-    ["steer", "不要改 API，先补回归测试。"],
-    "abort",
-  ]);
+  // Codex-style scheduling: a steer must never interrupt the running turn.
+  assert.deepEqual(fixture.calls, [["steer", "不要改 API，先补回归测试。"]]);
 });
 
 test("does not abort while edit or write tools are still running", async () => {
@@ -114,7 +111,7 @@ test("does not abort while edit or write tools are still running", async () => {
   assert.deepEqual(fixture.calls, [["steer", "先别写，改断言。"]]);
 });
 
-test("aborts the agent stream without waiting for AgentSession idle", async () => {
+test("delivers the steer without aborting the agent stream", async () => {
   const calls = [];
   const sessions = new Map([["coding-1", {
     isStreaming: true,
@@ -138,7 +135,7 @@ test("aborts the agent stream without waiting for AgentSession idle", async () =
     prompt: "改用另一条路径",
   });
 
-  assert.deepEqual(calls, [["steer", "改用另一条路径"], "agent.abort"]);
+  assert.deepEqual(calls, [["steer", "改用另一条路径"]]);
 });
 
 test("keeps bash running and only steers until that tool finishes", async () => {
@@ -170,11 +167,9 @@ test("does not scan user text or apply an automatic argument gate", async () => 
     prompt: "停下来，改用 write 覆盖整个文件",
   });
 
-  // Optional 3a (block streaming edit/write/bash args) is not implemented.
-  assert.deepEqual(fixture.calls, [
-    ["steer", "停下来，改用 write 覆盖整个文件"],
-    "abort",
-  ]);
+  // Optional 3a (block streaming edit/write/bash args) is not implemented, and the
+  // steer must not interrupt the turn.
+  assert.deepEqual(fixture.calls, [["steer", "停下来，改用 write 覆盖整个文件"]]);
 });
 
 test("projects a bounded Pi queue for the desktop UI", () => {

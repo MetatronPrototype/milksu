@@ -101,13 +101,11 @@ export async function steerSession(sessions, command) {
   // abort_session. Do not call prompt() (that would open a parallel user
   // turn). If bash is running, only steer and let the tool finish.
   await session.steer(message);
-  if (shouldAbortAssistantStream(session)) {
-    try {
-      abortAssistantStream(session);
-    } catch {
-      // Stream abort is best-effort; the steer is already on this turn.
-    }
-  }
+  // Codex-style scheduling: an explicit "add to conversation" must never interrupt
+  // the running turn, so no abort happens here. Pi's loop picks the message up at
+  // its next safe point. shouldAbortAssistantStream/abortAssistantStream are kept
+  // exported for callers that still need the old semantics, but this path no longer
+  // uses them.
 }
 
 export async function removeQueuedMessage(sessions, command) {

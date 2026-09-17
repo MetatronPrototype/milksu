@@ -1,0 +1,451 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"log"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/MilkSU-Official/milksu/internal/config"
+	"github.com/MilkSU-Official/milksu/internal/conversation"
+)
+
+// A conversation may hand a message to another conversation of the same workspace.
+//
+// The backend is the only layer that can address a conversation the reader is not
+// looking at, so the target is bound here and announced over agent-delivery. The
+// renderer files the entry under that id - into the schedule while the target is
+// running, as a fresh turn when it is idle - and never switches the visible view.
+const agentDeliveryEventName = "agent-delivery"
+
+const (
+	agentDeliveryMaxRunes = 4000
+	agentDeliveryWindow   = 10 * time.Second
+	agentDeliveryBurst    = 5
+)
+
+type agentDeliveryOrigin struct {
+	ConversationID    string `json:"conversationId"`
+	ConversationTitle string `json:"conversationTitle"`
+	Agent             string `json:"agent"`
+	DeliveredAt       uint64 `json:"deliveredAt,omitempty"`
+}
+
+// agentDeliverySource is the only thing a caller may say about where a delivery came from:
+// its own conversation id. The title and the agent name are resolved by the host from the
+// conversation record, so no caller can label a message as coming from someone else.
+type agentDeliverySource struct {
+	ConversationID string `json:"conversationId"`
+}
+
+type agentDeliveryInput struct {
+	TargetConversationID string              `json:"targetConversationId"`
+	Text                 string              `json:"text"`
+	Origin               agentDeliverySource `json:"origin"`
+	// Kind is "request" (default) or "result". A result is an answer to an earlier request
+	// and is the only form a conversation may send back to one that asked it.
+	Kind string `json:"kind"`
+	// RequestID correlates the announcement with the sidecar tool call that is waiting for
+	// the verdict. Empty for callers that do not wait on one.
+	RequestID string `json:"requestId"`
+}
+
+const (
+	agentDeliveryKindRequest = "request"
+	agentDeliveryKindResult  = "result"
+)
+
+// normalizeAgentDeliveryKind accepts only the two known forms. Anything else reads as a
+// request, so an unknown label can never open the result-reply path.
+func normalizeAgentDeliveryKind(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), agentDeliveryKindResult) {
+		return agentDeliveryKindResult
+	}
+	return agentDeliveryKindRequest
+}
+
+type agentDeliveryEvent struct {
+	TargetConversationID string              `json:"targetConversationId"`
+	Text                 string              `json:"text"`
+	Origin               agentDeliveryOrigin `json:"origin"`
+	// Kind is the accepted form: "request" or "result".
+	Kind      string `json:"kind,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+}
+
+// validateAgentDelivery is deliberately free of the App so the rules can be tested
+// without a running backend: the target must exist, the delivery must not be a
+// self-delivery, and both conversations must live in the same workspace.
+// projectRootOf mirrors the renderer's rule: every "no project" conversation lives in
+// its own scratch workspace, but they all belong to the same Coding project, so they may
+// exchange messages. A workspace inside another project is still refused.
+var scratchWorkspacePattern = regexp.MustCompile(
+	`^(.*/agent-workspaces/Coding)/无项目任务-[a-f0-9]{8}$`)
+var legacyScratchWorkspacePattern = regexp.MustCompile(
+	`^(.*/MilkSU/Coding)/(?:新编码任务|临时任务)-[a-f0-9]{8}$`)
+
+func projectRootOf(workspacePath string) string {
+	value := strings.TrimRight(strings.TrimSpace(workspacePath), "/")
+	if value == "" {
+		return ""
+	}
+	if match := scratchWorkspacePattern.FindStringSubmatch(value); match != nil {
+		return match[1]
+	}
+	if match := legacyScratchWorkspacePattern.FindStringSubmatch(value); match != nil {
+		return match[1]
+	}
+	return value
+}
+
+// agentCollaborationPolicy is the resolved cross-project gate. The zero value is the
+// product default: off.
+type agentCollaborationPolicy struct {
+	AllowCrossConversation bool
+	AllowByConversation    map[string][]string
+	// ResultReplyByConversation is keyed by the conversation that was asked; it lists the
+	// conversations allowed to answer it with a result.
+	ResultReplyByConversation map[string][]string
+}
+
+func agentCollaborationPolicyFrom(value *config.AgentCollaborationConfig) agentCollaborationPolicy {
+	if value == nil {
+		return agentCollaborationPolicy{}
+	}
+	return agentCollaborationPolicy{
+		AllowCrossConversation:    value.AllowCrossConversation,
+		AllowByConversation:       value.AllowByConversation,
+		ResultReplyByConversation: value.ResultReplyByConversation,
+	}
+}
+
+// allows reports whether `source` explicitly listed `target`. The switch alone is not
+// enough: an empty list opens the project boundary to nobody.
+func (policy agentCollaborationPolicy) allows(source, target string) bool {
+	if !policy.AllowCrossConversation {
+		return false
+	}
+	for _, id := range policy.AllowByConversation[source] {
+		if strings.TrimSpace(id) == target {
+			return true
+		}
+	}
+	return false
+}
+
+// allowsResultReply reports whether `asked` granted `replier` a result reply. The grant sits
+// with the conversation that was asked, so it cannot be claimed by the replier.
+func (policy agentCollaborationPolicy) allowsResultReply(replier, asked string) bool {
+	if !policy.AllowCrossConversation {
+		return false
+	}
+	for _, id := range policy.ResultReplyByConversation[asked] {
+		if strings.TrimSpace(id) == replier {
+			return true
+		}
+	}
+	return false
+}
+
+// findStoredConversation resolves one conversation by id from a listing. The host uses it
+// to look provenance up itself instead of trusting what a caller claims.
+func findStoredConversation(
+	stored []conversation.StoredConversation,
+	id string,
+) *conversation.StoredConversation {
+	if id == "" {
+		return nil
+	}
+	for index := range stored {
+		if stored[index].ID == id {
+			return &stored[index]
+		}
+	}
+	return nil
+}
+
+// resolveAgentDeliveryOrigin is the host-side provenance lookup: the title and the agent
+// name come from the stored conversation record, never from the caller.
+func resolveAgentDeliveryOrigin(
+	source conversation.StoredConversation,
+	deliveredAt uint64,
+) agentDeliveryOrigin {
+	title := strings.TrimSpace(source.Title)
+	if title == "" {
+		title = source.ID
+	}
+	return agentDeliveryOrigin{
+		ConversationID:    source.ID,
+		ConversationTitle: title,
+		Agent:             agentIdentityOf(source),
+		DeliveredAt:       deliveredAt,
+	}
+}
+
+// agentIdentityOf names the sending agent by the kernel it runs and, when known, the model
+// it answers with. A constant "Agent" would make two different sources indistinguishable.
+func agentIdentityOf(source conversation.StoredConversation) string {
+	kernel := strings.TrimSpace(source.Kernel)
+	model := strings.TrimSpace(source.ModelID)
+	switch {
+	case kernel != "" && model != "":
+		return kernel + " \u00b7 " + model
+	case kernel != "":
+		return kernel
+	case model != "":
+		return model
+	default:
+		return "MilkSU agent"
+	}
+}
+
+func validateAgentDelivery(
+	stored []conversation.StoredConversation,
+	input agentDeliveryInput,
+) (string, error) {
+	return validateAgentDeliveryWithPolicy(stored, input, agentCollaborationPolicy{})
+}
+
+// validateAgentDeliveryWithPolicy is the one place the delivery rules live, so the same
+// order applies on both sides of the desktop boundary: existence and shape first, then
+// the project boundary with the collaboration gate, and the caller applies the loop
+// breaker and the flood limiter after this returns a target.
+func validateAgentDeliveryWithPolicy(
+	stored []conversation.StoredConversation,
+	input agentDeliveryInput,
+	policy agentCollaborationPolicy,
+) (string, error) {
+	target := strings.TrimSpace(input.TargetConversationID)
+	text := strings.TrimSpace(input.Text)
+	source := strings.TrimSpace(input.Origin.ConversationID)
+	if target == "" || text == "" {
+		return "", errors.New("targetConversationId and text are required")
+	}
+	if len([]rune(text)) > agentDeliveryMaxRunes {
+		return "", errors.New("the delivered text is longer than 4000 characters")
+	}
+	if source != "" && source == target {
+		return "", errors.New("a conversation cannot deliver a message to itself")
+	}
+	targetConversation := findStoredConversation(stored, target)
+	sourceConversation := findStoredConversation(stored, source)
+	if targetConversation == nil {
+		return "", errors.New("target-not-found")
+	}
+	if source != "" {
+		if sourceConversation == nil {
+			return "", errors.New("source-not-found")
+		}
+		if projectRootOf(sourceConversation.WorkspacePath) !=
+			projectRootOf(targetConversation.WorkspacePath) {
+			if !policy.AllowCrossConversation {
+				return "", errors.New("agent-collaboration-disabled: cross-project delivery is not allowed")
+			}
+			if !policy.allows(source, target) &&
+				!(normalizeAgentDeliveryKind(input.Kind) == agentDeliveryKindResult &&
+					policy.allowsResultReply(source, target)) {
+				return "", errors.New("not-allowlisted")
+			}
+		}
+	}
+	return target, nil
+}
+
+// agentDeliveryLimiter keeps one conversation from flooding another (and from an
+// A -> B -> A loop).
+type agentDeliveryLimiter struct {
+	mu     sync.Mutex
+	recent map[string][]time.Time
+}
+
+var agentDeliveryLimits = &agentDeliveryLimiter{recent: map[string][]time.Time{}}
+
+func (limiter *agentDeliveryLimiter) allow(source, target string) bool {
+	key := source + "->" + target
+	now := time.Now()
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	kept := make([]time.Time, 0, len(limiter.recent[key]))
+	for _, at := range limiter.recent[key] {
+		if now.Sub(at) < agentDeliveryWindow {
+			kept = append(kept, at)
+		}
+	}
+	if len(kept) >= agentDeliveryBurst {
+		limiter.recent[key] = kept
+		return false
+	}
+	limiter.recent[key] = append(kept, now)
+	return true
+}
+
+func (limiter *agentDeliveryLimiter) reset() {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	limiter.recent = map[string][]time.Time{}
+}
+
+// A reply inside the window looks like the two conversations are talking to each other
+// rather than to the reader, so that pair is broken for a cooldown. Only a reversal counts:
+// two messages in the same direction are ordinary work, not a loop.
+const (
+	agentDeliveryLoopWindow   = 60 * time.Second
+	agentDeliveryLoopCooldown = 5 * time.Minute
+)
+
+type agentDeliveryPairState struct {
+	lastSource string
+	lastAt     time.Time
+}
+
+type agentDeliveryLoopGuard struct {
+	mu        sync.Mutex
+	pairs     map[string]agentDeliveryPairState
+	openUntil map[string]time.Time
+}
+
+var agentDeliveryLoops = &agentDeliveryLoopGuard{
+	pairs:     map[string]agentDeliveryPairState{},
+	openUntil: map[string]time.Time{},
+}
+
+// A pair is unordered: the point is the ping-pong, not which side started it.
+func agentDeliveryPairKey(a, b string) string {
+	if a > b {
+		a, b = b, a
+	}
+	return a + "\x00" + b
+}
+
+// remaining reports how long the pair stays broken, zero when it is open.
+func (guard *agentDeliveryLoopGuard) remaining(source, target string, now time.Time) time.Duration {
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
+	until, ok := guard.openUntil[agentDeliveryPairKey(source, target)]
+	if !ok || !now.Before(until) {
+		return 0
+	}
+	return until.Sub(now)
+}
+
+// record notes an accepted delivery and breaks the pair when it answers the other
+// direction inside the window.
+func (guard *agentDeliveryLoopGuard) record(source, target string, now time.Time) {
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
+	key := agentDeliveryPairKey(source, target)
+	previous := guard.pairs[key]
+	if previous.lastSource != "" && previous.lastSource != source &&
+		now.Sub(previous.lastAt) <= agentDeliveryLoopWindow {
+		guard.openUntil[key] = now.Add(agentDeliveryLoopCooldown)
+	}
+	guard.pairs[key] = agentDeliveryPairState{lastSource: source, lastAt: now}
+}
+
+func (guard *agentDeliveryLoopGuard) reset() {
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
+	guard.pairs = map[string]agentDeliveryPairState{}
+	guard.openUntil = map[string]time.Time{}
+}
+
+// SettleAgentDelivery answers the sidecar tool call that is waiting on a delivery the
+// renderer just filed. The renderer owns the schedule, so only it can say whether the
+// message was dispatched or is queued behind another conversation in the same workspace.
+func (a *App) SettleAgentDelivery(conversationID, requestID, status, detail string) error {
+	// The outcome is part of the record: the backend announced the delivery, so it also
+	// records where it landed. Without this the log stops at "announced".
+	log.Printf(
+		"[delivery] settled source=%s request=%s status=%s detail=%q",
+		conversationID,
+		requestID,
+		status,
+		detail,
+	)
+	if a.engines == nil {
+		return errors.New("engine supervisor is unavailable")
+	}
+	return a.engines.SettleAgentDelivery(conversationID, requestID, status, detail)
+}
+
+// SetAgentCollaboration persists the cross-project delivery gate. It is a dedicated command
+// so flipping the switch (or editing one chat's list) cannot be blocked by an unrelated,
+// half-finished settings draft on the settings page - and so it is the only path that can
+// change the gate at all.
+func (a *App) SetAgentCollaboration(value config.AgentCollaborationConfig) error {
+	return a.settings.SetAgentCollaboration(&value)
+}
+
+// DeliverAgentMessage announces a cross-conversation message. It never starts a turn
+// itself: the renderer owns the schedule, so it decides between queueing and starting
+// based on the target's real state.
+func (a *App) DeliverAgentMessage(input agentDeliveryInput) (map[string]any, error) {
+	stored, err := a.conversations.List()
+	if err != nil {
+		log.Printf("[delivery] refused reason=list_failed source=%s target=%s", input.Origin.ConversationID, input.TargetConversationID)
+		return nil, err
+	}
+	policy := agentCollaborationPolicyFrom(a.settings.Get().AgentCollaboration)
+	target, err := validateAgentDeliveryWithPolicy(stored, input, policy)
+	if err != nil {
+		// A refused delivery used to leave only a renderer-side notice. The backend log is
+		// the one record that survives the renderer, so it belongs here too.
+		log.Printf("[delivery] refused reason=%q source=%s target=%s", err.Error(), input.Origin.ConversationID, input.TargetConversationID)
+		return nil, err
+	}
+	source := strings.TrimSpace(input.Origin.ConversationID)
+	// Provenance is the host's to state: resolve the source title and agent from the stored
+	// conversation, never from the request body.
+	resolvedOrigin := agentDeliveryOrigin{}
+	if sourceConversation := findStoredConversation(stored, source); sourceConversation != nil {
+		resolvedOrigin = resolveAgentDeliveryOrigin(*sourceConversation, uint64(time.Now().UnixMilli()))
+	}
+	if source != "" {
+		if remaining := agentDeliveryLoops.remaining(source, target, time.Now()); remaining > 0 {
+			reason := fmt.Sprintf("loop-circuit-open: %s left", formatDeliveryCooldown(remaining))
+			log.Printf("[delivery] refused reason=%q source=%s target=%s", reason, source, target)
+			return nil, errors.New(reason)
+		}
+		if !agentDeliveryLimits.allow(source, target) {
+			log.Printf("[delivery] refused reason=rate_limited source=%s target=%s", source, target)
+			return nil, errors.New("rate limited: too many deliveries between these conversations")
+		}
+		agentDeliveryLoops.record(source, target, time.Now())
+	}
+	a.emitDesktopEvent(agentDeliveryEventName, agentDeliveryEvent{
+		TargetConversationID: target,
+		Text:                 strings.TrimSpace(input.Text),
+		Origin:               resolvedOrigin,
+		Kind:                 normalizeAgentDeliveryKind(input.Kind),
+		RequestID:            strings.TrimSpace(input.RequestID),
+	})
+	log.Printf("[delivery] announced source=%s target=%s kind=%s runes=%d", source, target, normalizeAgentDeliveryKind(input.Kind), len([]rune(strings.TrimSpace(input.Text))))
+	result := map[string]any{
+		"delivered":            "announced",
+		"targetConversationId": target,
+		"kind":                 normalizeAgentDeliveryKind(input.Kind),
+	}
+	if resolvedOrigin.ConversationID != "" {
+		result["origin"] = resolvedOrigin
+	}
+	if requestID := strings.TrimSpace(input.RequestID); requestID != "" {
+		result["requestId"] = requestID
+	}
+	return result, nil
+}
+
+// formatDeliveryCooldown is the remaining circuit time the caller is told about, rounded up
+// so "0s left" never appears while the pair is still broken.
+func formatDeliveryCooldown(remaining time.Duration) string {
+	seconds := int((remaining + time.Second - 1) / time.Second)
+	if seconds < 0 {
+		seconds = 0
+	}
+	if seconds >= 60 {
+		return fmt.Sprintf("%dm%02ds", seconds/60, seconds%60)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}

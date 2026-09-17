@@ -12,10 +12,7 @@ import {
   hashFileText,
   wrapEditToolDefinition,
 } from "./bridge-edit-anchor.js";
-import {
-  shouldAbortAssistantStream,
-  steerSession,
-} from "./bridge-steering.js";
+import { steerSession } from "./bridge-steering.js";
 import {
   boundModelText,
   createToolResultBoundExtension,
@@ -208,7 +205,7 @@ test("integration: yield fields survive the later bound hook; parent reads files
   }
 });
 
-test("integration: steer aborts text stream but not an in-flight edit", async () => {
+test("integration: steering a streaming turn never aborts or opens a parallel turn", async () => {
   const streaming = {
     isStreaming: true,
     isIdle: false,
@@ -222,8 +219,12 @@ test("integration: steer aborts text stream but not an in-flight edit", async ()
     conversationId: "c1",
     prompt: "不要改 API",
   });
-  assert.deepEqual(streaming.calls, [["steer", "不要改 API"], "abort"]);
+  // Codex-style scheduling: adding a message must not interrupt the running turn
+  // and must not start a parallel one.
+  assert.deepEqual(streaming.calls, [["steer", "不要改 API"]]);
+});
 
+test("integration: steering while a tool is in flight also only steers", async () => {
   const editing = {
     isStreaming: true,
     isIdle: false,
@@ -232,12 +233,12 @@ test("integration: steer aborts text stream but not an in-flight edit", async ()
     calls: [],
     async steer(message) { this.calls.push(["steer", message]); },
     async abort() { this.calls.push("abort"); },
+    async prompt() { this.calls.push("prompt"); },
   };
   await steerSession(new Map([["c1", editing]]), {
     conversationId: "c1",
     prompt: "先别写",
   });
-  assert.equal(shouldAbortAssistantStream(editing), false);
   assert.deepEqual(editing.calls, [["steer", "先别写"]]);
 });
 

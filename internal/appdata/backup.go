@@ -29,6 +29,9 @@ const (
 
 var backupRoots = []string{
 	DataLayoutFile,
+	// settings.json is added separately (sanitized); the seal holds no secrets and keeps the
+	// collaboration gate consistent across a restore.
+	"settings-seal.json",
 	"conversations",
 	"ctf-workspaces",
 	filepath.Join("ctf", "memories"),
