@@ -415,3 +415,32 @@ Go 全绿（含 `go vet`）、前端 `tsc` + 627 测试、侧车 736/736。
 | `staleSidecarGraceTimeout` | 保留上游 75 分钟（本地 10 分钟会杀掉合法长回合） |
 | A 的 4 项引导 | 要做，放最后 |
 | 重编 | 全部改完再编 beta.19 |
+
+## C 分成两半做（第一半已完成，第二半未做）
+
+**已完成（提交 `13e5a42`）——显示侧**：
+`CrossConversationNotice` 类型 + store 状态 `crossConversationNotices` +
+`pushCrossConversationNotice`（按 对话+来源 合并、count 累加、摘要截 120 字）+
+`dismissCrossConversationNotice` + `activeCrossConversationNotices` + `normalizeDeliveryKind`；
+新建 `app/src/components/CrossConversationNotice.tsx`；ChatPage 转写流顶部渲染。
+测试：`app/src/composables/useConversationsNotice.test.ts`（4 条）。
+
+**未完成——功能侧（这才是让跨对话真正能用的一半）**：
+
+1. **`agent-delivery` 事件处理器**（后端已发，渲染层目前完全忽略 → 投递永远不会落到目标对话，
+   工具等不到 ack 只能报"未确认"）。后端注释写明：App 只做校验+发事件，
+   "它自己不启动回合；渲染层掌握调度，由它按目标的真实状态决定排队还是启动"。
+   事件负载：`{ targetConversationId, text, origin{conversationId,conversationTitle,agent,deliveredAt}, kind, requestId }`
+   （`cmd/milksu-backend/app_agent_delivery.go`，`agentDeliveryEventName = "agent-delivery"`）
+   处理器要做：决定排队/启动 → 写进目标对话 → `settleAgentDelivery(sourceId, requestId, status, detail)`
+   （RPC `settle_agent_delivery` 已搬，Go 侧在 `app_agent_delivery.go`）→ `pushCrossConversationNotice`
+2. **`send()` 需要接受「目标对话 + origin」**（本地版签名末尾多了 `target, origin` 两个参数）。
+   这是整个端口里最敏感的一处改动：上游 `send()` 是核心发送路径，动它会影响
+   空闲对账、排队消息消费、重派发等路径。务必单独一趟、慢慢做。
+3. `deliverAgentMessage` / `submitAgentDelivery`（发出侧）+ `buildExternalMessageEnvelope`
+   + `queuedDeliverySources` + `notifyUnappliedDeliveries`（"未送达"回执）
+4. `setAgentCollaboration` + `canReplyTo` / `allowsResultReply` / `agentDeliveryDecision`
+   （回复许可；后端 `SetAgentCollaboration` 已搬）
+
+**注意**：显示侧已就绪，但在第 1 项落地前界面不会出现任何提示（没人调用 push），
+所以这一半单看是"看得见但不会亮"的。
