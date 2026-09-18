@@ -54,6 +54,18 @@ type NSSCTFArenaConfig struct {
 	RemoveToken bool   `json:"remove_token,omitempty"`
 }
 
+// ModelFailureRecord is one real, observed model failure: the model could not answer because the
+// provider refused, the service was unreachable, and so on. The picker marks such a model red so
+// the reader can tell a broken model from a working one - it never disables the entry, and the
+// record disappears as soon as that model answers successfully once.
+type ModelFailureRecord struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	// Reason keeps the provider's own words (or a short category) so the reader can act on it.
+	Reason string `json:"reason,omitempty"`
+	At     string `json:"at"`
+}
+
 type ModelVerification struct {
 	Provider   string `json:"provider"`
 	Model      string `json:"model"`
@@ -131,9 +143,11 @@ type AppSettings struct {
 	// BusySend is the DSH parent-turn send policy: interrupt (followup) or queue (inbox).
 	BusySend      string             `json:"busy_send,omitempty"`
 	ModelVerified *ModelVerification `json:"model_verification,omitempty"`
-	ModelRouting  ModelRoutingConfig `json:"model_routing"`
-	Relay         *RelayConfig       `json:"relay,omitempty"`
-	NSSCTFArena   *NSSCTFArenaConfig `json:"nssctf_arena,omitempty"`
+	// ModelFailures holds the most recent real failure per model, for the picker's red mark.
+	ModelFailures []ModelFailureRecord `json:"model_failures,omitempty"`
+	ModelRouting  ModelRoutingConfig   `json:"model_routing"`
+	Relay         *RelayConfig         `json:"relay,omitempty"`
+	NSSCTFArena   *NSSCTFArenaConfig   `json:"nssctf_arena,omitempty"`
 	// 以下三项由本地分支搬入（网络代理 / 远端控制 / Agent 协作门禁）。
 	Network            *NetworkConfig            `json:"network,omitempty"`
 	RemoteControl      *RemoteControlConfig      `json:"remote_control,omitempty"`
@@ -736,6 +750,87 @@ func validManagedSecretAccount(account string) bool {
 		}
 	}
 	return true
+}
+
+// maxModelFailureReasonBytes bounds what is kept from a provider error, so a huge HTML error page
+// cannot end up in settings.json.
+const maxModelFailureReasonBytes = 240
+
+// RecordModelFailure remembers that a model really failed, keeping only the most recent failure per
+// model. Callers only record what they observed: a provider error or an unreachable service.
+func (s *Store) RecordModelFailure(provider, model, reason string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return fmt.Errorf("failed provider and model are required")
+	}
+	next := clone(s.settings)
+	record := ModelFailureRecord{
+		Provider: provider,
+		Model:    model,
+		Reason:   normalizeModelFailureReason(reason),
+		At:       at.UTC().Format(time.RFC3339),
+	}
+	replaced := false
+	failures := make([]ModelFailureRecord, 0, len(next.ModelFailures)+1)
+	for _, existing := range next.ModelFailures {
+		if existing.Provider == provider && existing.Model == model {
+			failures = append(failures, record)
+			replaced = true
+			continue
+		}
+		failures = append(failures, existing)
+	}
+	if !replaced {
+		failures = append(failures, record)
+	}
+	next.ModelFailures = failures
+	if err := persistSettings(s.path, next); err != nil {
+		return err
+	}
+	s.settings = next
+	return nil
+}
+
+// ClearModelFailure forgets a model's failure: the model answered successfully, so the picker's
+// red mark has to go away. An unknown model is a no-op.
+func (s *Store) ClearModelFailure(provider, model string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return nil
+	}
+	kept := make([]ModelFailureRecord, 0, len(s.settings.ModelFailures))
+	removed := false
+	for _, existing := range s.settings.ModelFailures {
+		if existing.Provider == provider && existing.Model == model {
+			removed = true
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	if !removed {
+		return nil
+	}
+	next := clone(s.settings)
+	next.ModelFailures = kept
+	if err := persistSettings(s.path, next); err != nil {
+		return err
+	}
+	s.settings = next
+	return nil
+}
+
+func normalizeModelFailureReason(reason string) string {
+	collapsed := strings.Join(strings.Fields(strings.TrimSpace(reason)), " ")
+	if len(collapsed) > maxModelFailureReasonBytes {
+		collapsed = collapsed[:maxModelFailureReasonBytes]
+	}
+	return collapsed
 }
 
 func (s *Store) RecordModelVerification(provider, model string, verifiedAt time.Time) error {

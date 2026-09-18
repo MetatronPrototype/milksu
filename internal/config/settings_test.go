@@ -970,3 +970,95 @@ func TestGeneralSaveCannotMoveTheCollaborationGate(t *testing.T) {
 		t.Fatal("the gate must survive the reload")
 	}
 }
+
+// A model that really failed once keeps a record of what happened, so the picker can mark it red
+// instead of guessing. The record is persisted, keeps only the most recent failure per model, and
+// disappears as soon as that model answers successfully once.
+func TestStoreRecordsAndClearsAModelFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	store, err := newStore(path, fakeSecretStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Never failed: nothing is marked.
+	if failures := store.Get().ModelFailures; len(failures) != 0 {
+		t.Fatalf("a fresh store must not report model failures: %#v", failures)
+	}
+
+	at := time.Date(2026, 9, 18, 17, 0, 0, 0, time.UTC)
+	if err := store.RecordModelFailure(
+		"custom-relay-deepseek",
+		"deepseek-flash",
+		"502 status code (no body)",
+		at,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := newStore(path, fakeSecretStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := reloaded.Get().ModelFailures
+	if len(failures) != 1 {
+		t.Fatalf("the failure must persist: %#v", failures)
+	}
+	if failures[0].Provider != "custom-relay-deepseek" || failures[0].Model != "deepseek-flash" {
+		t.Fatalf("unexpected failure target: %#v", failures[0])
+	}
+	if !strings.Contains(failures[0].Reason, "502") {
+		t.Fatalf("the reason must keep the provider text: %#v", failures[0])
+	}
+	if failures[0].At == "" {
+		t.Fatalf("the failure must carry a time: %#v", failures[0])
+	}
+
+	// A second failure replaces the first: the picker shows the most recent one.
+	if err := store.RecordModelFailure(
+		"custom-relay-deepseek",
+		"deepseek-flash",
+		"connect: connection refused",
+		at.Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	failures = store.Get().ModelFailures
+	if len(failures) != 1 {
+		t.Fatalf("only the most recent failure per model is kept: %#v", failures)
+	}
+	if !strings.Contains(failures[0].Reason, "connection refused") {
+		t.Fatalf("the newer reason must replace the older one: %#v", failures[0])
+	}
+
+	// Another model's failure must not touch this one.
+	if err := store.RecordModelFailure("tokenflux", "grok-4.6", "429 too many requests", at); err != nil {
+		t.Fatal(err)
+	}
+	if failures := store.Get().ModelFailures; len(failures) != 2 {
+		t.Fatalf("each model keeps its own record: %#v", failures)
+	}
+
+	// Answering successfully once clears it.
+	if err := store.ClearModelFailure("custom-relay-deepseek", "deepseek-flash"); err != nil {
+		t.Fatal(err)
+	}
+	failures = store.Get().ModelFailures
+	if len(failures) != 1 || failures[0].Model != "grok-4.6" {
+		t.Fatalf("a recovered model must lose its record: %#v", failures)
+	}
+	clearedReload, err := newStore(path, fakeSecretStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failures := clearedReload.Get().ModelFailures; len(failures) != 1 {
+		t.Fatalf("clearing must persist: %#v", failures)
+	}
+
+	// Clearing an unknown model is a no-op, not an error.
+	if err := store.ClearModelFailure("tokenflux", "never-seen"); err != nil {
+		t.Fatal(err)
+	}
+	if failures := store.Get().ModelFailures; len(failures) != 1 {
+		t.Fatalf("clearing an unknown model must not change anything: %#v", failures)
+	}
+}
