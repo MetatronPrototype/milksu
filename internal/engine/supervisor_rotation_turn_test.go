@@ -16,48 +16,6 @@ func busySessionOn(supervisor *Supervisor, sessionID, workspace string) {
 	supervisor.busySessions[sessionID] = struct{}{}
 }
 
-// A credential or settings rotation must never interrupt the answer the reader is watching. A
-// sidecar serving a turn is only put on the pending list; it is marked the moment its own turn
-// settles, so the next turn still starts on fresh credentials.
-func TestRotationWaitsForTheTurnToSettle(t *testing.T) {
-	supervisor := NewSupervisor(nil)
-	active := testSidecarProcess("/workspace/a")
-	supervisor.process = active
-	busySessionOn(supervisor, "session-streaming", "/workspace/a")
-
-	if marked := supervisor.InvalidateCredentials("settings saved"); marked != 0 {
-		t.Fatalf("a sidecar serving a turn must not be marked yet, marked = %d", marked)
-	}
-	if active.stale.Load() {
-		t.Fatal("a sidecar with a turn in flight must not be marked stale")
-	}
-	if _, pending := supervisor.pendingStale[active]; !pending {
-		t.Fatal("the rotation must be remembered until the turn settles")
-	}
-	if reason := supervisor.pendingStale[active]; reason != "settings saved" {
-		t.Fatalf("pending reason = %q, want the rotation cause", reason)
-	}
-	if active.retired.Load() {
-		t.Fatal("a rotation must not retire a sidecar that is mid-turn")
-	}
-
-	// The turn settles: now the rotation takes effect, and the next turn gets fresh credentials.
-	supervisor.mu.Lock()
-	delete(supervisor.busySessions, "session-streaming")
-	supervisor.mu.Unlock()
-	supervisor.promotePendingStale(active)
-
-	if !active.stale.Load() {
-		t.Fatal("the sidecar must be marked stale once its turn settled")
-	}
-	if active.staleReason != "settings saved" {
-		t.Fatalf("staleReason = %q, want the rotation cause", active.staleReason)
-	}
-	if _, pending := supervisor.pendingStale[active]; pending {
-		t.Fatal("the pending entry must be cleared once applied")
-	}
-}
-
 // The reap used to stop a retired sidecar once its grace ran out, even with a turn still streaming.
 // A sidecar carrying a turn is never stopped for a rotation, however long it has been silent: a
 // single `sleep 75` writes no output at all, so silence cannot tell working from abandoned.
@@ -123,40 +81,6 @@ func TestBusySidecarIsRetiredAtTheCeiling(t *testing.T) {
 	}
 }
 
-// "Test connection" runs a probe on a sidecar of its own. Marking that sidecar stale and reaping it
-// made the probe fail while the model had already answered, so a waiting process is not marked and
-// it is marked as soon as the waiter is gone.
-func TestRotationWaitsForAModelProbe(t *testing.T) {
-	supervisor := NewSupervisor(nil)
-	probe := testSidecarProcess("/tmp/model-probe")
-	supervisor.process = probe
-	supervisor.mu.Lock()
-	supervisor.sessions["milksu_model_probe_1"] = struct{}{}
-	supervisor.sessionKernels["milksu_model_probe_1"] = KernelPi
-	supervisor.sessionWorkspaces["milksu_model_probe_1"] = "/tmp/model-probe"
-	supervisor.probeWaiters["milksu_model_probe_1"] = make(chan Event, 1)
-	supervisor.mu.Unlock()
-
-	if marked := supervisor.InvalidateCredentials("account model credential synced"); marked != 0 {
-		t.Fatalf("a probing sidecar must not be marked yet, marked = %d", marked)
-	}
-	if probe.stale.Load() {
-		t.Fatal("a sidecar serving a probe must not be marked stale")
-	}
-
-	// The probe is over: the rotation applies. The reaper promotes it without needing a turn.
-	supervisor.mu.Lock()
-	delete(supervisor.probeWaiters, "milksu_model_probe_1")
-	supervisor.mu.Unlock()
-	supervisor.reapStaleProcessesLocked()
-	if !probe.stale.Load() {
-		t.Fatal("the rotation must apply once the probe finished")
-	}
-	if probe.staleReason != "account model credential synced" {
-		t.Fatalf("staleReason = %q, want the rotation cause", probe.staleReason)
-	}
-}
-
 // After a rotation the next dispatch must run on fresh credentials: the stale sidecar leaves
 // rotation and the replacement serves the conversation.
 func TestNextDispatchAfterRotationUsesTheFreshSidecar(t *testing.T) {
@@ -181,5 +105,70 @@ func TestNextDispatchAfterRotationUsesTheFreshSidecar(t *testing.T) {
 	supervisor.mu.Unlock()
 	if served != fresh {
 		t.Fatalf("the fresh sidecar must serve the conversation after a rotation, got %#v", served)
+	}
+}
+
+// The rotation contract still holds while another conversation is mid-turn: the busy sidecar is
+// marked stale at once (so it can never serve new work on the replaced environment), it is retired
+// lazily by the dispatch path, and the next turn in the same workspace lands on the replacement.
+//
+// The dispatch itself spawns a process, so this asserts the decision it takes instead: the reuse
+// predicate at ensureKernelProcessLocked refuses a stale sidecar, and the retire step it performs
+// takes that sidecar out of rotation while leaving conversation A's turn running.
+func TestRotationWhileBusySendsTheNextTurnInThatWorkspaceToTheNewSidecar(t *testing.T) {
+	supervisor := NewSupervisor(nil)
+	old := testSidecarProcess("/workspace/a")
+	supervisor.process = old
+	// Conversation A is streaming a turn.
+	busySessionOn(supervisor, "session-a", "/workspace/a")
+	// Conversation B is idle in the same workspace and is about to start.
+	supervisor.mu.Lock()
+	supervisor.sessions["session-b"] = struct{}{}
+	supervisor.sessionKernels["session-b"] = KernelPi
+	supervisor.sessionWorkspaces["session-b"] = "/workspace/a"
+	supervisor.mu.Unlock()
+
+	if marked := supervisor.InvalidateCredentials("settings saved"); marked == 0 {
+		t.Fatal("a rotation must mark the sidecar stale even while another conversation is mid-turn")
+	}
+	if !old.stale.Load() {
+		t.Fatal("the mark must be immediate, or the next turn keeps the replaced credentials")
+	}
+
+	// This is the exact predicate ensureKernelProcessLocked reuses with: a stale sidecar is never
+	// reused, so conversation B cannot start on the old environment.
+	supervisor.mu.Lock()
+	current := supervisor.processForKernelLocked(KernelPi)
+	reusable := current != nil && current.workspace == "/workspace/a" && !current.stale.Load()
+	supervisor.mu.Unlock()
+	if reusable {
+		t.Fatal("a stale sidecar must not be reused for the next turn")
+	}
+
+	// What the dispatch then does: take it out of rotation, so the workspace runs on a fresh one.
+	supervisor.retireStaleProcessLocked(KernelPi, old)
+	supervisor.mu.Lock()
+	afterRetire := supervisor.processForKernelLocked(KernelPi)
+	supervisor.mu.Unlock()
+	if afterRetire != nil {
+		t.Fatal("a retired sidecar must leave rotation")
+	}
+
+	fresh := testSidecarProcess("/workspace/a")
+	supervisor.mu.Lock()
+	supervisor.process = fresh
+	served := supervisor.processForSessionLocked("session-b")
+	supervisor.mu.Unlock()
+	if served != fresh {
+		t.Fatalf("the next turn in the same workspace must use the fresh sidecar, got %#v", served)
+	}
+
+	// Conversation A's answer is untouched: the retired sidecar keeps running until its turn ends.
+	supervisor.reapStaleProcessesLocked()
+	if len(supervisor.retiring) != 1 || supervisor.retiring[0] != old {
+		t.Fatal("the sidecar carrying conversation A's turn must not be stopped")
+	}
+	if _, busy := supervisor.busySessions["session-a"]; !busy {
+		t.Fatal("conversation A's turn must still be running")
 	}
 }

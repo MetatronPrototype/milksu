@@ -540,11 +540,7 @@ type Supervisor struct {
 	parkedAt map[string]time.Time
 	// retiring holds stale processes that are still finishing an in-flight turn.
 	// They are unreachable for new work and swept once their grace runs out.
-	retiring []*childProcess
-	// pendingStale holds processes that must be replaced but are busy. Replacing them now would
-	// kill the turn the reader is watching, so they are marked the moment their own work finishes
-	// (and by the reaper, for a probe with no turn). Keyed by process, valued by the cause.
-	pendingStale      map[*childProcess]string
+	retiring          []*childProcess
 	sessionKernels    map[string]string
 	sessionWorkspaces map[string]string
 	// busySessions holds the sessions whose turn has been sent but not settled. A
@@ -953,9 +949,12 @@ func (s *Supervisor) reportInterruptedSessions(kernel string, sessions []string)
 // credential change has to reach the next turn. Stopping the processes outright also
 // stopped turns that were still streaming, and it stopped a model probe that was in
 // flight while the account credential was being synced - the reason "Test connection"
-// reported a failure even though the model had answered. Stale sidecars are replaced
-// lazily by ensureKernelProcessLocked and reaped by reapStaleProcessesLocked once the
-// turn they were kept for is over, or once staleSidecarGraceTimeout runs out.
+// reported a failure even though the model had answered.
+//
+// The mark is immediate, so a turn that starts next never runs on the environment the user just
+// replaced. Only the replacement is lazy: ensureKernelProcessLocked retires the stale process on
+// the next dispatch, and reapStaleProcessesLocked stops it once the turn it was carrying has
+// finished - or after staleSidecarBusyCeiling, the long backstop for a busy record that is wrong.
 //
 // It returns how many processes were marked so the caller can log the rotation.
 func (s *Supervisor) InvalidateCredentials(reason string) int {
@@ -963,37 +962,26 @@ func (s *Supervisor) InvalidateCredentials(reason string) int {
 	defer s.mu.Unlock()
 	reason = strings.TrimSpace(reason)
 	marked := 0
-	for _, process := range s.credentialProcessesLocked() {
-		if s.markStaleLocked(process, reason) {
-			marked++
-		}
-	}
-	return marked
-}
-
-// credentialProcessesLocked lists every live sidecar a credential rotation has to reach.
-func (s *Supervisor) credentialProcessesLocked() []*childProcess {
-	processes := make([]*childProcess, 0, 2+len(s.parked)+len(s.retiring))
-	appendProcess := func(process *childProcess) {
-		if process == nil {
+	mark := func(process *childProcess) {
+		if process == nil || process.stale.Load() {
 			return
 		}
-		for _, existing := range processes {
-			if existing == process {
-				return
-			}
-		}
-		processes = append(processes, process)
+		// Marked at once, even while a turn is in flight: the next dispatch must never start on the
+		// credentials the user just replaced. Retiring is what is lazy, not the mark.
+		process.stale.Store(true)
+		process.staleSince.Store(time.Now().UnixNano())
+		process.staleReason = reason
+		marked++
 	}
-	appendProcess(s.process)
-	appendProcess(s.dshProcess)
+	mark(s.process)
+	mark(s.dshProcess)
 	for _, process := range s.parked {
-		appendProcess(process)
+		mark(process)
 	}
 	for _, process := range s.retiring {
-		appendProcess(process)
+		mark(process)
 	}
-	return processes
+	return marked
 }
 
 // isRetiringLocked reports whether a process has already left rotation for a replacement.
@@ -1057,77 +1045,6 @@ func (s *Supervisor) processBusyLocked(process *childProcess) bool {
 		}
 	}
 	return false
-}
-
-// markStaleLocked records that a sidecar must be replaced. A busy sidecar is only put on the
-// pending list and marked when its own work finishes, so no turn is interrupted by a credential or
-// settings rotation. Returns true when the process changed state (already stale, or already
-// pending, counts as no change).
-func (s *Supervisor) markStaleLocked(process *childProcess, reason string) bool {
-	if process == nil || process.stale.Load() {
-		return false
-	}
-	if _, pending := s.pendingStale[process]; pending {
-		return false
-	}
-	if s.processBusyLocked(process) {
-		s.pendingStale[process] = reason
-		return false
-	}
-	process.stale.Store(true)
-	process.staleSince.Store(time.Now().UnixNano())
-	process.staleReason = reason
-	return true
-}
-
-// applyPendingStaleLocked promotes a sidecar whose work finished to a real stale mark.
-func (s *Supervisor) applyPendingStaleLocked(process *childProcess) {
-	if process == nil || s.processBusyLocked(process) {
-		return
-	}
-	reason, pending := s.pendingStale[process]
-	if !pending {
-		return
-	}
-	delete(s.pendingStale, process)
-	if process.stale.Load() {
-		return
-	}
-	process.stale.Store(true)
-	process.staleSince.Store(time.Now().UnixNano())
-	process.staleReason = reason
-}
-
-// promoteIdlePendingStaleLocked applies every rotation whose work has finished. The reaper runs it,
-// so a sidecar kept alive for a probe is marked the moment that probe is done - even though a probe
-// never settles a turn.
-func (s *Supervisor) promoteIdlePendingStaleLocked() {
-	for process, reason := range s.pendingStale {
-		if s.processBusyLocked(process) {
-			continue
-		}
-		delete(s.pendingStale, process)
-		if process.stale.Load() {
-			continue
-		}
-		process.stale.Store(true)
-		process.staleSince.Store(time.Now().UnixNano())
-		process.staleReason = reason
-	}
-}
-
-// forceApplyPendingStaleLocked marks every pending rotation stale, busy or not. Revocation uses it:
-// keeping a revoked credential usable for a turn in flight is exactly what was just undone.
-func (s *Supervisor) forceApplyPendingStaleLocked() {
-	for process, reason := range s.pendingStale {
-		delete(s.pendingStale, process)
-		if process == nil || process.stale.Load() {
-			continue
-		}
-		process.stale.Store(true)
-		process.staleSince.Store(time.Now().UnixNano())
-		process.staleReason = reason
-	}
 }
 
 // retireStaleProcessLocked takes a stale process out of rotation without stopping it,
@@ -1244,18 +1161,20 @@ func (s *Supervisor) stopRetiredProcessLocked(process *childProcess) []string {
 	return interrupted
 }
 
-// reapStaleProcessesLocked stops a stale process once the turn it was kept for has
-// finished, or once its grace window runs out.
+// reapStaleProcessesLocked stops a stale process once the turn it was carrying has finished.
 //
 // The turn decides, exactly as in reapParkedLocked: stdout silence cannot tell an
 // abandoned sidecar from a working one, because a foreground bash can run for minutes
 // without writing a line. Stopping on silence is what killed in-flight turns before,
 // and lastActivity only ever recorded stdout lines.
+//
+// staleSidecarGraceTimeout is not that signal either - it bounds how long a stale sidecar may
+// serve, it does not tell "working" from "idle" - so a sidecar that is carrying a turn is left
+// alone however long its window has been expired. staleSidecarBusyCeiling is the only thing that
+// may stop it earlier, and it is a backstop for a busy record that is wrong, not the normal path:
+// the turn ending is what ends the wait, and a sidecar with nothing in flight is still stopped
+// here at once.
 func (s *Supervisor) reapStaleProcessesLocked() {
-	// A rotation kept for a probe has no turn to settle, so the reaper is also where its work
-	// finishing applies the new credentials. This runs before the early return, because a pending
-	// sidecar is not necessarily in the retire list yet.
-	s.promoteIdlePendingStaleLocked()
 	if len(s.retiring) == 0 {
 		return
 	}
@@ -1288,7 +1207,7 @@ func (s *Supervisor) reapStaleProcessesLocked() {
 //
 // Rotating a credential is lazy on purpose: the new value takes over on the next turn, so a
 // sidecar that is mid-turn is left to finish on the environment it started with, and only
-// the grace window bounds it.
+// staleSidecarBusyCeiling bounds it.
 //
 // Revoking a credential is not that change. The user is taking the credential away, so there
 // is nothing left for the old environment to run with: a turn that is mid-flight would fail
@@ -1301,9 +1220,6 @@ func (s *Supervisor) StopStaleSidecars() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stopped := 0
-	// Revocation is not rotation: the credential is being taken away, so a sidecar kept pending for
-	// a turn in flight is stopped here as well (see the note above).
-	s.forceApplyPendingStaleLocked()
 	stop := func(kernel string, process *childProcess, interrupted []string) {
 		process.retired.Store(true)
 		stopChildProcess(process)
@@ -1354,7 +1270,6 @@ func NewSupervisor(emit func(Event)) *Supervisor {
 		sessionWorkspaces: make(map[string]string),
 		sessions:          make(map[string]struct{}),
 		busySessions:      make(map[string]struct{}),
-		pendingStale:      make(map[*childProcess]string),
 		parked:            make(map[string]*childProcess),
 		parkedAt:          make(map[string]time.Time),
 		probeWaiters:      make(map[string]chan Event),
@@ -3168,15 +3083,6 @@ func (s *Supervisor) ensureKernelProcessLocked(
 	return nil
 }
 
-// promotePendingStale marks a sidecar stale once the work it was kept for has finished, so a
-// rotation that arrived mid-turn still takes effect - just not by killing the answer the reader is
-// watching.
-func (s *Supervisor) promotePendingStale(process *childProcess) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.applyPendingStaleLocked(process)
-}
-
 func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.Reader) {
 	kernel = NormalizeKernel(kernel)
 	scanner := bufio.NewScanner(stdout)
@@ -3187,13 +3093,6 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			s.emitEvent(Event{Engine: kernel, Type: "engine.protocol_error", Error: err.Error()})
 			continue
-		}
-		switch raw.Type {
-		case "turn_settled", "error", "session_destroyed", "session_stopped":
-			// A turn ending is the moment a rotation that arrived mid-turn takes effect: the sidecar
-			// becomes stale and the next turn starts on fresh credentials, without this answer ever
-			// having been interrupted.
-			s.promotePendingStale(process)
 		}
 		if raw.Type == "workspace_action" {
 			// A workspace action can take as long as preparing a writer
