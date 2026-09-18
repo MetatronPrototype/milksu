@@ -99,6 +99,8 @@ describe('composer draft store', () => {
     // Only an explicit clear removes it.
     store.clearComposerDraft('conversation-previous')
     expect(store.readComposerDraft('conversation-previous')).toBeUndefined()
+  })
+
   it('keeps at most 50 conversations and drops the least recently used ones', async () => {
     const store = await freshStore()
     for (let index = 0; index < 55; index += 1) {
