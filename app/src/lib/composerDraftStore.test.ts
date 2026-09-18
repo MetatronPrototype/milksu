@@ -68,11 +68,18 @@ describe('composer draft store', () => {
     expect(installStorageStub().getItem(STORAGE_KEY) ?? '').not.toContain('已经发出去了')
   })
 
-  it('drops an emptied draft instead of keeping an empty shell', async () => {
+  // 行为在 2026-09-18 有意改变：空写不再删除草稿。
+  // 切换对话等路径会在切走时顺手写一次空内容，若沿用"空即删除"的旧规则，
+  // 读者的草稿就会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
+  // 现在只有显式 clearComposerDraft 才会移除草稿。
+  it('keeps the draft when an empty write arrives, and only an explicit clear removes it', async () => {
     const store = await freshStore()
     store.writeComposerDraft('conversation-a', { html: '', text: '打了一半', attachments: [] })
     store.writeComposerDraft('conversation-a', { html: '', text: '   ', attachments: [] })
 
+    expect(store.readComposerDraft('conversation-a')?.text).toBe('打了一半')
+
+    store.clearComposerDraft('conversation-a')
     expect(store.readComposerDraft('conversation-a')).toBeUndefined()
   })
 })
