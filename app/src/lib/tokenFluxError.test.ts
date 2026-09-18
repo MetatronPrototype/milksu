@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { applyUiLocale } from './uiLocale'
 import {
+  explainModelCallFailure,
   explainModelServiceError,
   explainModelVerificationFailure,
   explainTokenFluxError,
@@ -93,7 +94,42 @@ describe('explainTokenFluxError', () => {
   })
 })
 
-describe('explainModelServiceError', () => {
+describe('explainModelCallFailure', () => {
+  // The incident: the reader saw a generic sentence, the picker said deepseek-flash, and the
+  // engine was really on the account source with a different model id.
+  it('names the source, provider, model and upstream status of the failure', () => {
+    const text = explainModelCallFailure('502 status code (no body)', {
+      provider: 'milksu-account',
+      model: 'deepseek/deepseek-flash',
+      source: 'account',
+    })
+    expect(text).toContain('模型调用失败')
+    expect(text).toContain('账号来源')
+    expect(text).toContain('milksu-account')
+    expect(text).toContain('deepseek/deepseek-flash')
+    expect(text).toContain('502')
+    // The account source is the TokenFlux relay, so its failure keeps the actionable copy
+    // instead of a generic "service unavailable".
+    expect(text).toContain('TokenFlux 上游暂时不可用')
+  })
+
+  it('names the personal source when that is what ran', () => {
+    const text = explainModelCallFailure('502 status code (no body)', {
+      provider: 'custom-relay-deepseek',
+      model: 'deepseek-flash',
+      source: 'personal',
+    })
+    expect(text).toContain('自有来源')
+    expect(text).toContain('custom-relay-deepseek / deepseek-flash')
+    // A personal relay failure must not borrow the TokenFlux wording.
+    expect(text).not.toContain('TokenFlux')
+  })
+
+  it('stays unchanged when no context is available', () => {
+    expect(explainModelCallFailure('502 status code (no body)'))
+      .toBe(explainModelServiceError('502 status code (no body)'))
+  })
+
   it('uses TokenFlux copy only for TokenFlux provider or TokenFlux fingerprints', () => {
     applyUiLocale('zh')
     const bare = 'PI model verification failed: 403 status code (no body)'

@@ -484,6 +484,36 @@ describe('Coding approval conversation recovery', () => {
     expect(yieldValidate.content).not.toMatch(/cwd|worktreeId|Subagent yield/i)
   })
 
+  // The reported incident: the reader saw only "当前服务找不到这个模型" while the picker showed
+  // custom-relay-deepseek/deepseek-flash and the engine was really on the account source with a
+  // different model id. The bubble must name what actually ran.
+  it('names the source, provider and model when a turn fails on the model call', () => {
+    const bubble = agentEngineErrorBubble('502 status code (no body)', {
+      provider: 'milksu-account',
+      model: 'deepseek/deepseek-flash',
+      source: 'account',
+    })
+    expect(bubble.stopped).toBe(false)
+    expect(bubble.content).toContain('模型调用失败')
+    expect(bubble.content).toContain('账号来源')
+    expect(bubble.content).toContain('milksu-account')
+    expect(bubble.content).toContain('deepseek/deepseek-flash')
+    expect(bubble.content).toContain('502')
+
+    // A personal relay keeps its own provider name and never claims the account wording.
+    const personal = agentEngineErrorBubble('502 status code (no body)', {
+      provider: 'custom-relay-deepseek',
+      model: 'deepseek-flash',
+      source: 'personal',
+    })
+    expect(personal.content).toContain('自有来源')
+    expect(personal.content).toContain('custom-relay-deepseek')
+
+    // Without context the copy is exactly what it was before.
+    expect(agentEngineErrorBubble('502 status code (no body)').content)
+      .toBe(agentEngineErrorBubble('502 status code (no body)', {}).content)
+  })
+
   it('does not expose unknown engine internals just because diagnostics need redaction', () => {
     const message = agentRuntimeErrorMessage(
       'Error: internal bridge.js:42 exploded with token=synthetic-secret-value',

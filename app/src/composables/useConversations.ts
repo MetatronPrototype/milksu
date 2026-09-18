@@ -27,7 +27,7 @@ import {
 } from '@/lib/chatActivity'
 import { redactProviderCredentials } from '@/lib/redaction'
 import { normalizeSubagentTasks } from '@/lib/subagentRoster'
-import { explainModelServiceError } from '@/lib/tokenFluxError'
+import { explainModelCallFailure } from '@/lib/tokenFluxError'
 import {
   assistantForkPoint,
   cloneConversationForFork,
@@ -730,7 +730,10 @@ function missingPiSession(value: unknown) {
   return /PI session not found|PI Sidecar is not running/i.test(String(value ?? ''))
 }
 
-export function agentRuntimeErrorMessage(value: unknown) {
+export function agentRuntimeErrorMessage(
+  value: unknown,
+  context?: { provider?: string; model?: string; source?: string },
+) {
   const raw = String(value ?? '')
   const detail = agentProviderErrorDetail(value)
   const normalized = agentErrorMessage(value)
@@ -767,7 +770,9 @@ export function agentRuntimeErrorMessage(value: unknown) {
   if (/model provider .* is not supported|provider .* is not supported by the local Agent runtime/i.test(raw)) {
     return t('当前默认模型不可用，请在设置中选择可用模型。', 'The current default model is unavailable. Choose an available model in Settings.')
   }
-  const modelService = explainModelServiceError(value)
+  // The turn-failure copy names the source, provider and model that actually ran, so an
+  // account-source fallback cannot hide behind a generic "model not found" sentence.
+  const modelService = explainModelCallFailure(value, context)
   if (modelService) return modelService
   if (new RegExp(t('运行时正在启动', 'Runtime is starting'), 'i').test(raw)) {
     return t('运行时正在启动，请稍候。', 'Runtime is starting. Please wait.')
@@ -823,8 +828,11 @@ export function agentRuntimeErrorMessage(value: unknown) {
   return t('本地 Agent 运行异常，请重试。', 'The local Agent hit a runtime error. Try again.')
 }
 
-export function agentEngineErrorBubble(error: unknown) {
-  const detail = agentRuntimeErrorMessage(error)
+export function agentEngineErrorBubble(
+  error: unknown,
+  context?: { provider?: string; model?: string; source?: string },
+) {
+  const detail = agentRuntimeErrorMessage(error, context)
   const stopped = t('本轮已停止。', 'This turn was stopped.')
   if (detail === stopped) {
     return {
@@ -3431,7 +3439,12 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           if (cleaned !== messages) {
             messages.splice(0, messages.length, ...cleaned)
           }
-          const bubble = agentEngineErrorBubble(error)
+          const erroredConversation = s.conversations.find(item => item.id === sessionId)
+          const bubble = agentEngineErrorBubble(error, {
+            provider: erroredConversation?.modelProvider,
+            model: erroredConversation?.modelId,
+            source: erroredConversation?.modelSource,
+          })
           for (let index = 0; index < messages.length; index++) {
             if (messages[index].approvalState === 'pending') {
               messages[index] = {
