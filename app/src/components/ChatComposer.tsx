@@ -630,7 +630,13 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }, [draft, pendingAttachments])
 
   useEffect(() => {
-    return () => persistComposerDraft()
+    return () => {
+      // 卸载时也只写非空内容：store 的规则是"空即删除"，空写会把那一格抹掉
+      // （这与"切换对话丢草稿"是同一个根因，统一在写入前挡住）。
+      const snapshot = captureComposerDraft()
+      if (!snapshot.html && !snapshot.text.trim() && !snapshot.attachments.length) return
+      persistComposerDraft()
+    }
   }, [])
 
   const hasUnfinishedGoal = Boolean(goal && goal.status !== 'complete')
