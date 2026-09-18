@@ -6,7 +6,12 @@
 import type { ComposerQuote } from '@/lib/composerQuote'
 
 const quotesByKey = new Map<string, ComposerQuote[]>()
+// 每格的最近使用时间（仅内存，用于淘汰顺序；不必落盘）
+const quoteAt = new Map<string, number>()
 const STORAGE_KEY = 'milksu.composer-quotes.v1'
+// 与草稿同一套上限策略：超出丢最久未用的会话格子，避免无限增长。
+const MAX_QUOTE_ENTRIES = 50
+const MAX_QUOTE_BYTES = 128 * 1024
 
 function normalize(key: string) {
   return String(key ?? '').trim()
@@ -22,10 +27,28 @@ function storage(): Storage | null {
   }
 }
 
+function pruneQuotes() {
+  const ordered = [...quotesByKey.entries()].sort(
+    (a, b) => (quoteAt.get(b[0]) ?? 0) - (quoteAt.get(a[0]) ?? 0),
+  )
+  const kept = new Map<string, ComposerQuote[]>()
+  let bytes = 2
+  for (const [key, value] of ordered) {
+    if (kept.size >= MAX_QUOTE_ENTRIES) break
+    const size = JSON.stringify(value).length + key.length + 4
+    if (kept.size > 0 && bytes + size > MAX_QUOTE_BYTES) break
+    kept.set(key, value)
+    bytes += size
+  }
+  quotesByKey.clear()
+  for (const [key, value] of kept) quotesByKey.set(key, value)
+}
+
 function flush() {
   const store = storage()
   if (!store) return
   try {
+    pruneQuotes()
     if (!quotesByKey.size) {
       store.removeItem(STORAGE_KEY)
       return
@@ -76,11 +99,14 @@ export function writeComposerQuotes(key: string, quotes: readonly ComposerQuote[
     return
   }
   quotesByKey.set(normalized, usable)
+  quoteAt.set(normalized, Date.now())
   flush()
 }
 
 export function clearComposerQuotes(key: string) {
-  quotesByKey.delete(normalize(key))
+  const normalized = normalize(key)
+  quotesByKey.delete(normalized)
+  quoteAt.delete(normalized)
   flush()
 }
 

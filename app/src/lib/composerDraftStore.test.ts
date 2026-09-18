@@ -72,6 +72,21 @@ describe('composer draft store', () => {
   // 切换对话等路径会在切走时顺手写一次空内容，若沿用"空即删除"的旧规则，
   // 读者的草稿就会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
   // 现在只有显式 clearComposerDraft 才会移除草稿。
+  it('keeps at most 50 conversations and drops the least recently used ones', async () => {
+    const store = await freshStore()
+    for (let index = 0; index < 55; index += 1) {
+      store.writeComposerDraft(`conversation-${index}`, {
+        html: '',
+        text: `第 ${index} 条`,
+        attachments: [],
+      })
+    }
+    // 最早写的那些应先被淘汰，最近写的必须还在
+    expect(store.readComposerDraft('conversation-0')).toBeUndefined()
+    expect(store.readComposerDraft('conversation-4')).toBeUndefined()
+    expect(store.readComposerDraft('conversation-54')?.text).toBe('第 54 条')
+  })
+
   it('keeps the draft when an empty write arrives, and only an explicit clear removes it', async () => {
     const store = await freshStore()
     store.writeComposerDraft('conversation-a', { html: '', text: '打了一半', attachments: [] })
