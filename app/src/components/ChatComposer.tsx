@@ -622,8 +622,12 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   useEffect(() => {
     const key = currentConversationKey()
     if (!key) return
-    const timer = window.setTimeout(() => persistComposerDraft(key), 250)
-    return () => window.clearTimeout(timer)
+    // 立即按当前会话写入，不做防抖：防抖会留下"打完最后一个字就切走"的窗口，
+    // 那一下写盘还没发生，草稿就丢在旧会话里。空内容直接跳过，避免挂载时的
+    // 空状态盖掉刚恢复出来的草稿（清空由发送后的 clearComposerDraft 负责）。
+    const snapshot = captureComposerDraft()
+    if (!snapshot.html && !snapshot.text.trim() && !snapshot.attachments.length) return
+    writeComposerDraft(key, snapshot)
   }, [draft, pendingAttachments])
 
   useEffect(() => {
