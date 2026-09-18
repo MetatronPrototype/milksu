@@ -65,10 +65,10 @@ jobs:
       - name: Check backend formatting
         shell: bash
         run: |
-          unformatted=$(gofmt -l cmd/milksu-backend)
+          unformatted=$(gofmt -l cmd/milksu-backend internal)
           if [ -n "$unformatted" ]; then
             echo "$unformatted"
-            echo 'cmd/milksu-backend is not gofmt-clean'
+            echo 'cmd/milksu-backend or internal is not gofmt-clean'
             exit 1
           fi
       - name: Run Go suites
