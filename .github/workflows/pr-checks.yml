@@ -29,10 +29,13 @@ concurrency:
   group: pr-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# The sidecar and Go suites assume macOS (they expect /usr/bin/sandbox-exec and a
+# machine without a pre-installed Chrome), so they run on macOS like the release
+# flows do. The renderer suite is platform independent and stays on Linux.
 jobs:
   sidecar:
     name: sidecar suites
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -49,7 +52,7 @@ jobs:
 
   go:
     name: go suites
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
