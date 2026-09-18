@@ -101,6 +101,47 @@ describe('composer draft store', () => {
     expect(store.readComposerDraft('conversation-previous')).toBeUndefined()
   })
 
+  // 非空的写入也会丢文字：它带着附件，所以不是"空写"，会直接把文字更多的旧草稿覆盖掉。
+  // 这是真机残留缺陷的确切形态（附件留下、文字永久消失，且与先附件还是先文字无关）。
+  it('never lets an attachment-only write wipe the text already stored for that key', async () => {
+    const store = await freshStore()
+    store.writeComposerDraft('conversation-a', {
+      html: '<p>已经打好的文字</p>',
+      text: '已经打好的文字',
+      attachments: [],
+    })
+    // 切走那一刻：编辑器是空的，附件来自另一处状态。
+    store.writeComposerDraft('conversation-a', {
+      html: '',
+      text: '',
+      attachments: [{ id: 'a1', name: '图.png', mediaType: 'image/png', size: 1, sha256: 'x' }],
+    })
+
+    const restored = store.readComposerDraft('conversation-a')
+    expect(restored?.text).toBe('已经打好的文字')
+    expect(restored?.attachments).toHaveLength(1)
+  })
+
+  // 附件 + 文字：切走再回来，两者都必须还在（用户报的那一步）。
+  it('keeps both the text and the attachments across a switch away and back', async () => {
+    const store = await freshStore()
+    const attachment = { id: 'a1', name: '材料.pdf', mediaType: 'application/pdf', size: 2, sha256: 'y' }
+    store.writeComposerDraft('conversation-a', {
+      html: '<p>帮我看这份材料</p>',
+      text: '帮我看这份材料',
+      attachments: [attachment],
+    })
+    // 切走：先恢复成空（旧代码会把这份混合快照写回）
+    store.writeComposerDraft('conversation-a', { html: '', text: '', attachments: [attachment] })
+    store.writeComposerDraft('conversation-b', { html: '', text: '另一个会话', attachments: [] })
+    // 切回来
+    const restored = store.readComposerDraft('conversation-a')
+    expect(restored?.text).toBe('帮我看这份材料')
+    expect(restored?.attachments).toEqual([attachment])
+    // 另一个会话不受影响
+    expect(store.readComposerDraft('conversation-b')?.text).toBe('另一个会话')
+  })
+
   it('keeps the draft when an empty write arrives, and only an explicit clear removes it', async () => {
     const store = await freshStore()
     store.writeComposerDraft('conversation-a', { html: '', text: '打了一半', attachments: [] })

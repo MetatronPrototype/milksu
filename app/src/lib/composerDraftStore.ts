@@ -103,14 +103,28 @@ export function isBlankComposerMarkup(html: string): boolean {
 export function writeComposerDraft(key: string, draft: StoredComposerDraft) {
   const normalized = String(key ?? '').trim()
   if (!normalized) return
-  const html = String(draft.html ?? '')
-  const text = String(draft.text ?? '')
+  let html = String(draft.html ?? '')
+  let text = String(draft.text ?? '')
   const attachments = [...(draft.attachments ?? [])]
   if (isBlankComposerMarkup(html) && !text.trim() && !attachments.length) {
     // 空写不再删除草稿：切换对话等路径会顺手写一次空内容，若沿用"空即删除"
     // 的旧规则，读者的草稿就会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
     // 真正要清空时请显式调用 clearComposerDraft。
     return
+  }
+  const stored = drafts.get(normalized)
+  if (stored && !text.trim() && attachments.length) {
+    // 带附件但没有文字的写入，不得抹掉同一格里已有的文字。
+    //
+    // "空写不删"挡不住这一种：它带着附件，所以不是空写，会走到下面的 set，于是把文字
+    // 更多的旧草稿整个覆盖掉。真机现象正是"附件留下、文字永久消失"（先附件后文字、
+    // 先文字后附件都会发生），因为切走那一刻编辑器可能是空的，而附件来自另一处状态。
+    // 真正要清空请显式调用 clearComposerDraft（发送后就是走那条路）。
+    const storedText = String(stored.text ?? '')
+    if (storedText.trim()) {
+      text = storedText
+      if (isBlankComposerMarkup(html)) html = String(stored.html ?? '')
+    }
   }
   drafts.set(normalized, { html, text, attachments })
   flush()
