@@ -2524,6 +2524,7 @@ func (s *Supervisor) RefreshBackgroundTasks(
 		sessionID,
 		workspace,
 		codingPolicy,
+		settings,
 	)
 	if recoveryErr != nil {
 		status.BackgroundRecovery = &BackgroundRecoveryInfo{

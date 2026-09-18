@@ -279,3 +279,30 @@ test("a configured relay is recognised from the turn or from the process slot", 
   // A relay named by another turn's payload must not mark this provider.
   assert.equal(isCustomRelayProvider("custom-relay-deepseek", {}, { id: "custom-relay-other" }), false);
 });
+
+// E) In one sidecar process, switching the conversation's relay must resolve the new one and must
+// not leave the previous one broken.
+test("two relays resolve in the same process without clobbering each other", () => {
+  const first = currentProviderDefinition("relay-one", "model-one", {}, {
+    id: "relay-one", name: "Relay one", key: "relay-one-secret", baseUrl: "https://relay-one.invalid/v1",
+  });
+  const second = currentProviderDefinition("relay-two", "model-two", {}, {
+    id: "relay-two", name: "Relay two", key: "relay-two-secret", baseUrl: "https://relay-two.invalid/v1",
+  });
+  assert.equal(first.baseUrl, "https://relay-one.invalid/v1");
+  assert.equal(first.apiKey, "relay-one-secret");
+  assert.equal(second.baseUrl, "https://relay-two.invalid/v1");
+  assert.equal(second.apiKey, "relay-two-secret");
+
+  // Resolving the second relay again must not change the first one's answer.
+  const firstAgain = currentProviderDefinition("relay-one", "model-one", {}, {
+    id: "relay-one", name: "Relay one", key: "relay-one-secret", baseUrl: "https://relay-one.invalid/v1",
+  });
+  assert.equal(firstAgain.baseUrl, "https://relay-one.invalid/v1");
+  assert.equal(firstAgain.apiKey, "relay-one-secret");
+  // A rotated key takes effect on the next turn.
+  const rotated = currentProviderDefinition("relay-one", "model-one", {}, {
+    id: "relay-one", name: "Relay one", key: "relay-one-rotated", baseUrl: "https://relay-one.invalid/v1",
+  });
+  assert.equal(rotated.apiKey, "relay-one-rotated");
+});
