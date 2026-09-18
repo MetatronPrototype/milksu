@@ -56,6 +56,7 @@ import {
   Trash2,
   UserRound,
   Users,
+  Wifi,
 } from 'lucide-react'
 import {
   groupWorkspaceConversations,
@@ -120,6 +121,7 @@ const settingsNavIcons = {
   agent: Users,
   browser: Globe2,
   eval: Gauge,
+  network: Wifi,
   plugins: Puzzle,
 } as const
 

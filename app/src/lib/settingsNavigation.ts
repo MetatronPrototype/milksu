@@ -14,6 +14,7 @@ export type SettingsCategory =
   | 'security-tools'
   | 'ctf'
   | 'eval'
+  | 'network'
   | 'plugins'
 
 export type NormalizedSettingsCategory = Exclude<SettingsCategory, 'security-tools' | 'coding'>
@@ -36,6 +37,7 @@ export const SETTINGS_SIDEBAR_ITEMS = [
   { value: 'agent' as const, label: () => t('Agent 协作', 'Agent collaboration') },
   { value: 'browser' as const, label: () => t('浏览器控制', 'Browser') },
   { value: 'eval' as const, label: () => t('评测', 'Eval') },
+  { value: 'network' as const, label: () => t('网络 / 远端控制', 'Network & remote') },
   { value: 'plugins' as const, label: () => t('插件', 'Plugins') },
 ] as const satisfies ReadonlyArray<{
   value: NormalizedSettingsCategory
