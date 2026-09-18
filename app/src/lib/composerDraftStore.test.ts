@@ -72,6 +72,35 @@ describe('composer draft store', () => {
   // 切换对话等路径会在切走时顺手写一次空内容，若沿用"空即删除"的旧规则，
   // 读者的草稿就会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
   // 现在只有显式 clearComposerDraft 才会移除草稿。
+  // The exact switch-away sequence that lost drafts in the shipped composer: the editor was already
+  // emptied when the conversation changed, and that emptied content was written back under the
+  // *previous* conversation's key. Writing emptiness must never be what removes a draft.
+  it('keeps the previous conversation draft through the switch-away write', async () => {
+    const store = await freshStore()
+    store.writeComposerDraft('conversation-previous', {
+      html: '<p>还没发的内容</p>',
+      text: '还没发的内容',
+      attachments: [],
+    })
+    // What the old composer did on switch: persist whatever the editor held, which was empty.
+    store.writeComposerDraft('conversation-previous', { html: '', text: '', attachments: [] })
+
+    expect(store.readComposerDraft('conversation-previous')?.text).toBe('还没发的内容')
+
+    // The conversation switched to keeps its own draft, and the other one is untouched.
+    store.writeComposerDraft('conversation-next', {
+      html: '<p>下一个会话的内容</p>',
+      text: '下一个会话的内容',
+      attachments: [],
+    })
+    expect(store.readComposerDraft('conversation-next')?.text).toBe('下一个会话的内容')
+    expect(store.readComposerDraft('conversation-previous')?.text).toBe('还没发的内容')
+
+    // Only an explicit clear removes it.
+    store.clearComposerDraft('conversation-previous')
+    expect(store.readComposerDraft('conversation-previous')).toBeUndefined()
+  })
+
   it('keeps the draft when an empty write arrives, and only an explicit clear removes it', async () => {
     const store = await freshStore()
     store.writeComposerDraft('conversation-a', { html: '', text: '打了一半', attachments: [] })
