@@ -5,6 +5,8 @@ export type StoredComposerDraft = {
   html: string
   text: string
   attachments: CodingAttachment[]
+  /** 最近一次写入时间：用于超出上限时淘汰最久未用的那一格。旧存档没有这个字段。 */
+  at?: number
 }
 
 /**
@@ -18,6 +20,10 @@ export type StoredComposerDraft = {
 const drafts = new Map<string, StoredComposerDraft>()
 
 const STORAGE_KEY = 'milksu.composer-drafts.v1'
+// 上限：避免长期使用后无限增长（读者的担心）。超出就丢最久没用过的会话格子，
+// 保留正在用的。体积上限同时兜住"某个会话里粘了超长文本"的情况。
+const MAX_DRAFT_ENTRIES = 50
+const MAX_DRAFT_BYTES = 256 * 1024
 
 function storage(): Storage | null {
   try {
@@ -49,6 +55,7 @@ function hydrate() {
         html: value.html,
         text: value.text,
         attachments: Array.isArray(value.attachments) ? [...value.attachments] : [],
+        at: Number.isFinite(value.at) ? Number(value.at) : 0,
       })
     }
   } catch {
@@ -56,10 +63,31 @@ function hydrate() {
   }
 }
 
+function prune() {
+  if (drafts.size <= MAX_DRAFT_ENTRIES) {
+    const bytes = JSON.stringify(Object.fromEntries(drafts)).length
+    if (bytes <= MAX_DRAFT_BYTES) return
+  }
+  // 按最近使用时间从新到旧保留，先满足条数上限，再满足体积上限。
+  const ordered = [...drafts.entries()].sort((a, b) => (b[1].at ?? 0) - (a[1].at ?? 0))
+  const kept = new Map<string, StoredComposerDraft>()
+  let bytes = 2
+  for (const [key, value] of ordered) {
+    if (kept.size >= MAX_DRAFT_ENTRIES) break
+    const size = JSON.stringify(value).length + key.length + 4
+    if (kept.size > 0 && bytes + size > MAX_DRAFT_BYTES) break
+    kept.set(key, value)
+    bytes += size
+  }
+  drafts.clear()
+  for (const [key, value] of kept) drafts.set(key, value)
+}
+
 function flush() {
   const store = storage()
   if (!store) return
   try {
+    prune()
     if (!drafts.size) {
       store.removeItem(STORAGE_KEY)
       return
@@ -126,7 +154,8 @@ export function writeComposerDraft(key: string, draft: StoredComposerDraft) {
       if (isBlankComposerMarkup(html)) html = String(stored.html ?? '')
     }
   }
-  drafts.set(normalized, { html, text, attachments })
+  
+  drafts.set(normalized, { html, text, attachments, at: Date.now() })
   flush()
 }
 
