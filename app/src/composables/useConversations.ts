@@ -287,6 +287,13 @@ interface AgentEvent {
   engine?: string
   type: string
   text?: string
+  /**
+   * Which source, provider and model actually ran. A model-source failure reports them, and they
+   * are closer to the truth than the conversation the renderer happens to be showing.
+   */
+  provider?: string
+  model?: string
+  message?: string
   toolName?: string
   toolCallId?: string
   durationMs?: number
@@ -830,8 +837,19 @@ export function agentRuntimeErrorMessage(
 
 export function agentEngineErrorBubble(
   error: unknown,
-  context?: { provider?: string; model?: string; source?: string },
+  context?: { provider?: string; model?: string; source?: string; message?: string },
 ) {
+  // The engine's own sentence is the closer source of truth than anything the UI happens to be
+  // showing, and it already names the source, provider and model. Using it verbatim also avoids
+  // stacking two prefixes ("Agent failed: model call failed: ...").
+  const fromEngine = String(context?.message ?? '').trim()
+  if (fromEngine) {
+    return {
+      content: fromEngine,
+      approvalReason: t('Agent 运行失败，本次审批已失效', 'Agent failed, so this approval is no longer valid'),
+      stopped: false,
+    }
+  }
   const detail = agentRuntimeErrorMessage(error, context)
   const stopped = t('本轮已停止。', 'This turn was stopped.')
   if (detail === stopped) {
@@ -2949,6 +2967,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         steering,
         followUp,
         modelSource,
+        provider,
+        model,
+        message,
         usage,
         compaction,
         contextComposition,
@@ -3440,10 +3461,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
             messages.splice(0, messages.length, ...cleaned)
           }
           const erroredConversation = s.conversations.find(item => item.id === sessionId)
+          const failedSource = String(modelSource ?? '').trim()
+            || String(erroredConversation?.modelSource ?? '').trim()
           const bubble = agentEngineErrorBubble(error, {
-            provider: erroredConversation?.modelProvider,
-            model: erroredConversation?.modelId,
-            source: erroredConversation?.modelSource,
+            // The payload knows which source, provider and model actually ran; the conversation is
+            // only a fallback for older engines that do not report them.
+            provider: String(provider ?? '').trim() || erroredConversation?.modelProvider,
+            model: String(model ?? '').trim() || erroredConversation?.modelId,
+            source: failedSource,
+            message: String(message ?? '').trim(),
           })
           for (let index = 0; index < messages.length; index++) {
             if (messages[index].approvalState === 'pending') {

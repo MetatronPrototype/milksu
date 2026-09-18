@@ -494,11 +494,11 @@ describe('Coding approval conversation recovery', () => {
       source: 'account',
     })
     expect(bubble.stopped).toBe(false)
-    expect(bubble.content).toContain('模型调用失败')
-    expect(bubble.content).toContain('账号来源')
-    expect(bubble.content).toContain('milksu-account')
-    expect(bubble.content).toContain('deepseek/deepseek-flash')
-    expect(bubble.content).toContain('502')
+    // Locked in full: the route, the upstream words, one arrow, and the explanation.
+    expect(bubble.content).toBe(
+      'Agent 运行失败：模型调用失败：账号来源 / milksu-account / deepseek/deepseek-flash'
+        + '（502 status code (no body)） → TokenFlux 上游暂时不可用，请稍后重试或换一个模型。',
+    )
 
     // A personal relay keeps its own provider name and never claims the account wording.
     const personal = agentEngineErrorBubble('502 status code (no body)', {
@@ -506,12 +506,33 @@ describe('Coding approval conversation recovery', () => {
       model: 'deepseek-flash',
       source: 'personal',
     })
-    expect(personal.content).toContain('自有来源')
-    expect(personal.content).toContain('custom-relay-deepseek')
+    expect(personal.content).toBe(
+      'Agent 运行失败：模型调用失败：自有来源 / custom-relay-deepseek / deepseek-flash'
+        + '（502 status code (no body)） → 模型服务暂时不可用，请稍后重试或换一个模型。',
+    )
 
     // Without context the copy is exactly what it was before.
     expect(agentEngineErrorBubble('502 status code (no body)').content)
       .toBe(agentEngineErrorBubble('502 status code (no body)', {}).content)
+  })
+
+  // The engine payload is the closer source of truth than the conversation the UI happens to be
+  // showing: the sidecar knows which source and model actually ran. Its own sentence is used as-is,
+  // so the reader never gets "Agent failed: model call failed: ...".
+  it('prefers the engine payload sentence over the conversation state', () => {
+    const payloadSentence =
+      '模型调用失败：账号来源 / milksu-account / deepseek/deepseek-flash（502 status code (no body)） '
+      + '→ TokenFlux 上游暂时不可用，请稍后重试或换一个模型。'
+    const bubble = agentEngineErrorBubble('stale ui error text', {
+      provider: 'a-stale-conversation-provider',
+      model: 'a-stale-conversation-model',
+      source: 'personal',
+      message: payloadSentence,
+    })
+    expect(bubble.stopped).toBe(false)
+    expect(bubble.content).toBe(payloadSentence)
+    expect(bubble.content).not.toContain('Agent 运行失败')
+    expect(bubble.content).not.toContain('a-stale-conversation-provider')
   })
 
   it('does not expose unknown engine internals just because diagnostics need redaction', () => {

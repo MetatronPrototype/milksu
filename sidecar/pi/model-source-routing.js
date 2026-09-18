@@ -53,6 +53,9 @@ export function selectModelSources({
     failure: {
       reason: "selected-source-unavailable",
       requestedOrder: order,
+      // The source the turn was meant to use: the first requested one. A message must name what the
+      // reader chose, never "any source that happens to appear in the list".
+      intendedSource: String(order[0] ?? ""),
       accountAllowed,
       hasAccount: Boolean(accountModel),
       hasPersonal: Boolean(personalModel),
@@ -65,14 +68,18 @@ export function modelSourceFailureMessage({
   provider,
   model,
   requestedOrder,
+  source,
   locale,
   detail,
 } = {}) {
   const english = String(locale ?? "").toLowerCase().startsWith("en");
   const order = Array.isArray(requestedOrder) ? requestedOrder : [];
-  const sourceLabel = order.includes(personalSource)
+  // Name the source that really failed. `source` is the answer when the caller knows it; otherwise
+  // the first requested source is the intended one.
+  const intended = String(source ?? "").trim() || String(order[0] ?? "").trim();
+  const sourceLabel = intended === personalSource
     ? (english ? "personal source" : "自有来源")
-    : order.includes(accountSource)
+    : intended === accountSource
       ? (english ? "account source" : "账号来源")
       : (english ? "unknown source" : "未知来源");
   const route = [sourceLabel, String(provider ?? "").trim(), String(model ?? "").trim()]

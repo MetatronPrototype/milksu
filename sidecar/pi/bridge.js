@@ -1090,6 +1090,9 @@ function configureRuntimeModel(
       provider,
       model,
       requestedOrder,
+      // The source this turn was meant to use, so an account failure is never reported as personal
+      // just because both appear in the order.
+      source: selection.failure.intendedSource,
       locale,
       detail,
     });

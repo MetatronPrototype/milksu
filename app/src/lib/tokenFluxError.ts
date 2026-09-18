@@ -269,7 +269,11 @@ export type ModelServiceErrorContext = {
  * engine was really calling the account source with a different model id - the reader had no way
  * to tell a chosen relay apart from the account fallback.
  */
-function modelFailureRoute(context: ModelServiceErrorContext | undefined, parsed: ParsedTokenFluxFailure) {
+function modelFailureRoute(
+  context: ModelServiceErrorContext | undefined,
+  parsed: ParsedTokenFluxFailure,
+  raw: unknown,
+) {
   const provider = String(context?.provider ?? '').trim()
   if (!provider) return ''
   const model = String(context?.model ?? '').trim()
@@ -280,10 +284,15 @@ function modelFailureRoute(context: ModelServiceErrorContext | undefined, parsed
       ? t('自有来源', 'personal source')
       : ''
   const route = [sourceLabel, provider, model].filter(Boolean).join(' / ')
-  const upstream = compactErrorText(parsed.message || parsed.reason || parsed.code).slice(0, 120)
-  const status = parsed.status === null ? '' : `HTTP ${parsed.status}`
-  const detail = [status, upstream].filter(Boolean).join(' ')
-  return detail ? `${route} → ${detail}` : route
+  // Keep the provider's own words; fall back to the raw error when it never carried a message field.
+  const upstream = compactErrorText(parsed.message || parsed.reason || raw).slice(0, 120)
+  // The status stays inside the parentheses: the route is not allowed to carry its own arrow, or the
+  // sentence ends up with two of them ("route → HTTP 502 → explanation").
+  const status = parsed.status === null || upstream.includes(String(parsed.status))
+    ? ''
+    : `HTTP ${parsed.status}`
+  const detail = [status, upstream].filter(Boolean).join(' · ')
+  return detail ? `${route}（${detail}）` : route
 }
 
 export function explainModelServiceError(
@@ -315,7 +324,7 @@ export function explainModelCallFailure(
 ): string | null {
   const explanation = explainModelServiceError(value, context)
   if (!explanation) return null
-  const route = modelFailureRoute(context, parseTokenFluxFailure(value))
+  const route = modelFailureRoute(context, parseTokenFluxFailure(value), value)
   if (!route) return explanation
   return t(`模型调用失败：${route} → ${explanation}`, `Model call failed: ${route} → ${explanation}`)
 }
