@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   Check,
+  Copy,
   LogOut,
   Plus,
   Trash2,
@@ -19,6 +20,8 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
+  NativeSelect,
+  NativeSelectOption,
   SettingsGhostPicker,
   SettingsRow,
   SettingsSection,
@@ -48,6 +51,8 @@ import type {
   ModelThinkingLevel,
   ProviderConfig,
   ProviderInfo,
+  RemoteAuditEntry,
+  RemoteControlStatus,
 } from '@/types'
 import {
   customProviderInfo,
@@ -232,6 +237,10 @@ type SettingsState = {
   userArtifacts: UserArtifactDirectoryStatus | null
   computerUseStatus: CodingComputerUseStatus | null
   browserBridgeStatus: NSSCTFWebBridgeStatus | null
+  remoteStatus: RemoteControlStatus | null
+  remoteAudit: RemoteAuditEntry[]
+  remoteLoading: boolean
+  remoteBusy: boolean
   buildTracking: BuildTracking | null
   buildTrackingCopying: boolean
   notice: SettingsNotice | null
@@ -351,9 +360,47 @@ export default function SettingsPage({
   const userArtifacts = state.userArtifacts
   const computerUseStatus = state.computerUseStatus
   const browserBridgeStatus = state.browserBridgeStatus
+  const remoteStatus = state.remoteStatus
+  const remoteAudit = state.remoteAudit
+  const remoteLoading = state.remoteLoading
+  const remoteBusy = state.remoteBusy
   const buildTracking = state.buildTracking
   const buildTrackingCopying = state.buildTrackingCopying
   const notice = state.notice
+
+  // 远端控制的派生值：危险操作开关读设置（缺省＝允许），绑定码提示文案与 Vue 版同口径。
+  const remoteDangerousTools = working?.remote_control?.allow_dangerous_tools !== false
+  const remotePairingTargetLabel = (() => {
+    const id = remoteStatus?.pairing_device_id
+    if (!id) return ''
+    const device = (remoteStatus?.devices ?? []).find(item => item.id === id)
+    return device ? remoteDeviceLabel(device.name) : id
+  })()
+  const remotePairingHint = (() => {
+    const days = Math.max(1, Math.round((remoteStatus?.session_ttl_hours ?? 168) / 24))
+    if (!remoteStatus?.pairing_code) {
+      return t(
+        `设备用绑定码配对，配对成功后它会自己记住 ${days} 天；换到新网络时重新输一次码即可，不会被当成第二台设备。`,
+        `Devices pair with a code and then remember it for ${days} days; on a new network one more code is enough and the device keeps its identity.`,
+      )
+    }
+    if (remotePairingTargetLabel) {
+      return t(
+        `把 ${remoteStatus.pairing_code} 填到「${remotePairingTargetLabel}」上（5 分钟内有效、只能使用一次）：它会认成原来那台设备，权限与已核验网络都保留。`,
+        `Enter ${remoteStatus.pairing_code} on ${remotePairingTargetLabel} (valid 5 minutes, single use): it stays the same device and keeps its permission and verified networks.`,
+      )
+    }
+    return t(
+      `把 ${remoteStatus.pairing_code} 填到手机/另一台设备上（5 分钟内有效、只能使用一次）`,
+      `Enter ${remoteStatus.pairing_code} on the other device (valid 5 minutes, single use)`,
+    )
+  })()
+
+  // 进「网络 / 远端控制」时才读一次远端状态与审计，和 Vue 版的分类 watch 同口径。
+  useEffect(() => {
+    if (category !== 'network') return
+    void store.refreshRemotePanel({ silent: true })
+  }, [category, store])
 
   // 搬运自本地分支（C）：跨项目投递的总开关。它走专用命令立即落盘，
   // 所以不会被设置页上一份没写完的草稿挡住（后端也是这么设计的）。
@@ -979,6 +1026,187 @@ export default function SettingsPage({
                   ) : null}
                 </SettingsSection>
               </>
+            ) : working && category === 'network' ? (
+              <>
+                <SettingsSection
+                  title={t('远端控制', 'Remote control')}
+                  actions={(
+                    <Button variant="outline" size="sm" disabled={remoteLoading} onClick={() => void store.refreshRemotePanel()}>
+                      {t('重新检测', 'Recheck')}
+                    </Button>
+                  )}
+                >
+                  <SettingsRow
+                    label={t('允许局域网设备查看', 'Let LAN devices view')}
+                    description={t(
+                      '开启后，同一网络下的手机或电脑可用浏览器查看上下文、任务、待审核权限与对话。权限仍只在本机批准。',
+                      'When on, a phone or computer on the same network can view context, tasks, pending approvals and conversations in a browser. Approving stays local.',
+                    )}
+                    trailing={(
+                      <Switch
+                        checked={remoteStatus?.enabled === true}
+                        aria-label={t('允许局域网设备查看', 'Let LAN devices view')}
+                        disabled={remoteBusy}
+                        onCheckedChange={value => void store.applyRemoteControl({ enabled: Boolean(value) })}
+                      />
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('访问范围', 'Reach')}
+                    description={t('只绑定局域网地址，不监听 0.0.0.0。', 'Binds the LAN address only, never 0.0.0.0.')}
+                    trailing={(
+                      <NativeSelect
+                        aria-label={t('访问范围', 'Reach')}
+                        className="h-7 w-40 text-sm"
+                        value={remoteStatus?.bind_mode === 'local' ? 'local' : 'lan'}
+                        disabled={remoteBusy}
+                        onChange={event => void store.applyRemoteControl({ bindMode: event.target.value })}
+                      >
+                        <NativeSelectOption value="lan">{t('局域网可访问', 'LAN')}</NativeSelectOption>
+                        <NativeSelectOption value="local">{t('仅本机', 'This computer only')}</NativeSelectOption>
+                      </NativeSelect>
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('绑定码', 'Pairing code')}
+                    description={remotePairingHint}
+                    trailing={(
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!remoteStatus?.pairing_code}
+                          onClick={() => void store.copyRemoteValue(remoteStatus?.pairing_code, t('绑定码', 'pairing code'))}
+                        >
+                          <Copy className="size-4" />{t('复制绑定码', 'Copy code')}
+                        </Button>
+                        <Button variant="outline" size="sm" disabled={remoteBusy} onClick={() => void store.issueRemotePairingCode()}>
+                          {remoteStatus?.pairing_code ? t('重新生成', 'New code') : t('生成绑定码', 'New pairing code')}
+                        </Button>
+                      </div>
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('访问地址', 'Address')}
+                    description={remoteStatus?.url || t('未启动', 'Not running')}
+                    trailing={(
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!remoteStatus?.url}
+                          onClick={() => void store.copyRemoteValue(remoteStatus?.url, t('网址', 'address'))}
+                        >
+                          <Copy className="size-4" />{t('复制网址', 'Copy address')}
+                        </Button>
+                        <Button variant="outline" size="sm" disabled={remoteBusy} onClick={() => void store.rotateRemotePassword()}>
+                          {t('重新生成口令', 'New password')}
+                        </Button>
+                      </div>
+                    )}
+                  />
+                  {remoteStatus?.password ? (
+                    <SettingsRow
+                      label={t('本机口令', 'Host password')}
+                      description={t(`仅「仅本机」模式可直接用它登录：${remoteStatus.password}`, `Local-only mode may log in with it: ${remoteStatus.password}`)}
+                      divider={false}
+                    />
+                  ) : null}
+                </SettingsSection>
+
+                <SettingsSection title={t('远端设备', 'Remote devices')}>
+                  <SettingsRow
+                    label={t('允许远端执行危险操作', 'Allow remote dangerous actions')}
+                    description={t(
+                      '关闭后：bash/edit/write 的批准与自动批准策略只能在本机完成，远端只能拒绍。',
+                      'When off, approving bash/edit/write and auto-approving policies stay on this machine; remote devices may only deny.',
+                    )}
+                    trailing={(
+                      <Switch
+                        checked={remoteDangerousTools}
+                        aria-label={t('允许远端执行危险操作', 'Allow remote dangerous actions')}
+                        disabled={remoteBusy}
+                        onCheckedChange={value => void store.setRemoteDangerousTools(Boolean(value))}
+                      />
+                    )}
+                  />
+                  <SettingsRow
+                    label={t('已配对设备', 'Paired devices')}
+                    description={remoteStatus?.devices?.length
+                      ? t('每台设备可单独升级为可操作、续期或注销；换到新网络需要核验。', 'Promote, renew or revoke each device; a new network has to be verified.')
+                      : t('还没有设备配对。', 'No device has paired yet.')}
+                    stack="always"
+                    align="start"
+                  >
+                    <div className="mt-2 space-y-2" data-testid="remote-device-list">
+                      {(remoteStatus?.devices ?? []).map(device => (
+                        <div key={device.id} className="min-w-0 space-y-1.5 rounded-md border border-border px-3 py-2 text-xs">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <Badge variant={device.can_control ? 'secondary' : 'outline'}>
+                              {device.can_control ? t('可操作', 'Control') : t('只读', 'View')}
+                            </Badge>
+                            <span className="min-w-0 flex-1 truncate font-medium" title={remoteDeviceAgent(device.name)}>
+                              {remoteDeviceLabel(device.name)}
+                            </span>
+                            <div className="flex flex-wrap items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => void store.setRemoteDeviceCapability(device.id, device.capability === 'control' ? 'view' : 'control')}
+                              >
+                                {device.capability === 'control' ? t('降为只读', 'Make read-only') : t('升级为可操作', 'Allow control')}
+                              </Button>
+                              <Button variant="ghost" size="sm" onClick={() => void store.renewRemoteDevice(device.id)}>{t('续期', 'Renew')}</Button>
+                              <Button variant="ghost" size="sm" onClick={() => void store.issueRemotePairingCode(device.id)}>{t('换网重配', 'Re-pair')}</Button>
+                              <Button variant="ghost" size="sm" onClick={() => void store.revokeRemoteDevice(device.id)}>{t('注销', 'Revoke')}</Button>
+                            </div>
+                          </div>
+                          <div className="text-muted-foreground">
+                            {device.ip || t('未知地址', 'Unknown address')}
+                            {' · '}{t('到期', 'Expires')}: {remoteExpiryLabel(device.expires_at)}
+                          </div>
+                          {(device.networks ?? []).length ? (
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
+                              <span>{t('已核验网络', 'Verified networks')}:</span>
+                              {(device.networks ?? []).map(network => (
+                                <span key={network} className="inline-flex items-center gap-1">
+                                  {network}
+                                  <Button variant="ghost" size="sm" onClick={() => void store.forgetRemoteDeviceNetwork(device.id, network)}>{t('忘记', 'Forget')}</Button>
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                          {device.pending_subnet ? (
+                            <div className="flex flex-wrap items-center gap-2 text-destructive">
+                              {t(`新网络待核验：${device.pending_subnet}`, `New network to verify: ${device.pending_subnet}`)}
+                              <Button variant="outline" size="sm" onClick={() => void store.approveRemoteDeviceNetwork(device.id)}>{t('核验此网络', 'Verify this network')}</Button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                      {remoteLoading ? <p className="text-muted-foreground">{t('读取中…', 'Loading…')}</p> : null}
+                    </div>
+                  </SettingsRow>
+                  <SettingsRow
+                    label={t('远端操作记录', 'Remote actions')}
+                    description={remoteAudit.length
+                      ? t('最近的动作与结果（含被拒绍的尝试）。', 'Recent actions and results, including refused attempts.')
+                      : t('暂无记录。', 'No actions yet.')}
+                    divider={false}
+                  >
+                    <div className="mt-2 space-y-1 text-xs" data-testid="remote-audit-list">
+                      {remoteAudit.slice(-8).reverse().map(entry => (
+                        <div key={`${entry.at}-${entry.action}-${entry.device_id}`}>
+                          <span className={entry.ok ? 'text-emerald-500' : 'text-destructive'}>{entry.ok ? '✓' : '✕'}</span>
+                          {' '}{entry.at} · {entry.device_name} · {entry.action}
+                          {entry.detail ? <span> · {entry.detail}</span> : null}
+                          {entry.error ? <span className="text-destructive"> · {entry.error}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  </SettingsRow>
+                </SettingsSection>
+              </>
             ) : working && category === 'apikeys' ? (
               <>
                 <SettingsSection title={t('调用', 'Invocation')}>
@@ -1411,6 +1639,40 @@ export default function SettingsPage({
   )
 }
 
+// 远端设备名在界面上显示成「平台 · 浏览器」，原始 User-Agent 收进 title，
+// 避免一行被 80 字的 UA 挤爆（Vue 版同口径）。
+function remoteDeviceLabel(name: string) {
+  const agent = String(name || '').trim()
+  if (!agent) return t('未识别设备', 'Unknown device')
+  if (!/Mozilla\//.test(agent)) return agent
+  const platform = /iPhone/i.test(agent) ? 'iPhone'
+    : /iPad/i.test(agent) ? 'iPad'
+    : /Android/i.test(agent) ? 'Android'
+    : /Macintosh|Mac OS X/i.test(agent) ? 'Mac'
+    : /Windows/i.test(agent) ? 'Windows'
+    : ''
+  const browser = /Edg\//i.test(agent) ? 'Edge'
+    : /CriOS|Chrome\//i.test(agent) ? 'Chrome'
+    : /FxiOS|Firefox\//i.test(agent) ? 'Firefox'
+    : /Safari\//i.test(agent) ? 'Safari'
+    : ''
+  return [platform, browser].filter(Boolean).join(' · ') || agent.slice(0, 40)
+}
+
+function remoteDeviceAgent(name: string) {
+  return /Mozilla\//.test(String(name || '')) ? String(name) : ''
+}
+
+function remoteExpiryLabel(value: string) {
+  const at = new Date(value)
+  if (!value || Number.isNaN(at.getTime())) return value || '—'
+  const days = Math.ceil((at.getTime() - Date.now()) / 86_400_000)
+  const local = at.toLocaleString()
+  return days > 0
+    ? t(`${local}（还有 ${days} 天）`, `${local} (${days} days left)`)
+    : t(`${local}（已到期）`, `${local} (expired)`)
+}
+
 function createSettingsStore(
   callbacks: { current: {
     onSettingsChange?: (value: AppSettings) => void
@@ -1438,6 +1700,10 @@ function createSettingsStore(
     userArtifacts: null,
     computerUseStatus: null,
     browserBridgeStatus: null,
+    remoteStatus: null,
+    remoteAudit: [],
+    remoteLoading: false,
+    remoteBusy: false,
     buildTracking: null,
     buildTrackingCopying: false,
     notice: null,
@@ -1498,6 +1764,14 @@ function createSettingsStore(
     set computerUseStatus(value) { store.setState({ computerUseStatus: value }); },
     get browserBridgeStatus() { return store.getState().browserBridgeStatus },
     set browserBridgeStatus(value) { store.setState({ browserBridgeStatus: value }); },
+    get remoteStatus() { return store.getState().remoteStatus },
+    set remoteStatus(value) { store.setState({ remoteStatus: value }); },
+    get remoteAudit() { return store.getState().remoteAudit },
+    set remoteAudit(value) { store.setState({ remoteAudit: value }); },
+    get remoteLoading() { return store.getState().remoteLoading },
+    set remoteLoading(value) { store.setState({ remoteLoading: value }); },
+    get remoteBusy() { return store.getState().remoteBusy },
+    set remoteBusy(value) { store.setState({ remoteBusy: value }); },
     get buildTracking() { return store.getState().buildTracking },
     set buildTracking(value) { store.setState({ buildTracking: value }); },
     get buildTrackingCopying() { return store.getState().buildTrackingCopying },
@@ -1561,6 +1835,7 @@ function createSettingsStore(
     { value: 'chats' as const, label: t('归档聊天', 'Archived chats') },
     { value: 'browser' as const, label: t('浏览器控制', 'Browser') },
     { value: 'eval' as const, label: t('评测', 'Eval') },
+    { value: 'network' as const, label: t('网络 / 远端控制', 'Network & remote') },
     { value: 'plugins' as const, label: t('插件', 'Plugins') },
   ]
 
@@ -2823,6 +3098,195 @@ function createSettingsStore(
     }
   }
 
+  // ---- 远端控制（局域网遥控）----
+  // 语义对齐 Vue 版：开关、绑定码与网址可复制、设备卡片、注销、换网重配。
+  async function refreshRemoteControl(options: { silent?: boolean } = {}) {
+    s.remoteLoading = true
+    try {
+      s.remoteStatus = await invokeCommand<RemoteControlStatus>('get_remote_control_status')
+      if (!options.silent) {
+        s.notice = { tone: 'ok', text: t('远端控制状态已刷新。', 'Remote control status refreshed.') }
+      }
+    } catch (reason) {
+      s.remoteStatus = null
+      if (!options.silent) {
+        s.notice = { tone: 'error', text: t(`无法读取远端控制状态：${String(reason)}`, `Could not read the remote control status: ${String(reason)}`) }
+      }
+    } finally {
+      s.remoteLoading = false
+    }
+  }
+
+  async function refreshRemoteAudit() {
+    try {
+      s.remoteAudit = await invokeCommand<RemoteAuditEntry[]>('get_remote_audit', { limit: 40 })
+    } catch {
+      s.remoteAudit = []
+    }
+  }
+
+  async function refreshRemotePanel(options: { silent?: boolean } = {}) {
+    await refreshRemoteControl(options)
+    await refreshRemoteAudit()
+  }
+
+  async function applyRemoteControl(patch: { enabled?: boolean; bindMode?: string }) {
+    s.remoteBusy = true
+    try {
+      const enabled = patch.enabled ?? (s.remoteStatus?.enabled === true)
+      const bindMode = patch.bindMode ?? s.remoteStatus?.bind_mode ?? 'lan'
+      await invokeCommand('set_remote_control', { enabled, bindMode, port: s.remoteStatus?.port ?? 0 })
+      await refreshRemotePanel({ silent: true })
+      s.notice = {
+        tone: 'ok',
+        text: enabled
+          ? t('已开启：在别的设备上打开上面的地址并输入绑定码。', 'On: open the address above on the other device and enter the pairing code.')
+          : t('已关闭。', 'Off.'),
+      }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法修改远端控制：${String(reason)}`, `Could not change remote control: ${String(reason)}`) }
+      await refreshRemoteControl({ silent: true })
+    } finally {
+      s.remoteBusy = false
+    }
+  }
+
+  async function rotateRemotePassword() {
+    s.remoteBusy = true
+    try {
+      const password = await invokeCommand<string>('rotate_remote_password')
+      await refreshRemotePanel({ silent: true })
+      s.notice = { tone: 'ok', text: t(`新口令：${password}（已注销全部设备）`, `New password: ${password} (every device was unpaired)`) }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法重新生成口令：${String(reason)}`, `Could not issue a new password: ${String(reason)}`) }
+    } finally {
+      s.remoteBusy = false
+    }
+  }
+
+  // deviceId 为空表示给新设备发码；指定 id 时那台设备会被认回原来那一条（换网重配）。
+  async function issueRemotePairingCode(deviceId = '') {
+    s.remoteBusy = true
+    try {
+      s.remoteStatus = await invokeCommand<RemoteControlStatus>('issue_remote_pairing_code', { deviceId })
+      await refreshRemoteAudit()
+      s.notice = {
+        tone: 'ok',
+        text: deviceId
+          ? t('已为这台设备生成绑定码：在它上面输入即可，权限与已核验网络都会保留。', 'Pairing code issued for that device: entering it there keeps the permission and the verified networks.')
+          : t('已生成新的绑定码，5 分钟内有效、只能使用一次。', 'New pairing code issued: valid 5 minutes, single use.'),
+      }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法生成绑定码：${String(reason)}`, `Could not issue a pairing code: ${String(reason)}`) }
+    } finally {
+      s.remoteBusy = false
+    }
+  }
+
+  async function setRemoteDeviceCapability(id: string, capability: string) {
+    s.remoteBusy = true
+    try {
+      await invokeCommand('set_remote_device_capability', { id, capability })
+      await refreshRemotePanel({ silent: true })
+      s.notice = {
+        tone: 'ok',
+        text: capability === 'control'
+          ? t('该设备现在可以操作。', 'That device may now act.')
+          : t('该设备已降为只读。', 'That device is read-only now.'),
+      }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法修改设备权限：${String(reason)}`, `Could not change the device permission: ${String(reason)}`) }
+    } finally {
+      s.remoteBusy = false
+    }
+  }
+
+  async function renewRemoteDevice(id: string) {
+    s.remoteBusy = true
+    try {
+      await invokeCommand('renew_remote_device', { id })
+      await refreshRemotePanel({ silent: true })
+      s.notice = { tone: 'ok', text: t('已续期并核验当前网络。', 'Authorisation renewed and the current network verified.') }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法续期：${String(reason)}`, `Could not renew: ${String(reason)}`) }
+    } finally {
+      s.remoteBusy = false
+    }
+  }
+
+  async function revokeRemoteDevice(id: string) {
+    s.remoteBusy = true
+    try {
+      await invokeCommand('revoke_remote_device', { id })
+      await refreshRemotePanel({ silent: true })
+      s.notice = { tone: 'ok', text: t('该设备已注销，需要重新输入绑定码。', 'Device revoked; it must enter a pairing code again.') }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法注销设备：${String(reason)}`, `Could not revoke the device: ${String(reason)}`) }
+    } finally {
+      s.remoteBusy = false
+    }
+  }
+
+  async function approveRemoteDeviceNetwork(id: string) {
+    s.remoteBusy = true
+    try {
+      await invokeCommand('approve_remote_device_network', { id })
+      await refreshRemotePanel({ silent: true })
+      s.notice = { tone: 'ok', text: t('已核验并记住该网络，设备可以继续使用。', 'Network verified and remembered; the device may continue.') }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法核验网络：${String(reason)}`, `Could not verify the network: ${String(reason)}`) }
+    } finally {
+      s.remoteBusy = false
+    }
+  }
+
+  async function forgetRemoteDeviceNetwork(id: string, subnet: string) {
+    s.remoteBusy = true
+    try {
+      await invokeCommand('forget_remote_device_network', { id, subnet })
+      await refreshRemotePanel({ silent: true })
+      s.notice = { tone: 'ok', text: t(`已忘记网络 ${subnet}，下次在该网络需重新核验。`, `Forgot ${subnet}; the device must be verified there again.`) }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法忘记网络：${String(reason)}`, `Could not forget the network: ${String(reason)}`) }
+    } finally {
+      s.remoteBusy = false
+    }
+  }
+
+  // 危险操作开关存在 settings 里（由远端控制自己的 RPC 落盘），所以改完要把设置重新读一份回来。
+  async function setRemoteDangerousTools(allowed: boolean) {
+    s.remoteBusy = true
+    try {
+      await invokeCommand('set_remote_dangerous_tools', { allowed })
+      const refreshed = await invokeCommand<AppSettings>('get_settings').catch(() => s.working)
+      if (refreshed) {
+        s.working = cloneSettings(refreshed)
+        callbacks.current.onSettingsChange?.(refreshed)
+      }
+      s.notice = {
+        tone: 'ok',
+        text: allowed
+          ? t('远端可以批准危险操作。', 'Remote devices may approve dangerous actions.')
+          : t('已收紧：危险操作只能在本机批准，远端只能拒绝。', 'Tightened: dangerous actions are approved on this machine only.'),
+      }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法修改危险操作开关：${String(reason)}`, `Could not change the dangerous-action switch: ${String(reason)}`) }
+    } finally {
+      s.remoteBusy = false
+    }
+  }
+
+  async function copyRemoteValue(value: string | undefined, label: string) {
+    const text = String(value || '').trim()
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      s.notice = { tone: 'ok', text: t(`已复制${label}。`, `${label} copied.`) }
+    } catch (reason) {
+      s.notice = { tone: 'error', text: t(`无法复制${label}：${String(reason)}`, `Could not copy the ${label}: ${String(reason)}`) }
+    }
+  }
+
   async function refreshComputerUseStatus(options: { silent?: boolean } = {}) {
     s.computerUseLoading = true
     try {
@@ -3225,6 +3689,19 @@ function createSettingsStore(
     refreshBrowserBridgeStatus,
     prepareBrowserExtension,
     copyBrowserPairingCode,
+    refreshRemotePanel,
+    refreshRemoteControl,
+    refreshRemoteAudit,
+    applyRemoteControl,
+    rotateRemotePassword,
+    issueRemotePairingCode,
+    setRemoteDeviceCapability,
+    renewRemoteDevice,
+    revokeRemoteDevice,
+    approveRemoteDeviceNetwork,
+    forgetRemoteDeviceNetwork,
+    setRemoteDangerousTools,
+    copyRemoteValue,
     refreshComputerUseStatus,
     requestComputerUsePermission,
     relaunchDesktopApp,
