@@ -99,8 +99,9 @@ export function writeComposerDraft(key: string, draft: StoredComposerDraft) {
   const text = String(draft.text ?? '')
   const attachments = [...(draft.attachments ?? [])]
   if (!html && !text.trim() && !attachments.length) {
-    drafts.delete(normalized)
-    flush()
+    // 空写不再删除草稿：切换对话等路径会顺手写一次空内容，若沿用"空即删除"
+    // 的旧规则，读者的草稿就会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
+    // 真正要清空时请显式调用 clearComposerDraft。
     return
   }
   drafts.set(normalized, { html, text, attachments })
