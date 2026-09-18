@@ -1273,9 +1273,12 @@ function configureRuntimeModel(
   conversationId,
   sourceOrder,
   thinking,
+  turnProvider,
 ) {
   sessionConfiguredProviders.set(conversationId, String(provider ?? "").trim());
-  const definition = currentProviderDefinition(provider, model);
+  // The conversation's own relay rides with the turn: this process may have been spawned for a
+  // different one, and without the definition the chosen provider cannot resolve at all.
+  const definition = currentProviderDefinition(provider, model, process.env, turnProvider);
   if (definition) {
     // Personal TokenFlux keys may be single-model (bare id) or composite
     // (prefix/model). Official providers keep their native ids unchanged.
@@ -1999,6 +2002,7 @@ async function createSession(command) {
       conversationId,
       command.modelSourceOrder,
       command.thinking,
+      command.customProvider,
     );
     await setSessionModel(
       conversationId,
@@ -2150,6 +2154,7 @@ async function sendMessage(command) {
       conversationId,
       command.modelSourceOrder,
       command.thinking,
+      command.customProvider,
     );
     await setSessionModel(
       conversationId,
