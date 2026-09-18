@@ -8,6 +8,9 @@ import type { ComposerQuote } from '@/lib/composerQuote'
 const quotesByKey = new Map<string, ComposerQuote[]>()
 // 每格的最近使用时间（仅内存，用于淘汰顺序；不必落盘）
 const quoteAt = new Map<string, number>()
+// 与草稿同理：时间戳相同时用写入次序保证淘汰顺序确定。
+const quoteOrder = new Map<string, number>()
+let quoteSeq = 0
 const STORAGE_KEY = 'milksu.composer-quotes.v1'
 // 与草稿同一套上限策略：超出丢最久未用的会话格子，避免无限增长。
 const MAX_QUOTE_ENTRIES = 50
@@ -28,9 +31,11 @@ function storage(): Storage | null {
 }
 
 function pruneQuotes() {
-  const ordered = [...quotesByKey.entries()].sort(
-    (a, b) => (quoteAt.get(b[0]) ?? 0) - (quoteAt.get(a[0]) ?? 0),
-  )
+  const ordered = [...quotesByKey.entries()].sort((a, b) => {
+    const byTime = (quoteAt.get(b[0]) ?? 0) - (quoteAt.get(a[0]) ?? 0)
+    if (byTime !== 0) return byTime
+    return (quoteOrder.get(b[0]) ?? 0) - (quoteOrder.get(a[0]) ?? 0)
+  })
   const kept = new Map<string, ComposerQuote[]>()
   let bytes = 2
   for (const [key, value] of ordered) {
@@ -71,7 +76,10 @@ function hydrate() {
       const usable = value.filter(
         quote => String(quote?.id ?? '').trim() && String(quote?.text ?? '').trim(),
       )
-      if (usable.length) quotesByKey.set(key, usable)
+      if (usable.length) {
+        quotesByKey.set(key, usable)
+        quoteOrder.set(key, ++quoteSeq)
+      }
     }
   } catch {
     // 损坏的存档不影响启动：当作没有引用。
@@ -100,6 +108,7 @@ export function writeComposerQuotes(key: string, quotes: readonly ComposerQuote[
   }
   quotesByKey.set(normalized, usable)
   quoteAt.set(normalized, Date.now())
+  quoteOrder.set(normalized, ++quoteSeq)
   flush()
 }
 
@@ -107,6 +116,7 @@ export function clearComposerQuotes(key: string) {
   const normalized = normalize(key)
   quotesByKey.delete(normalized)
   quoteAt.delete(normalized)
+  quoteOrder.delete(normalized)
   flush()
 }
 
