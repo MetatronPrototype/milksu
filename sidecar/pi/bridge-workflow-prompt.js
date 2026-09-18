@@ -2,6 +2,7 @@ import { codingWorkspaceIdentityGuidance } from "./bridge-collaboration.js";
 import { runtimeEnvironmentGuidance } from "./bridge-runtime-environment.js";
 import { externalContentGuidance } from "./bridge-external-content.js";
 import { visibleProgressRule } from "./bridge-visible-progress.js";
+import { quotedReferenceGuidance } from "./bridge-quoted-reference.js";
 import { researchReportGuidance } from "./bridge-workspace.js";
 
 export function roleGuidanceForSession(sessionRole) {
@@ -45,5 +46,8 @@ export function composeMilkSUWorkflowSystemPrompt(systemPrompt, {
 ${visibleProgressRule}`
     + `
 
-${externalContentGuidance()}`;
+${externalContentGuidance()}`
+    + `
+
+${quotedReferenceGuidance()}`;
 }
