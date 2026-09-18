@@ -102,6 +102,7 @@ import {
 import { CODING_SKILLS } from '@/codingSkills'
 import {
   clearComposerDraft,
+  isBlankComposerMarkup,
   readComposerDraft,
   writeComposerDraft,
   type StoredComposerDraft,
@@ -1060,7 +1061,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     const nextText = readComposerText()
     setDraft(nextText)
     // 读者把输入框删空是明确意图：此时显式清掉这一格，避免下次切回来又冒出旧文字。
-    if (!nextText.trim() && !composerHtml().trim() && !pendingAttachmentsRef.current.length) {
+    if (!nextText.trim() && !pendingAttachmentsRef.current.length && isBlankComposerMarkup(composerHtml())) {
       clearComposerDraft(currentConversationKey())
     } else {
       persistComposerDraft()
