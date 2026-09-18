@@ -206,3 +206,61 @@ test("registers the active custom OpenAI-compatible relay only from runtime envi
     undefined,
   );
 });
+
+// The sidecar process is per workspace and carries exactly one MILKSU_CUSTOM_PROVIDER_* slot,
+// filled with whichever relay was active when it was spawned. A conversation whose manual
+// choice is a different relay therefore could not resolve its own provider and silently fell
+// back to the account source (observed: the picker showed custom-relay-deepseek while the
+// engine ran milksu-account/deepseek/deepseek-flash and got a 502). The definition now travels
+// with the turn, so the relay the user picked always resolves.
+test("the conversation's own relay resolves even when the process was spawned for another one", () => {
+  const environment = {
+    MILKSU_CUSTOM_PROVIDER_ID: "custom-relay-someone-else",
+    MILKSU_CUSTOM_PROVIDER_NAME: "Other relay",
+    MILKSU_CUSTOM_PROVIDER_KEY: "other-relay-secret",
+    MILKSU_CUSTOM_PROVIDER_URL: "https://other.invalid/v1",
+  };
+  const definition = currentProviderDefinition(
+    "custom-relay-deepseek",
+    "deepseek-flash",
+    environment,
+    {
+      id: "custom-relay-deepseek",
+      name: "DeepSeek",
+      key: "deepseek-personal-secret",
+      baseUrl: "https://api.deepseek.example.test",
+    },
+  );
+  assert.ok(definition, "the turn's own relay must resolve");
+  assert.equal(definition.baseUrl, "https://api.deepseek.example.test");
+  assert.equal(definition.apiKey, "deepseek-personal-secret");
+  assert.deepEqual(definition.models.map((item) => item.id), ["deepseek-flash"]);
+  // Never borrow another relay's credentials.
+  assert.notEqual(definition.apiKey, "other-relay-secret");
+  assert.notEqual(definition.baseUrl, "https://other.invalid/v1");
+});
+
+test("a turn payload for a different provider never overrides the requested provider", () => {
+  const definition = currentProviderDefinition("custom-relay-deepseek", "deepseek-flash", {}, {
+    id: "custom-relay-other",
+    name: "Other",
+    key: "other-secret",
+    baseUrl: "https://other.invalid/v1",
+  });
+  assert.equal(definition, undefined);
+});
+
+test("an incomplete turn payload still falls back to the process slot for the same relay", () => {
+  const environment = {
+    MILKSU_CUSTOM_PROVIDER_ID: "custom-relay-deepseek",
+    MILKSU_CUSTOM_PROVIDER_NAME: "DeepSeek",
+    MILKSU_CUSTOM_PROVIDER_KEY: "deepseek-env-secret",
+    MILKSU_CUSTOM_PROVIDER_URL: "https://api.deepseek.env.test",
+  };
+  const definition = currentProviderDefinition("custom-relay-deepseek", "deepseek-flash", environment, {
+    id: "custom-relay-deepseek",
+  });
+  assert.ok(definition);
+  assert.equal(definition.apiKey, "deepseek-env-secret");
+  assert.equal(definition.baseUrl, "https://api.deepseek.env.test");
+});
