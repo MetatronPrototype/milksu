@@ -645,4 +645,48 @@ test("guard-script-depth: a chain past the depth limit is refused", async (t) =>
     policy: { workspace },
   });
   assert.equal(deep?.action, "block");
+
+  // The depth reason is its own sentence: a chain that merely nests too deep is NOT a script the
+  // command writes, and it must not be described as one.
+  assert.match(String(deep?.reason ?? ""), /嵌套超过 3 层（已到第 4 层）/);
+  assert.doesNotMatch(String(deep?.reason ?? ""), /命令自己写入的脚本/);
+
+  const english = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `bash ${script(1)}` },
+    policy: { workspace, uiLocale: "en" },
+  });
+  assert.equal(english?.action, "block");
+  assert.match(String(english?.reason ?? ""), /nests deeper than 3 levels \(reached level 4\)/);
+  // No Chinese fragment may be pasted into the English sentence.
+  assert.doesNotMatch(String(english?.reason ?? ""), /[\u4e00-\u9fff]/);
+});
+
+// The other reason keeps its own wording, in both languages: the command writes a script that does
+// not exist yet, so the guard cannot read what it would delete.
+test("a written-but-unreadable script is refused with the write reason", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-written-copy-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const script = join(workspace, "generated.sh");
+  const command = `printf 'rm -rf ${workspace}' > ${script} && bash ${script}`;
+
+  for (const [locale, expected, forbidden] of [
+    ["zh", /命令自己写入的脚本/, /嵌套超过/],
+    ["en", /it writes the script\(s\)/, /嵌套/],
+  ]) {
+    const decision = await destructiveDeleteDecision({
+      toolName: "bash",
+      input: { command },
+      policy: { workspace, uiLocale: locale },
+    });
+    assert.equal(decision?.action, "block");
+    assert.match(String(decision?.reason ?? ""), expected);
+    assert.doesNotMatch(String(decision?.reason ?? ""), forbidden);
+    if (locale === "en") {
+      // The English sentence must not carry a Chinese fragment from the other copy.
+      assert.doesNotMatch(String(decision?.reason ?? ""), /[\u4e00-\u9fff]/);
+    }
+  }
 });

@@ -417,7 +417,9 @@ export function recursiveDeleteTargets(command, options = {}) {
   if (depth > scriptDeleteMaxDepth) {
     // Stopping here means the guard cannot see what this chain eventually runs. Reporting "no
     // targets" made a delete four scripts deep pass unseen, so the caller refuses instead.
-    unresolved.push(`第 ${depth} 层嵌套脚本`);
+    // A structured reason, so the caller can say which of the two problems this is: a chain the
+    // guard could not follow is not the same as a script the command writes itself.
+    unresolved.push({ kind: "depth", depth });
     return [];
   }
   // Strip heredoc bodies first: their text is data, and splitting it into statements would
@@ -442,7 +444,7 @@ export function recursiveDeleteTargets(command, options = {}) {
         } else if (writesPath(command, scriptArgument) || writesPath(rootCommand, scriptArgument)) {
           // The script does not exist yet, so what it would delete cannot be read here. Refuse
           // rather than report "no targets" and let the delete run unseen.
-          unresolved.push(scriptArgument);
+          unresolved.push({ kind: "write", name: scriptArgument });
         }
       }
     }
@@ -630,12 +632,35 @@ export async function destructiveDeleteDecision({
   const unresolvedScripts = [];
   const rawTargets = recursiveDeleteTargets(command, { unresolved: unresolvedScripts });
   if (unresolvedScripts.length) {
+    // Two different problems, two different sentences. Saying "which the same command writes" about
+    // a chain that merely nests too deep told the reader something false.
+    const chinese = policy?.uiLocale !== "en";
+    const written = unresolvedScripts
+      .filter(entry => entry?.kind === "write")
+      .map(entry => String(entry.name ?? "").trim())
+      .filter(Boolean);
+    const deepest = unresolvedScripts
+      .filter(entry => entry?.kind === "depth")
+      .reduce((max, entry) => Math.max(max, Number(entry.depth) || 0), 0);
+    const parts = [];
+    if (written.length) {
+      parts.push(chinese
+        ? `命令自己写入的脚本（${written.join("、")}）无法读取，所以它到底会删什么无法在运行前检查。`
+        : `it writes the script(s) ${written.join(", ")} itself and the guard cannot read them, so `
+          + "what it would delete cannot be checked before it runs.");
+    }
+    if (deepest > 0) {
+      parts.push(chinese
+        ? `脚本嵌套超过 ${scriptDeleteMaxDepth} 层（已到第 ${deepest} 层），链路太深，运行前无法看清它会删什么。`
+        : `its script chain nests deeper than ${scriptDeleteMaxDepth} levels (reached level `
+          + `${deepest}), so what it would delete cannot be seen before it runs.`);
+    }
     return {
       action: "block",
-      reason:
-        `MilkSU refused this deletion: it runs ${unresolvedScripts.join("、")}, which the same `
-        + "command writes, so what it would delete cannot be checked before it runs. Run the "
-        + "script first, then delete in a separate command.",
+      reason: chinese
+        ? `MilkSU 拒绝了这次删除：${parts.join("；")}请先把脚本跑通或看完，再用另一条命令执行删除。`
+        : `MilkSU refused this deletion: ${parts.join(" ")} Run or read the script first, then `
+          + "delete in a separate command.",
     };
   }
   if (!rawTargets.length) return null;
