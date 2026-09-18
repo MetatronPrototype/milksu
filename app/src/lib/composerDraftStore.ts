@@ -98,7 +98,10 @@ export function writeComposerDraft(key: string, draft: StoredComposerDraft) {
   const html = String(draft.html ?? '')
   const text = String(draft.text ?? '')
   const attachments = [...(draft.attachments ?? [])]
-  if (!html && !text.trim() && !attachments.length) {
+  // 编辑器残留的空行（<br>、空 div、空白）不算内容，否则"清空输入框"之后
+  // 存储里会留下一格空壳，切回来又是一个空行。
+  const htmlIsBlank = !String(html).replace(/<br\s*\/?>|<div>\s*<\/div>|&nbsp;|\s/gi, '').trim()
+  if (htmlIsBlank && !text.trim() && !attachments.length) {
     // 空写不再删除草稿：切换对话等路径会顺手写一次空内容，若沿用"空即删除"
     // 的旧规则，读者的草稿就会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
     // 真正要清空时请显式调用 clearComposerDraft。
