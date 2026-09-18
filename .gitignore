@@ -49,3 +49,7 @@ sidecar/pi/reviewed-ts/
 
 # 打包脚本（试验田/正式包）用的临时备份，不属于源码
 *.beta-bak
+
+# 本 worktree 的依赖软链，不属于源码
+node_modules
+app/node_modules

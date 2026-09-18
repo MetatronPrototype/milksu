@@ -7,7 +7,70 @@ export type StoredComposerDraft = {
   attachments: CodingAttachment[]
 }
 
+/**
+ * 草稿必须活过"切换对话"，也必须活过"重启/崩溃"。
+ *
+ * 它原来只存在这个模块级 Map 里（纯内存）：切对话时靠"保存上一份"那一步兜，
+ * 而走的是比较基准的时序——一旦基准已经变成新会话，那一格就再也写不进去，
+ * 用户切回去就发现白打了一大段（用户已经因此损失两次输入）。
+ * 现在 Map 仍是读缓存，但每次写入都落盘（localStorage），启动时自动恢复。
+ */
 const drafts = new Map<string, StoredComposerDraft>()
+
+const STORAGE_KEY = 'milksu.composer-drafts.v1'
+
+function storage(): Storage | null {
+  try {
+    if (typeof window === 'undefined') return null
+    return window.localStorage ?? null
+  } catch {
+    // 隐私模式等场景下访问 localStorage 会抛异常：草稿退化成纯内存，不影响打字本身。
+    return null
+  }
+}
+
+function isStoredDraft(value: unknown): value is StoredComposerDraft {
+  if (!value || typeof value !== 'object') return false
+  const draft = value as Partial<StoredComposerDraft>
+  return typeof draft.html === 'string' && typeof draft.text === 'string'
+}
+
+function hydrate() {
+  const store = storage()
+  if (!store) return
+  try {
+    const raw = store.getItem(STORAGE_KEY)
+    if (!raw) return
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!key || !isStoredDraft(value)) continue
+      drafts.set(key, {
+        html: value.html,
+        text: value.text,
+        attachments: Array.isArray(value.attachments) ? [...value.attachments] : [],
+      })
+    }
+  } catch {
+    // 落盘内容坏了就当没有草稿：宁可空着，也不要让启动卡在这里。
+  }
+}
+
+function flush() {
+  const store = storage()
+  if (!store) return
+  try {
+    if (!drafts.size) {
+      store.removeItem(STORAGE_KEY)
+      return
+    }
+    store.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(drafts)))
+  } catch {
+    // 配额满等情况：内存里的草稿仍然可用，不因为落盘失败影响打字。
+  }
+}
+
+hydrate()
 
 export function composerDraftKey(
   conversationId?: string | null,
@@ -37,17 +100,21 @@ export function writeComposerDraft(key: string, draft: StoredComposerDraft) {
   const attachments = [...(draft.attachments ?? [])]
   if (!html && !text.trim() && !attachments.length) {
     drafts.delete(normalized)
+    flush()
     return
   }
   drafts.set(normalized, { html, text, attachments })
+  flush()
 }
 
 export function clearComposerDraft(key: string) {
   const normalized = String(key ?? '').trim()
   if (!normalized) return
   drafts.delete(normalized)
+  flush()
 }
 
 export function resetComposerDrafts() {
   drafts.clear()
+  flush()
 }
