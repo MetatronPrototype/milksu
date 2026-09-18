@@ -656,9 +656,13 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     if (!owner) return
     key = owner
     const snapshot = captureComposerDraft()
-    if (!snapshot.html && !snapshot.text.trim() && !snapshot.attachments.length) return
-    writeComposerDraft(key, snapshot)
-  }, [draft, pendingAttachments])
+    if (snapshot.html || snapshot.text.trim() || snapshot.attachments.length) {
+      writeComposerDraft(key, snapshot)
+    }
+    // 引用和草稿属于同一格，必须一起保存：否则切换会话后引用会丢
+    // （读者已复现：输入内容还在、引用却没了）。
+    writeComposerQuotes(key, quotesRef.current)
+  }, [draft, pendingAttachments, quotes])
 
   useEffect(() => {
     return () => {
