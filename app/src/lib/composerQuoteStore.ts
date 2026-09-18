@@ -102,8 +102,10 @@ export function writeComposerQuotes(key: string, quotes: readonly ComposerQuote[
     .filter(quote => String(quote?.id ?? '').trim() && String(quote?.text ?? '').trim())
     .map(quote => ({ id: String(quote.id), text: String(quote.text), sourceLabel: quote.sourceLabel }))
   if (!usable.length) {
-    quotesByKey.delete(normalized)
-    flush()
+    // 空写不等于删除。切换对话的路径会顺手写一次空数组（那时引用状态还没恢复），
+    // 若沿用草稿旧版的"空即删除"，读者的引用就会在切走的一瞬间被清掉
+    // （真机 beta.41 复现：有引用时切换对话，切回来引用没了、文字还在）。
+    // 真正要清空请显式调用 clearComposerQuotes（发送后就是那条路）。
     return
   }
   quotesByKey.set(normalized, usable)
