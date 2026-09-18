@@ -636,7 +636,6 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     const key = currentConversationKey()
     const previous = String(previousConversationKey.current ?? '')
     const switched = previous !== String(conversationKey ?? '')
-    if (switched && previous) persistComposerDraft(previous)
     if (switched || hydratedComposerKey.current !== key) {
       applyStoredComposerDraft(key ? readComposerDraft(key) : undefined)
       // Quotes come back with the draft, so switching away and back does not lose them.
