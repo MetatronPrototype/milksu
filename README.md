@@ -66,8 +66,8 @@ MilkSU 把 Coding、CTF、CVE 和实验室放进同一个桌面。界面是 Reac
       <p align="center"><sub>实验室题目包与本机靶机</sub></p>
     </td>
     <td width="50%">
-      <img src="docs/media/readme-settings.png" alt="MilkSU 安全工具设置">
-      <p align="center"><sub>设置里的本机安全工具</sub></p>
+      <img src="docs/media/readme-settings.png" alt="MilkSU 设置中的 MCP 与本机安全工具">
+      <p align="center"><sub>设置里的 MCP 与本机安全工具</sub></p>
     </td>
   </tr>
 </table>
