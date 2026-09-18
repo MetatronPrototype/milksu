@@ -9,8 +9,10 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   createModelSourceRouteProvider,
   createModelSourceStream,
+  modelSourceFailureMessage,
   modelSourceFallbackReason,
   normalizeModelSourceOrder,
+  selectModelSources,
 } from "./model-source-routing.js";
 
 test("dual-source route inherits a base URL accepted by the Pi runtime", async () => {
@@ -227,4 +229,82 @@ test("falls back on a TokenFlux account model entitlement failure before output"
   for await (const event of routed) events.push(event);
   assert.deepEqual(selected, ["account", "personal"]);
   assert.equal(events.at(-1).type, "done");
+});
+
+// The reported incident: the conversation chose custom-relay-deepseek/deepseek-flash, that relay
+// could not be resolved in the sidecar process, and the engine silently answered from the account
+// source with a different model id - a 502 from a service the user never picked.
+test("a custom relay is never served by the account source", () => {
+  const selection = selectModelSources({
+    requestedOrder: ["account", "personal"],
+    accountModel: { provider: "milksu-account", id: "deepseek/deepseek-flash" },
+    personalModel: undefined,
+    customRelay: true,
+  });
+  assert.deepEqual(selection.sources, []);
+  assert.equal(selection.failure.reason, "selected-source-unavailable");
+  assert.equal(selection.failure.hasAccount, true);
+});
+
+test("the conversation's own relay is used when it resolves", () => {
+  const personal = { provider: "custom-relay-deepseek", id: "deepseek-flash" };
+  const selection = selectModelSources({
+    requestedOrder: ["personal", "account"],
+    accountModel: { provider: "milksu-account", id: "deepseek/deepseek-flash" },
+    personalModel: personal,
+    customRelay: true,
+  });
+  assert.deepEqual(selection.sources, [{ id: "personal", model: personal }]);
+});
+
+test("an account-only turn keeps working for a provider the account can serve", () => {
+  // A built-in provider with no personal key is the documented account-quota case, not a fallback.
+  const selection = selectModelSources({
+    requestedOrder: ["account"],
+    accountModel: { provider: "milksu-account", id: "deepseek/deepseek-chat" },
+    personalModel: undefined,
+    customRelay: false,
+  });
+  assert.equal(selection.sources.length, 1);
+  assert.equal(selection.sources[0].id, "account");
+});
+
+test("nothing resolvable is a failure, never an empty success", () => {
+  const selection = selectModelSources({
+    requestedOrder: ["personal"],
+    accountModel: undefined,
+    personalModel: undefined,
+    customRelay: true,
+  });
+  assert.deepEqual(selection.sources, []);
+  assert.ok(selection.failure);
+});
+
+test("the failure message names the source, provider and model it tried", () => {
+  const text = modelSourceFailureMessage({
+    provider: "custom-relay-deepseek",
+    model: "deepseek-flash",
+    requestedOrder: ["personal"],
+    locale: "zh-CN",
+  });
+  assert.match(text, /模型调用失败/);
+  assert.match(text, /自有来源/);
+  assert.match(text, /custom-relay-deepseek/);
+  assert.match(text, /deepseek-flash/);
+  // The route must name the source that was chosen (personal), never present the account source
+  // as the one that ran.
+  assert.match(text, /^模型调用失败：自有来源 \//);
+  assert.doesNotMatch(text, /^模型调用失败：账号来源/);
+  assert.doesNotMatch(text, /TokenFlux/);
+});
+
+test("an account-source failure says so in English too", () => {
+  const text = modelSourceFailureMessage({
+    provider: "tokenflux",
+    model: "deepseek/deepseek-flash",
+    requestedOrder: ["account"],
+    locale: "en",
+  });
+  assert.match(text, /account source/);
+  assert.match(text, /tokenflux/);
 });

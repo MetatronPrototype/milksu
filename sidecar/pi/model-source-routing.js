@@ -19,6 +19,75 @@ export function normalizeModelSourceOrder(raw) {
   return result;
 }
 
+/**
+ * Decide which model sources may serve this turn.
+ *
+ * A configured relay is never served by the account source: the account cannot reach a relay the
+ * user set up, and mapping its model onto the account catalogue silently answers from a different
+ * service with a different model id. That is the reported incident - the picker said
+ * custom-relay-deepseek/deepseek-flash while the engine ran milksu-account/deepseek/deepseek-flash
+ * and the user got a 502 from a service they never picked. An unreachable chosen source is now a
+ * failure the reader can act on, not a substitution.
+ */
+export function selectModelSources({
+  requestedOrder,
+  accountModel,
+  personalModel,
+  customRelay,
+} = {}) {
+  const order = Array.isArray(requestedOrder) ? requestedOrder : [];
+  const accountAllowed = !customRelay;
+  const sources = [];
+  for (const id of order) {
+    if (id === accountSource) {
+      if (accountAllowed && accountModel) sources.push({ id, model: accountModel });
+      continue;
+    }
+    if (id === personalSource) {
+      if (personalModel) sources.push({ id, model: personalModel });
+    }
+  }
+  if (sources.length > 0) return { sources };
+  return {
+    sources: [],
+    failure: {
+      reason: "selected-source-unavailable",
+      requestedOrder: order,
+      accountAllowed,
+      hasAccount: Boolean(accountModel),
+      hasPersonal: Boolean(personalModel),
+    },
+  };
+}
+
+/** The reader has to see which source, provider and model actually failed. */
+export function modelSourceFailureMessage({
+  provider,
+  model,
+  requestedOrder,
+  locale,
+  detail,
+} = {}) {
+  const english = String(locale ?? "").toLowerCase().startsWith("en");
+  const order = Array.isArray(requestedOrder) ? requestedOrder : [];
+  const sourceLabel = order.includes(personalSource)
+    ? (english ? "personal source" : "自有来源")
+    : order.includes(accountSource)
+      ? (english ? "account source" : "账号来源")
+      : (english ? "unknown source" : "未知来源");
+  const route = [sourceLabel, String(provider ?? "").trim(), String(model ?? "").trim()]
+    .filter(Boolean)
+    .join(" / ");
+  const reason = english
+    ? "the model source chosen for this conversation is unavailable right now, and nothing was "
+      + "substituted (no account fallback, no global default model)"
+    : "这一轮所选模型来源当前不可用，且没有做任何替换（未回退账号来源、未使用全局默认模型）";
+  const tail = String(detail ?? "").trim();
+  return english
+    ? `Model call failed: ${route} → ${reason}.${tail ? ` ${tail}` : ""} Check the source settings, then retry.`
+    : `模型调用失败：${route} → ${reason}。${tail ? ` ${tail}` : ""}请检查该来源的设置后重试。`;
+}
+
 export function modelSourceFallbackReason(error) {
   const details = [
     error?.errorMessage,
