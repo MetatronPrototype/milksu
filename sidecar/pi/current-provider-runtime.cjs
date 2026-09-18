@@ -216,6 +216,18 @@ function customRelayDefinition({ name, baseUrl, apiKey }, provider, model, envir
   };
 }
 
+/**
+ * True when `provider` is a relay the user configured (a custom OpenAI-compatible endpoint),
+ * named either by the process environment or by the turn itself. The account source cannot serve
+ * such a provider, so it must never stand in for it.
+ */
+function isCustomRelayProvider(provider, environment = process.env, turnProvider) {
+  const id = String(provider ?? "").trim();
+  if (!id || providerRuntimeFor(id)) return false;
+  return id === String(environment.MILKSU_CUSTOM_PROVIDER_ID ?? "").trim()
+    || id === String(turnProvider?.id ?? "").trim();
+}
+
 // `turnProvider` is the relay the conversation itself selected, carried by the turn command.
 // The process environment only ever holds one relay (the one active when the sidecar was
 // spawned), so without it a conversation whose own choice differs could not resolve its
@@ -299,6 +311,7 @@ function currentProviderDefinition(
 
 module.exports = {
   currentProviderDefinition,
+  isCustomRelayProvider,
   providerRuntimeFor,
   runtimeTokenfluxModelCatalog,
   tokenfluxAccountModelAvailability,

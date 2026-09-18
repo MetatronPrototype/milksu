@@ -12,6 +12,7 @@ import currentProviderRuntime from "./current-provider-runtime.cjs";
 
 const {
   currentProviderDefinition,
+  isCustomRelayProvider,
   tokenfluxAccountModelAvailability,
   tokenfluxModelIDForProvider,
 } = currentProviderRuntime;
@@ -263,4 +264,18 @@ test("an incomplete turn payload still falls back to the process slot for the sa
   assert.ok(definition);
   assert.equal(definition.apiKey, "deepseek-env-secret");
   assert.equal(definition.baseUrl, "https://api.deepseek.env.test");
+});
+
+test("a configured relay is recognised from the turn or from the process slot", () => {
+  assert.equal(isCustomRelayProvider("custom-relay-deepseek", {}, {
+    id: "custom-relay-deepseek", key: "k", baseUrl: "https://relay.invalid/v1",
+  }), true);
+  assert.equal(isCustomRelayProvider("custom-relay-deepseek", {
+    MILKSU_CUSTOM_PROVIDER_ID: "custom-relay-deepseek",
+  }), true);
+  // The account source itself and built-in providers are not relays.
+  assert.equal(isCustomRelayProvider("tokenflux", {}, { id: "other" }), false);
+  assert.equal(isCustomRelayProvider("", {}, { id: "" }), false);
+  // A relay named by another turn's payload must not mark this provider.
+  assert.equal(isCustomRelayProvider("custom-relay-deepseek", {}, { id: "custom-relay-other" }), false);
 });

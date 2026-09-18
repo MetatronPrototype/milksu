@@ -161,7 +161,9 @@ import piWebResearchExtension from "./bridge-web-research.js";
 import currentProviderRuntime from "./current-provider-runtime.cjs";
 import {
   createModelSourceRouteProvider,
+  modelSourceFailureMessage,
   normalizeModelSourceOrder,
+  selectModelSources,
 } from "./model-source-routing.js";
 import {
   normalizeThinkingProfile,
@@ -178,6 +180,7 @@ import { withTokenFluxModelCompat } from "./tokenflux-model-compat.js";
 
 const {
   currentProviderDefinition,
+  isCustomRelayProvider,
   tokenfluxAccountModelAvailability,
   tokenfluxModelIDForProvider,
 } = currentProviderRuntime;
@@ -1038,6 +1041,7 @@ function configureRuntimeModel(
   sourceOrder,
   thinking,
   turnProvider,
+  locale,
 ) {
   sessionConfiguredProviders.set(conversationId, String(provider ?? "").trim());
   // The conversation's own relay rides with the turn: this process may have been spawned for a
@@ -1066,19 +1070,39 @@ function configureRuntimeModel(
       : undefined],
   ]);
   const requestedOrder = normalizeCommandModelSourceOrder(sourceOrder);
-  const sources = requestedOrder.flatMap(id => {
-    const sourceModel = available.get(id);
-    return sourceModel ? [{ id, model: sourceModel }] : [];
+  // A relay the user configured is never served by the account source, and an unreachable chosen
+  // source is a failure instead of a substitution: the incident showed the picker saying
+  // custom-relay-deepseek/deepseek-flash while the engine answered from milksu-account with a
+  // different model id. The global default model is never used to stand in for a conversation's
+  // own choice either.
+  const customRelay = isCustomRelayProvider(provider, process.env, turnProvider);
+  const selection = selectModelSources({
+    requestedOrder,
+    accountModel: account.model,
+    personalModel: available.get("personal"),
+    customRelay,
   });
-  if (sources.length === 0) {
-    if (account.unavailable && requestedOrder.includes("account")) {
-      throw new Error(
-        `账户分配模型不支持 ${account.id}，且没有可用的个人 API Key`,
-      );
-    }
-    sessionModelSources.set(conversationId, "personal");
-    return { provider, model };
+  if (selection.failure) {
+    const detail = account.unavailable && requestedOrder.includes("account")
+      ? `账户分配模型不支持 ${account.id}`
+      : "";
+    const message = modelSourceFailureMessage({
+      provider,
+      model,
+      requestedOrder,
+      locale,
+      detail,
+    });
+    emit(conversationId, "model_source_unavailable", {
+      provider,
+      model,
+      requestedOrder,
+      reason: selection.failure.reason,
+      message,
+    });
+    throw new Error(message);
   }
+  const sources = selection.sources;
   if (sources.length === 1) {
     sessionModelSources.set(conversationId, sources[0].id);
     if (
@@ -1766,6 +1790,7 @@ async function createSession(command) {
       command.modelSourceOrder,
       command.thinking,
       command.customProvider,
+      command.locale,
     );
     await setSessionModel(
       conversationId,
@@ -1918,6 +1943,7 @@ async function sendMessage(command) {
       command.modelSourceOrder,
       command.thinking,
       command.customProvider,
+      command.locale,
     );
     await setSessionModel(
       conversationId,
