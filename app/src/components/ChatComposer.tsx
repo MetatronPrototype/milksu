@@ -615,6 +615,17 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     conversationKeyRef.current = conversationKey
   }, [conversationKey])
 
+  // 草稿一变就写进 store（按当前会话 key）。原来只在“切走时保存上一份”，
+  // 那条路依赖比较基准的时序：基准一旦已经被更新成新会话，这一格就再也不会被写入，
+  // 用户切回去就是空的（已真机复现）。改成每次变化都写，切走/切回由 store 兜住。
+  // 用轻量防抖：挂载那一次的空状态不会抢先盖掉刚恢复出来的草稿。
+  useEffect(() => {
+    const key = currentConversationKey()
+    if (!key) return
+    const timer = window.setTimeout(() => persistComposerDraft(key), 250)
+    return () => window.clearTimeout(timer)
+  }, [draft, pendingAttachments])
+
   useEffect(() => {
     return () => persistComposerDraft()
   }, [])
