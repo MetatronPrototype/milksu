@@ -1052,8 +1052,14 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }
 
   function syncComposerInput() {
-    setDraft(readComposerText())
-    persistComposerDraft()
+    const nextText = readComposerText()
+    setDraft(nextText)
+    // 读者把输入框删空是明确意图：此时显式清掉这一格，避免下次切回来又冒出旧文字。
+    if (!nextText.trim() && !composerHtml().trim() && !pendingAttachmentsRef.current.length) {
+      clearComposerDraft(currentConversationKey())
+    } else {
+      persistComposerDraft()
+    }
     const token = messageEditor.current?.querySelector<HTMLElement>('[data-composer-scope-token]')
     const tokenValue = token?.dataset.composerScopeToken
     setScopeToken(tokenValue === 'browser-use' || tokenValue === 'computer-use' ? tokenValue : null)
