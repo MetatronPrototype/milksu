@@ -47,6 +47,8 @@ jobs:
           cache: npm
       - name: Install workspace dependencies
         run: npm ci
+      - name: Install the command line tools the sidecar tests look for
+        run: brew install fd ripgrep
       - name: Run sidecar, desktop and extension suites
         run: npm run test:sidecar
 
