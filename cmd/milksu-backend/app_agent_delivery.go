@@ -25,6 +25,9 @@ const (
 	agentDeliveryMaxRunes = 4000
 	agentDeliveryWindow   = 10 * time.Second
 	agentDeliveryBurst    = 5
+	// 每条会话的总出站预算：按"对话对"记账管不住"一个失控的会话同时灌多个目标"，
+	// 所以再加一道按来源合并计数的上限。超了就拒，并要求它向读者汇报，而不是换目标继续发。
+	agentDeliverySourceBurst = 12
 )
 
 type agentDeliveryOrigin struct {
@@ -257,11 +260,35 @@ func validateAgentDeliveryWithPolicy(
 // agentDeliveryLimiter keeps one conversation from flooding another (and from an
 // A -> B -> A loop).
 type agentDeliveryLimiter struct {
-	mu     sync.Mutex
-	recent map[string][]time.Time
+	mu       sync.Mutex
+	recent   map[string][]time.Time
+	sourceAt map[string][]time.Time
 }
 
-var agentDeliveryLimits = &agentDeliveryLimiter{recent: map[string][]time.Time{}}
+var agentDeliveryLimits = &agentDeliveryLimiter{
+	recent:   map[string][]time.Time{},
+	sourceAt: map[string][]time.Time{},
+}
+
+// allowSource 按来源（不区分目标）计数：一个会话无论发给谁，每分钟的量都有上限。
+func (limiter *agentDeliveryLimiter) allowSource(source string) bool {
+	now := time.Now()
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	key := strings.TrimSpace(source)
+	kept := make([]time.Time, 0, len(limiter.sourceAt[key]))
+	for _, at := range limiter.sourceAt[key] {
+		if now.Sub(at) < agentDeliveryWindow {
+			kept = append(kept, at)
+		}
+	}
+	if len(kept) >= agentDeliverySourceBurst {
+		limiter.sourceAt[key] = kept
+		return false
+	}
+	limiter.sourceAt[key] = append(kept, now)
+	return true
+}
 
 func (limiter *agentDeliveryLimiter) allow(source, target string) bool {
 	key := source + "->" + target
@@ -286,6 +313,7 @@ func (limiter *agentDeliveryLimiter) reset() {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
 	limiter.recent = map[string][]time.Time{}
+	limiter.sourceAt = map[string][]time.Time{}
 }
 
 // A reply inside the window looks like the two conversations are talking to each other
@@ -406,6 +434,13 @@ func (a *App) DeliverAgentMessage(input agentDeliveryInput) (map[string]any, err
 	if source != "" {
 		if remaining := agentDeliveryLoops.remaining(source, target, time.Now()); remaining > 0 {
 			reason := fmt.Sprintf("loop-circuit-open: %s left", formatDeliveryCooldown(remaining))
+			log.Printf("[delivery] refused reason=%q source=%s target=%s", reason, source, target)
+			return nil, errors.New(reason)
+		}
+		if !agentDeliveryLimits.allowSource(source) {
+			// 读得懂、能照做：告诉它"别换目标继续发，去汇报"，而不是只说一句 rate limited。
+			reason := "rate limited: this conversation is sending too many cross-conversation messages " +
+				"in a short window; report to the reader instead of retrying or switching targets"
 			log.Printf("[delivery] refused reason=%q source=%s target=%s", reason, source, target)
 			return nil, errors.New(reason)
 		}

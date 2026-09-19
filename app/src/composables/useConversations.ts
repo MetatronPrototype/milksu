@@ -1277,13 +1277,42 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
    * 没有这个回答它只能一直等到超时，最后报“未确认”。尽力而为：
    * 会话没了、或回答来晚了一步，都无害——工具早已返回了它自己的结果。
    */
+  /**
+   * 把投递被拒的原因翻译成 agent 能照做的句子。
+   *
+   * 现场：后端返回的是 "loop-circuit-open: 1m12s left"，但经 IPC 包装后只剩
+   * "Error invoking remote method 'milksu:invoke'"，agent 看不到原因，于是隔一分钟又撞一次
+   * （backend.log 里看得到）。所以这里把原因翻出来，并明说“不要立刻重试”。
+   */
+  function deliveryRefusalDetail(reason: unknown): string {
+    const raw = agentErrorMessage(reason)
+    const cooldown = raw.match(/loop-circuit-open:\s*([^"'\n)]+)/i)
+    if (cooldown) {
+      return `这两个对话在 60 秒内互相投递，已被环路熔断：还剩 ${cooldown[1].trim()}。`
+        + '不要立刻重试：把这件事汇报给读者，等冷却结束或由读者决定下一步。'
+    }
+    if (/rate limited/i.test(raw)) {
+      return '这条会话短时间内投递太多（或正同时发给多个目标），已被限流。'
+        + '不要立刻重试，也不要换目标继续发：把这件事汇报给读者。'
+    }
+    if (/not-allowlisted|not allowlisted/i.test(raw)) {
+      return '目标对话不在本会话的「可访问的对话」名单里，投递被拒。请让读者在设置里把它加上。'
+    }
+    if (/agent-collaboration-disabled/i.test(raw)) {
+      return '跨项目投递当前是关闭的，投递被拒。请让读者先打开设置里的「允许跨项目投递」。'
+    }
+    if (/target-not-found/i.test(raw)) {
+      return '目标对话不存在（可能已被删除），投递被拒。请告诉读者，不要重试。'
+    }
+    return `投递被拒：${raw}。不要立刻重试：把原因汇报给读者。`
+  }
+
   function settleAgentDelivery(
     sourceConversationId: string,
     requestId: string,
     status: 'delivered' | 'queued' | 'refused',
     detail = '',
-  ) {
-    const conversationId = String(sourceConversationId ?? '').trim()
+  ) {    const conversationId = String(sourceConversationId ?? '').trim()
     const id = String(requestId ?? '').trim()
     if (!conversationId || !id) return
     void invokeCommand('settle_agent_delivery', {
@@ -3474,8 +3503,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           origin: { conversationId: deliverySource },
           ...(deliveryRequest ? { requestId: deliveryRequest } : {}),
         }).catch(err => {
-          // 被拒绝必须说出来，否则发信方只能等到超时才知道。
-          settleAgentDelivery(deliverySource, deliveryRequest, 'refused', agentErrorMessage(err))
+          // 被拒绝必须说出来，而且要能读懂：原文只有 "Error invoking remote method …"，
+          // agent 只能瞎猜着重试（真机日志里就是隔一分钟又撞一次）。
+          settleAgentDelivery(deliverySource, deliveryRequest, 'refused', deliveryRefusalDetail(err))
         })
         return
       }
