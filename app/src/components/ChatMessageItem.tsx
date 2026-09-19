@@ -313,7 +313,9 @@ export default function ChatMessageItem({
   const [bodyExpanded, setBodyExpanded] = useState(false)
   const bodyContent = externalEnvelope?.body ?? message.content ?? ''
   const bodyLineCount = bodyContent ? bodyContent.split('\n').length : 0
-  const bodyIsLong = bodyLineCount > COLLAPSED_BODY_LINES
+  // 只折叠**右侧（发送侧）**的消息：读者自己发的、以及跨会话发出去/发进来的那种。
+  // 左边是我（assistant）的回复：那是读者要看的内容，永远不折。
+  const bodyIsLong = message.role === 'user' && bodyLineCount > COLLAPSED_BODY_LINES
   const collapsedBody = bodyContent.split('\n').slice(0, COLLAPSED_BODY_LINES).join('\n')
 
   useEffect(() => {
