@@ -188,16 +188,27 @@ export function isBlankComposerMarkup(html: string): boolean {
   return !String(html ?? '').replace(/<br\s*\/?>|<div>\s*<\/div>|&nbsp;|\s/gi, '').trim()
 }
 
-export function writeComposerDraft(key: string, draft: StoredComposerDraft) {
+export function writeComposerDraft(
+  key: string,
+  draft: StoredComposerDraft,
+  options?: { explicitClear?: boolean },
+) {
   const normalized = String(key ?? '').trim()
   if (!normalized) return
   let html = String(draft.html ?? '')
   let text = String(draft.text ?? '')
   const attachments = [...(draft.attachments ?? [])]
   if (isBlankComposerMarkup(html) && !text.trim() && !attachments.length) {
-    // 空写不再删除草稿：切换对话等路径会顺手写一次空内容，若沿用"空即删除"
-    // 的旧规则，读者的草稿就会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
-    // 真正要清空时请显式调用 clearComposerDraft。
+    // 空写有两种意图，必须分开：
+    // ① 意外空写（切换对话/卸载/水合前的空状态）⇒ 不写、也不删 ✓
+    //    否则读者的草稿会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
+    // ② 用户主动删除（移掉最后一个附件、清空输入框）⇒ 必须落盘，包括把这一格删掉 ✓
+    //    否则存储里留着旧值，重启后 store 重新 hydrate，删掉的东西又回来了
+    //    （真机 beta.50：昨天的引用/附件在重启后复活）。
+    if (!options?.explicitClear) return
+    drafts.delete(normalized)
+    lastSignature.delete(normalized)
+    scheduleFlush()
     return
   }
   const stored = drafts.get(normalized)

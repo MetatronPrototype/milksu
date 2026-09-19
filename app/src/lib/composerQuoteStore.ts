@@ -95,17 +95,27 @@ export function readComposerQuotes(key: string): ComposerQuote[] | undefined {
   return stored.map(quote => ({ ...quote }))
 }
 
-export function writeComposerQuotes(key: string, quotes: readonly ComposerQuote[]) {
+export function writeComposerQuotes(
+  key: string,
+  quotes: readonly ComposerQuote[],
+  options?: { explicitClear?: boolean },
+) {
   const normalized = normalize(key)
   if (!normalized) return
   const usable = (quotes ?? [])
     .filter(quote => String(quote?.id ?? '').trim() && String(quote?.text ?? '').trim())
     .map(quote => ({ id: String(quote.id), text: String(quote.text), sourceLabel: quote.sourceLabel }))
   if (!usable.length) {
-    // 空写不等于删除。切换对话的路径会顺手写一次空数组（那时引用状态还没恢复），
-    // 若沿用草稿旧版的"空即删除"，读者的引用就会在切走的一瞬间被清掉
-    // （真机 beta.41 复现：有引用时切换对话，切回来引用没了、文字还在）。
-    // 真正要清空请显式调用 clearComposerQuotes（发送后就是那条路）。
+    // 与草稿同一条规则：空写要分意图。
+    // ① 意外空写（切换对话时引用状态还没恢复）⇒ 不写也不删 ✓
+    //    否则读者的引用会在切走的一瞬间被清掉（真机 beta.41）。
+    // ② 用户主动删除（移掉最后一条引用）⇒ 必须落盘并删掉这一格 ✓
+    //    否则旧引用留在存储里，重启后复活（真机 beta.50）。
+    if (!options?.explicitClear) return
+    quotesByKey.delete(normalized)
+    quoteAt.delete(normalized)
+    quoteOrder.delete(normalized)
+    flush()
     return
   }
   quotesByKey.set(normalized, usable)

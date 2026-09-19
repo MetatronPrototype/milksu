@@ -34,6 +34,49 @@ async function freshStore() {
   return import('@/lib/composerDraftStore')
 }
 
+describe('an explicit clear really clears the stored draft', () => {
+  // 真机 beta.50：读者点掉最后一个附件之后，存储里还留着旧值，重启又回来了。
+  // 因为"空写不删"这条保护把"用户主动删除"也一起挡了。
+  it('removes the key for an explicit clear, but keeps protecting an accidental one', async () => {
+    const store = await freshStore()
+    const key = 'conversation-explicit'
+    store.writeComposerDraft(key, { html: '', text: '昨天写的话', attachments: [] })
+    store.flushComposerDraftsNow()
+    expect(store.readComposerDraft(key)?.text).toBe('昨天写的话')
+
+    // ① 意外空写（切换对话/卸载）：旧值必须留着
+    store.writeComposerDraft(key, { html: '', text: '', attachments: [] })
+    expect(store.readComposerDraft(key)?.text).toBe('昨天写的话')
+
+    // ② 用户主动删除：必须落盘，并且这一格要消失
+    store.writeComposerDraft(key, { html: '', text: '', attachments: [] }, { explicitClear: true })
+    store.flushComposerDraftsNow()
+    expect(store.readComposerDraft(key)).toBeUndefined()
+    expect(installStorageStub().getItem(STORAGE_KEY) ?? '').not.toContain('昨天写的话')
+
+    // 重新 hydrate（= 重启）也不能把它找回来
+    const restarted = await freshStore()
+    expect(restarted.readComposerDraft(key)).toBeUndefined()
+  })
+
+  // 用户场景：附件 + 文字 → 显式删除 → 重启后都不在。
+  it('does not resurrect a deleted attachment after a restart', async () => {
+    const store = await freshStore()
+    const key = 'conversation-attach'
+    const attachment = { id: 'a1', name: 'image.png', mediaType: 'image/png', size: 1, sha256: 'z' }
+    store.writeComposerDraft(key, { html: '', text: '', attachments: [attachment] })
+    store.flushComposerDraftsNow()
+    expect(store.readComposerDraft(key)?.attachments).toHaveLength(1)
+
+    // 读者点掉了最后一个附件 ⇒ 显式删除
+    store.writeComposerDraft(key, { html: '', text: '', attachments: [] }, { explicitClear: true })
+    store.flushComposerDraftsNow()
+
+    const restarted = await freshStore()
+    expect(restarted.readComposerDraft(key)).toBeUndefined()
+  })
+})
+
 describe('composer draft store', () => {
   beforeEach(() => {
     installStorageStub().clear()

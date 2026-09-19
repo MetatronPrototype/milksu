@@ -514,6 +514,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   const composerFrame = useRef<HTMLDivElement | null>(null)
   const messageEditor = useRef<HTMLDivElement | null>(null)
   const [pendingAttachments, setPendingAttachments] = useState<CodingAttachment[]>([])
+  // 读者主动删除（移掉最后一个附件 / 移掉最后一条引用）时的空内容必须落盘：
+  // "空写不删"那条保护只该挡住意外空写（切换会话、卸载、水合前），不该挡住用户的删除。
+  const explicitClearRef = useRef(false)
   const pendingAttachmentsRef = useRef<CodingAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [attachmentImporting, setAttachmentImporting] = useState(false)
@@ -664,11 +667,15 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     key = owner
     const snapshot = captureComposerDraft()
     if (snapshot.html || snapshot.text.trim() || snapshot.attachments.length) {
-      writeComposerDraft(key, snapshot)
+      writeComposerDraft(key, snapshot, { explicitClear: explicitClearRef.current })
+    } else if (explicitClearRef.current) {
+      // 内容为空但这是用户删出来的（例如删掉最后一个附件）⇒ 也要落盘，把这一格删掉。
+      writeComposerDraft(key, snapshot, { explicitClear: true })
     }
     // 引用和草稿属于同一格，必须一起保存：否则切换会话后引用会丢
     // （读者已复现：输入内容还在、引用却没了）。
-    writeComposerQuotes(key, quotesRef.current)
+    writeComposerQuotes(key, quotesRef.current, { explicitClear: explicitClearRef.current })
+    explicitClearRef.current = false
   }, [draft, pendingAttachments, quotes])
 
   useEffect(() => {
@@ -996,6 +1003,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   }
 
   function removeCodingAttachment(attachment: CodingAttachment) {
+    // 用户主动移除附件：这可能让内容变成"空"，那种空必须落盘。
+    explicitClearRef.current = true
     const key = attachmentKey(attachment)
     setPendingAttachments(current => {
       const next = current.filter(value => value.id !== attachment.id || value.name !== attachment.name)
@@ -1694,7 +1703,11 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
           <form className="chat-composer__island" onSubmit={event => { event.preventDefault(); submit() }}>
             <ComposerQuoteList
               quotes={quotes}
-              onRemove={id => applyQuotes(quotesRef.current.filter(quote => quote.id !== id))}
+              onRemove={id => {
+                // 用户主动移除引用：同上，删掉最后一条时也要落盘。
+                explicitClearRef.current = true
+                applyQuotes(quotesRef.current.filter(quote => quote.id !== id))
+              }}
             />
             {pendingAttachments.length ? (
               <div className="flex flex-wrap gap-2 px-1 pb-1" aria-label={t('待发送附件', 'Attachments to send')}>
