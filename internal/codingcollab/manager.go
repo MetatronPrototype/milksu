@@ -170,11 +170,15 @@ func (m *Manager) Prepare(
 		return Status{}, err
 	}
 	if found && current.Phase != phaseCompleted {
-		if current.Workspace != repository {
-			return Status{}, errors.New(
-				"this Coding task already owns collaboration worktrees for another repository",
-			)
+		if !sameWorkspace(current.Workspace, repository) {
+			// 这条会话记录的协作属于另一个仓库（会话换过项目、目录被搬走…）。旧行为是直接报错，
+			// 于是引擎永远起不来（用户在 ReNEW 上撞到过：每条消息都回 "Agent 未启动"）。
+			// 现在把旧协作收掉，接着为当前工作区重新准备 —— 老会话升级后会自己恢复。
+			m.abandonStaleLocked(ctx, current)
+			found = false
 		}
+	}
+	if found && current.Phase != phaseCompleted {
 		if len(current.Worktrees) != writers {
 			return Status{}, errors.New(
 				"finish the current Coding collaboration before changing writer count",
@@ -281,6 +285,40 @@ func (m *Manager) Prepare(
 	return m.refreshLocked(ctx, next)
 }
 
+// sameWorkspace 比较两个工作区是否是同一个目录。
+//
+// 两边都做一次解析（符号链接、/tmp 与 /private/tmp 这类写法差异都会被抹平），解析不了就退回
+// 字符串比较。现场的毛病就是：清单里存的是当初那次请求的写法，而后续请求解析后是另一种写法，
+// 于是同一条会话永远被判成"属于另一个仓库"，谁都启动不了（用户在 ReNEW 上撞过）。
+func sameWorkspace(a, b string) bool {
+	left := strings.TrimSpace(a)
+	right := strings.TrimSpace(b)
+	if left == right {
+		return true
+	}
+	if left == "" || right == "" {
+		return false
+	}
+	resolvedLeft, leftErr := resolveDirectory(left)
+	resolvedRight, rightErr := resolveDirectory(right)
+	if leftErr != nil || rightErr != nil {
+		return filepath.Clean(left) == filepath.Clean(right)
+	}
+	return resolvedLeft == resolvedRight
+}
+
+// abandonStaleLocked 收掉一条属于别的仓库的协作：尽力移除旧工作树并删掉清单。
+// 清理失败不阻塞：自愈的目的是让当前工作区能起来，旧仓库里残留的分支只是垃圾，不是错误。
+func (m *Manager) abandonStaleLocked(ctx context.Context, current manifest) {
+	for _, worktree := range current.Worktrees {
+		if strings.TrimSpace(worktree.Path) == "" {
+			continue
+		}
+		_, _ = m.git(ctx, current.Workspace, "worktree", "remove", "--force", worktree.Path)
+	}
+	_ = os.RemoveAll(m.taskDirectory(current.ConversationID))
+}
+
 func (m *Manager) Get(
 	ctx context.Context,
 	conversationID,
@@ -312,10 +350,16 @@ func (m *Manager) Get(
 		if resolveErr != nil {
 			return Status{}, resolveErr
 		}
-		if resolvedWorkspace != current.Workspace {
-			return Status{}, errors.New(
-				"the Coding collaboration belongs to a different repository",
-			)
+		if !sameWorkspace(resolvedWorkspace, current.Workspace) {
+			// 清单属于另一个工作区：不再报错卡住，而是当作这里没有活动协作，让正常流程为
+			// 当前工作区重新准备（老会话升级后能自己恢复）。
+			return Status{
+				SchemaVersion:  SchemaVersion,
+				ConversationID: conversationID,
+				Workspace:      resolvedWorkspace,
+				Phase:          phaseCompleted,
+				Worktrees:      []Worktree{},
+			}, nil
 		}
 	}
 	if current.Phase == phaseCompleted {
@@ -347,10 +391,9 @@ func (m *Manager) Descriptor(
 	if err != nil {
 		return nil, err
 	}
-	if resolvedWorkspace != current.Workspace {
-		return nil, errors.New(
-			"the active Coding collaboration belongs to a different repository",
-		)
+	if !sameWorkspace(resolvedWorkspace, current.Workspace) {
+		// 清单属于另一个工作区：当作没有活动协作，让上层重新准备（不报错）。
+		return nil, nil
 	}
 	status, err := m.refreshLocked(ctx, current)
 	if err != nil {
@@ -409,10 +452,9 @@ func (m *Manager) Finish(
 	if err != nil {
 		return Status{}, err
 	}
-	if resolvedWorkspace != current.Workspace {
-		return Status{}, errors.New(
-			"the Coding collaboration belongs to a different repository",
-		)
+	if !sameWorkspace(resolvedWorkspace, current.Workspace) {
+		// 清单属于另一个工作区：这条会话没有可收尾的协作。
+		return Status{}, errors.New("there is no active Coding collaboration to finish")
 	}
 	status, err := m.refreshLocked(ctx, current)
 	if err != nil {

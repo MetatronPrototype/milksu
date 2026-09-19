@@ -541,8 +541,10 @@ func TestManagerDescriptorIsConversationAndRepositoryBound(t *testing.T) {
 		descriptor.Worktrees[0].Path != status.Worktrees[0].Path {
 		t.Fatalf("unexpected descriptor: %+v", descriptor)
 	}
-	if _, err := manager.Descriptor(ctx, "bound-task", otherRepository); err == nil {
-		t.Fatal("expected repository-bound descriptor rejection")
+	if descriptor, err := manager.Descriptor(ctx, "bound-task", otherRepository); err != nil {
+		t.Fatalf("a descriptor for another repository must self-heal, not fail: %v", err)
+	} else if descriptor != nil {
+		t.Fatalf("expected no descriptor for another repository, got %+v", descriptor)
 	}
 	other, err := manager.Descriptor(ctx, "another-task", repository)
 	if err != nil {
@@ -726,4 +728,77 @@ func gitAllowFailure(t *testing.T, repository string, arguments ...string) gitRe
 	command := exec.Command("git", append([]string{"-c", "commit.gpgsign=false", "-C", repository}, arguments...)...)
 	output, err := command.CombinedOutput()
 	return gitResult{success: err == nil, output: strings.TrimSpace(string(output))}
+}
+
+// 现场缺陷：清单里记的工作区与后一次请求解析出来的工作区不同（会话换过项目，或目录被搬走），
+// 同一条会话就被判成"属于另一个仓库"，引擎于是永远起不来（用户在 ReNEW 上撞到过：每条消息都回
+// "Agent 未启动"）。修好之后不再报错，而是当作这里没有活动协作，让上层为当前工作区重新准备。
+func TestManagerSelfHealsWhenTheRecordedRepositoryIsNotTheRequestedOne(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	manager, err := New(filepath.Join(t.TempDir(), "collaboration"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := newRepository(t)
+	if _, err := manager.Prepare(ctx, "stale-repository", repository, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// 同一条会话现在请求的是另一个仓库：不能报错卡死。
+	other := newRepository(t)
+	status, err := manager.Get(ctx, "stale-repository", other)
+	if err != nil {
+		t.Fatalf("a collaboration for another repository must not block this one: %v", err)
+	}
+	if status.Phase != phaseCompleted {
+		t.Fatalf("phase = %q, want %q", status.Phase, phaseCompleted)
+	}
+	if status.Workspace != canonicalOrFail(t, other) {
+		t.Fatalf("workspace = %q, want %q", status.Workspace, canonicalOrFail(t, other))
+	}
+
+	// Descriptor 也必须自愈（返回“没有活动协作”），而不是报错。
+	descriptor, err := manager.Descriptor(ctx, "stale-repository", other)
+	if err != nil {
+		t.Fatalf("descriptor must self-heal instead of failing: %v", err)
+	}
+	if descriptor != nil {
+		t.Fatalf("descriptor = %#v, want nil", descriptor)
+	}
+
+	// 同一条会话仍然能正常使用（上层会为当前工作区重新准备）。
+	if _, err := manager.Prepare(ctx, "stale-repository", other, 1); err != nil {
+		t.Fatalf("prepare after self-heal: %v", err)
+	}
+}
+
+// 写法不同但指向同一个目录（符号链接、/tmp 与 /private/tmp 这类）不是“换了仓库”，
+// 否则同一条会话会因为写法差异而永远启不来。
+func TestSameWorkspaceIgnoresHowThePathIsSpelled(t *testing.T) {
+	t.Parallel()
+	repository := newRepository(t)
+	linkParent := t.TempDir()
+	link := filepath.Join(linkParent, "linked-repository")
+	if err := os.Symlink(repository, link); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	if !sameWorkspace(link, repository) {
+		t.Fatalf("sameWorkspace(%q, %q) = false, want true", link, repository)
+	}
+	if !sameWorkspace(repository+"/", repository) {
+		t.Fatalf("a trailing slash must not make it another repository")
+	}
+	if sameWorkspace(repository, newRepository(t)) {
+		t.Fatalf("two different repositories must not compare equal")
+	}
+}
+
+func canonicalOrFail(t *testing.T, value string) string {
+	t.Helper()
+	resolved, err := resolveDirectory(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
