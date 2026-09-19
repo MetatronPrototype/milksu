@@ -15,6 +15,9 @@ import AgentPixelLoader from '@/components/AgentPixelLoader'
 import MarkdownContent from '@/components/MarkdownContent'
 import { formatDemoElapsed, messageSourceChips } from '@/lib/agentConversation'
 import { redactProviderCredentials } from '@/lib/redaction'
+import {
+  parseExternalMessageEnvelope,
+} from '@/lib/externalMessageEnvelope'
 import { isBlankAssistantMessage } from '@/lib/chatActivity'
 import {
   askOtherChoiceId,
@@ -24,6 +27,9 @@ import {
 } from '@/lib/agentAsk'
 import { toolBudgetToolName } from '@/lib/toolBudget'
 import { assessApprovalRequest, type DestructiveAssessment, type DestructiveFacts } from '@/lib/destructiveTarget'
+
+/** 过长的消息（派单清单、长回复）默认只显示这么多行，其余折叠，点一下展开。 */
+const COLLAPSED_BODY_LINES = 15
 import { useT } from '@/hooks/useUiLocale'
 import type { CodingAttachment, CodingAttachmentPreview, Message } from '@/types'
 
@@ -296,6 +302,19 @@ export default function ChatMessageItem({
 
   const timeLabel = message.role === 'user' ? userMessageTime(message.timestamp) : ''
   const sources = message.role === 'assistant' ? messageSourceChips(message.content) : []
+  // 跨会话消息的"机器信封"只在渲染时剥掉（前两行是给模型看的）：原始内容一个字节不改，
+  // 模型照样收到完整信封，而气泡上方换成一行人类可读的来源标签。
+  const externalEnvelope = useMemo(
+    () => (message.role === 'user' ? parseExternalMessageEnvelope(message.content ?? '') : null),
+    [message.role, message.content],
+  )
+  // 过长的消息（派单清单、长回复）默认只展开前 15 行，点一下看全文：正文保持整洁，
+  // 也不丢任何内容（折叠只影响渲染）。
+  const [bodyExpanded, setBodyExpanded] = useState(false)
+  const bodyContent = externalEnvelope?.body ?? message.content ?? ''
+  const bodyLineCount = bodyContent ? bodyContent.split('\n').length : 0
+  const bodyIsLong = bodyLineCount > COLLAPSED_BODY_LINES
+  const collapsedBody = bodyContent.split('\n').slice(0, COLLAPSED_BODY_LINES).join('\n')
 
   useEffect(() => {
     const running = message.thinkingStatus === 'running'
@@ -717,6 +736,23 @@ export default function ChatMessageItem({
           </div>
         </div>
       ) : null}
+      {externalEnvelope ? (
+        <p
+          className="mb-1 text-right text-caption opacity-60"
+          data-testid="external-message-origin"
+        >
+          {externalEnvelope
+            ? (externalEnvelope.kind
+                ? t(
+                    `由「${externalEnvelope.source}」发来 · ${externalEnvelope.kind}`,
+                    `From "${externalEnvelope.source}" · ${externalEnvelope.kind}`,
+                  )
+                : t(
+                    `由「${externalEnvelope.source}」发来`,
+                    `From "${externalEnvelope.source}"`,
+                  ))
+            : ''}        </p>
+      ) : null}
       {showBubble && !editing ? (
         <div
           className={`min-w-0 overflow-x-auto break-words text-control leading-7${message.role === 'user' ? ' agent-user' : ' agent-answer'}`}
@@ -759,10 +795,23 @@ export default function ChatMessageItem({
           ) : null}
           {message.content ? (
             <MarkdownContent
-              content={message.content}
+              content={bodyIsLong && !bodyExpanded && !replyTicking ? collapsedBody : bodyContent}
               compact={message.role === 'user'}
               streaming={replyTicking}
             />
+          ) : null}
+          {bodyIsLong && !editing ? (
+            <button
+              type="button"
+              className="mt-2 text-caption opacity-60 transition-opacity hover:opacity-100"
+              data-testid="message-body-toggle"
+              aria-expanded={bodyExpanded}
+              onClick={() => setBodyExpanded(value => !value)}
+            >
+              {bodyExpanded
+                ? t('收起', 'Collapse')
+                : t(`展开全部（共 ${bodyLineCount} 行）`, `Show all (${bodyLineCount} lines)`)}
+            </button>
           ) : null}
           {sources.length ? (
             <div className="agent-sources">

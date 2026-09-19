@@ -1288,23 +1288,40 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     const raw = agentErrorMessage(reason)
     const cooldown = raw.match(/loop-circuit-open:\s*([^"'\n)]+)/i)
     if (cooldown) {
-      return `这两个对话在 60 秒内互相投递，已被环路熔断：还剩 ${cooldown[1].trim()}。`
-        + '不要立刻重试：把这件事汇报给读者，等冷却结束或由读者决定下一步。'
+      const left = cooldown[1].trim()
+      return t(
+        `这两个对话在 60 秒内互相投递，已被环路熔断：还剩 ${left}。不要立刻重试：把这件事汇报给读者，等冷却结束或由读者决定下一步。`,
+        `These two conversations were delivering to each other within 60 seconds, so the loop breaker is open: ${left} left. Do not retry now: report this to the reader and wait for the cooldown.`,
+      )
     }
     if (/rate limited/i.test(raw)) {
-      return '这条会话短时间内投递太多（或正同时发给多个目标），已被限流。'
-        + '不要立刻重试，也不要换目标继续发：把这件事汇报给读者。'
+      return t(
+        '这条会话短时间内投递太多（或正同时发给多个目标），已被限流。不要立刻重试，也不要换目标继续发：把这件事汇报给读者。',
+        'This conversation is sending too many deliveries in a short window (or is flooding several targets at once), so it was rate limited. Do not retry and do not switch targets: report this to the reader.',
+      )
     }
     if (/not-allowlisted|not allowlisted/i.test(raw)) {
-      return '目标对话不在本会话的「可访问的对话」名单里，投递被拒。请让读者在设置里把它加上。'
+      return t(
+        '目标对话不在本会话的「可访问的对话」名单里，投递被拒。请让读者在设置里把它加上。',
+        'The target is not in this conversation\'s reachable list, so the delivery was refused. Ask the reader to add it in Settings.',
+      )
     }
     if (/agent-collaboration-disabled/i.test(raw)) {
-      return '跨项目投递当前是关闭的，投递被拒。请让读者先打开设置里的「允许跨项目投递」。'
+      return t(
+        '跨项目投递当前是关闭的，投递被拒。请让读者先打开设置里的「允许跨项目投递」。',
+        'Cross-project delivery is off, so the delivery was refused. Ask the reader to turn on "Allow cross-project delivery" in Settings.',
+      )
     }
     if (/target-not-found/i.test(raw)) {
-      return '目标对话不存在（可能已被删除），投递被拒。请告诉读者，不要重试。'
+      return t(
+        '目标对话不存在（可能已被删除），投递被拒。请告诉读者，不要重试。',
+        'The target conversation does not exist (it may have been deleted), so the delivery was refused. Tell the reader; do not retry.',
+      )
     }
-    return `投递被拒：${raw}。不要立刻重试：把原因汇报给读者。`
+    return t(
+      `投递被拒：${raw}。不要立刻重试：把原因汇报给读者。`,
+      `Delivery refused: ${raw}. Do not retry now: report the reason to the reader.`,
+    )
   }
 
   function settleAgentDelivery(
