@@ -468,6 +468,8 @@ export interface AppSettings {
   disabled_skills?: string[]
   /** Project group keys pinned as a whole (survives a restart). */
   pinned_projects?: string[]
+  /** 读者在设置里标记为「agent 不可改写」的绝对路径（默认空；只拦写，不拦读）。 */
+  protected_folders?: string[]
   enabled_optional_skills?: string[]
   worker_provider?: string
   worker_model?: string
@@ -565,6 +567,10 @@ export function withAppSettingsDefaults(value: AppSettings): AppSettings {
     disabled_skills: [...new Set((value.disabled_skills ?? [])
       .map(name => String(name).trim())
       .filter(name => /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(name)))],
+    // 受限文件夹：只收绝对路径（相对路径在 agent 的 shell 里没有确定含义），去空、去重。
+    protected_folders: [...new Set((value.protected_folders ?? [])
+      .map(path => String(path).trim().replace(/\/+$/, ''))
+      .filter(path => path.startsWith('/') && path !== '/'))],
     enabled_optional_skills: [...new Set((value.enabled_optional_skills ?? [])
       .map(name => String(name).trim())
       .filter(name => name === 'ghidra-rpc' || name === 'jadx'))],

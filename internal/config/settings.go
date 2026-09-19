@@ -156,7 +156,11 @@ type AppSettings struct {
 	DisabledSkills     []string                  `json:"disabled_skills"`
 	// Project pins live in the settings so they survive a restart. An older settings file
 	// simply has no value here, which reads as an empty list.
-	PinnedProjects          []string `json:"pinned_projects,omitempty"`
+	PinnedProjects []string `json:"pinned_projects,omitempty"`
+	// ProtectedFolders are absolute paths the reader marked as "agents may not write".
+	// Empty by default: it only ever narrows what an agent may write. Reads are unaffected;
+	// the sidecar blocks writes the paths in this list and nothing else.
+	ProtectedFolders        []string `json:"protected_folders,omitempty"`
 	EnabledOptionalSkills   []string `json:"enabled_optional_skills,omitempty"`
 	WorkerProvider          string   `json:"worker_provider,omitempty"`
 	WorkerModel             string   `json:"worker_model,omitempty"`

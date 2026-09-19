@@ -87,10 +87,22 @@ export function mergeProtectedRoots(...lists) {
  * execution-injection point, so it is never writable - not even inside the session's own
  * tree. The session's own workspace is otherwise always writable.
  */
-export function protectedWriteViolation(target, { roots = [], ownWorkspace } = {}) {
+export function protectedWriteViolation(
+  target,
+  { roots = [], enforcedRoots = [], ownWorkspace } = {},
+) {
   const candidate = normalizePath(target);
   if (!candidate) return null;
   if (GIT_HOOKS_SHAPE.test(candidate)) return { path: candidate, label: "git-hooks" };
+  // 读者在设置里指定的受限文件夹优先于「会话自己的 workspace 永远可写」那条例外：
+  // 他要保护的往往正是自己项目里的某个目录。内置清单不走这一支（它们的作用域仍按原来的
+  // 顺序判定，否则主目录那条会把整个工作区都盖住）。
+  let enforced = null;
+  for (const root of enforcedRoots) {
+    if (!isInside(candidate, root.path)) continue;
+    if (!enforced || root.path.length > enforced.path.length) enforced = root;
+  }
+  if (enforced) return { path: candidate, label: enforced.label };
   const workspace = normalizePath(ownWorkspace);
   if (workspace && isInside(candidate, workspace)) return null;
   // Name the narrowest root that matched, whatever order the host sent them in.
@@ -241,7 +253,10 @@ function expandShellTarget(target, env = process.env) {
  * deliberately obfuscated command can slip past - but it must never be a coin flip, and it
  * must never block a read.
  */
-export function protectedCommandViolation(command, { roots = [], ownWorkspace, cwd, env = process.env } = {}) {
+export function protectedCommandViolation(
+  command,
+  { roots = [], enforcedRoots = [], ownWorkspace, cwd, env = process.env } = {},
+) {
   const text = String(command ?? "");
   if (!text.trim()) return null;
   const base = String(cwd ?? ownWorkspace ?? env.HOME ?? "").trim();
@@ -253,7 +268,7 @@ export function protectedCommandViolation(command, { roots = [], ownWorkspace, c
       resolved = base ? join(base, resolved) : resolved;
     }
     if (!isAbsolute(resolved)) continue;
-    const violation = protectedWriteViolation(resolved, { roots, ownWorkspace });
+    const violation = protectedWriteViolation(resolved, { roots, enforcedRoots, ownWorkspace });
     if (violation) return violation;
   }
   return null;

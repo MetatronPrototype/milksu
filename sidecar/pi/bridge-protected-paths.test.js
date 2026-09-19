@@ -189,3 +189,19 @@ test("merging roots drops duplicates and names the narrowest match", () => {
     { path: "/b", label: "wide" },
   ])
 });
+
+// 读者在设置里指定的受限文件夹：即使它就在会话自己的工作区里，也照样拦写。
+// 这是这个功能的关键差别：内置清单在工作区例外之后判定，而读者指定的清单在它之前。
+test("a folder the reader protected is refused even inside the session's own workspace", () => {
+  const enforcedRoots = [{ path: "/Users/me/project/private", label: "user-protected-folder" }];
+  const workspace = "/Users/me/project";
+  const direct = protectedWriteViolation("/Users/me/project/private/notes.md", { enforcedRoots, ownWorkspace: workspace });
+  assert.equal(direct?.label, "user-protected-folder");
+  assert.equal(direct?.path, "/Users/me/project/private/notes.md");
+  const command = protectedCommandViolation("rm -rf private/notes.md", { enforcedRoots, ownWorkspace: workspace, cwd: workspace });
+  assert.equal(command?.label, "user-protected-folder");
+  // 同一个工作区里没有被指定的目录照常可写
+  assert.equal(protectedWriteViolation("/Users/me/project/src/app.ts", { enforcedRoots, ownWorkspace: workspace }), null);
+  // 没有指定清单时，工作区里的一切照旧（默认行为不变）
+  assert.equal(protectedWriteViolation("/Users/me/project/private/notes.md", { ownWorkspace: workspace }), null);
+});
