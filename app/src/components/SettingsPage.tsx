@@ -100,6 +100,7 @@ import ExternalEditorIcon from '@/components/ExternalEditorIcon'
 import { buildDiagnosticText, isDebugMode, setDebugMode } from '@/lib/debugMode'
 import { explainModelVerificationFailure } from '@/lib/tokenFluxError'
 import { applyUiLocale, normalizeUiLocale, t } from '@/lib/uiLocale'
+import { readProtectProjectPaths, writeProtectProjectPaths } from '@/lib/approvalGuardsPreference'
 import {
   applyUiEmphasis,
   normalizeUiEmphasisPreset,
@@ -406,6 +407,8 @@ export default function SettingsPage({
   // 所以不会被设置页上一份没写完的草稿挡住（后端也是这么设计的）。
   const [collaborationSaving, setCollaborationSaving] = useState(false)
   const [collaborationError, setCollaborationError] = useState('')
+  // 审批护栏的本机偏好：默认开启（与以前行为一致），关掉后可以批准删除自己项目里的文件。
+  const [protectProjectPaths, setProtectProjectPaths] = useState(() => readProtectProjectPaths())
   async function setAgentCollaborationEnabled(value: boolean) {
     const current = state.working
     if (!current || collaborationSaving) return
@@ -885,6 +888,24 @@ export default function SettingsPage({
                       aria-label={t('允许跨项目投递', 'Allow cross-project delivery')}
                       disabled={collaborationSaving}
                       onCheckedChange={value => void setAgentCollaborationEnabled(Boolean(value))}
+                    />
+                  )}
+                />
+                <SettingsRow
+                  label={t('同时保护我的项目目录（maiRecord 等）', 'Also protect my own project folders (maiRecord, …)')}
+                  description={t(
+                    '默认开启。开启时，你自己的项目目录（maiRecord 等）在删除审批里属于「受保护」，只能拒绝。关掉后你可以批准删除自己项目里的文件；系统目录（用户主目录、~/Library、Documents、Desktop、runtime-data、构建缓存等）永远受保护，不受这个开关影响。',
+                    'On by default. While on, your own project folders (maiRecord, …) count as protected in a delete approval, so it can only be denied. Turn it off to approve deleting files inside your own projects; system locations (your home directory, ~/Library, Documents, Desktop, runtime-data, build caches) stay protected either way.',
+                  )}
+                  trailing={(
+                    <Switch
+                      checked={protectProjectPaths}
+                      aria-label={t('同时保护我的项目目录', 'Also protect my own project folders')}
+                      onCheckedChange={value => {
+                        const next = Boolean(value)
+                        setProtectProjectPaths(next)
+                        writeProtectProjectPaths(next)
+                      }}
                     />
                   )}
                 />
