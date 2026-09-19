@@ -68,12 +68,48 @@ describe('an explicit clear really clears the stored draft', () => {
     store.flushComposerDraftsNow()
     expect(store.readComposerDraft(key)?.attachments).toHaveLength(1)
 
-    // 读者点掉了最后一个附件 ⇒ 显式删除
+    // 读者点掉了最后一个附件 ⇒ 显式删除。这里断言**存储本身**不再含旧正文/旧附件名，
+    // 而不只是看 store 的读接口（只看读接口的话，修前也会"通过"，等于没锁住）。
+    store.writeComposerDraft(key, { html: '', text: '昨天的正文', attachments: [attachment] })
+    store.flushComposerDraftsNow()
     store.writeComposerDraft(key, { html: '', text: '', attachments: [] }, { explicitClear: true })
     store.flushComposerDraftsNow()
 
+    const raw = installStorageStub().getItem(STORAGE_KEY) ?? ''
+    expect(raw).not.toContain('昨天的正文')
+    expect(raw).not.toContain('image.png')
+
     const restarted = await freshStore()
     expect(restarted.readComposerDraft(key)).toBeUndefined()
+  })
+})
+
+describe('clearing the body covers the same intent', () => {
+  // 装机线的输入回调在"读者把正文删空且没有附件"时走 clearComposerDraft（显式清空）。
+  // 这里锁住那条路的本意：键消失、且落盘，重启不再冒出来。
+  it('removes the key when the body is cleared', async () => {
+    const store = await freshStore()
+    const key = 'conversation-body-cleared'
+    store.writeComposerDraft(key, { html: '', text: '打了一半又删掉', attachments: [] })
+    store.flushComposerDraftsNow()
+    expect(store.readComposerDraft(key)?.text).toBe('打了一半又删掉')
+
+    store.clearComposerDraft(key)
+    store.flushComposerDraftsNow()
+    expect(installStorageStub().getItem(STORAGE_KEY) ?? '').not.toContain('打了一半又删掉')
+    const restarted = await freshStore()
+    expect(restarted.readComposerDraft(key)).toBeUndefined()
+  })
+
+  // 同时锁住反面：切换会话造成的空写，旧值必须仍在。
+  it('still keeps the old value for an empty write that is not a deletion', async () => {
+    const store = await freshStore()
+    const key = 'conversation-switched-away'
+    store.writeComposerDraft(key, { html: '', text: '切走前的正文', attachments: [] })
+    store.flushComposerDraftsNow()
+    store.writeComposerDraft(key, { html: '', text: '', attachments: [] })
+    store.flushComposerDraftsNow()
+    expect(store.readComposerDraft(key)?.text).toBe('切走前的正文')
   })
 })
 
