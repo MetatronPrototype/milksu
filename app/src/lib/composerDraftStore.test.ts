@@ -52,6 +52,8 @@ describe('composer draft store', () => {
   it('survives a restart because the draft is written to storage', async () => {
     const first = await freshStore()
     first.writeComposerDraft('conversation-a', { html: '', text: '崩溃前的草稿', attachments: [] })
+    // 落盘现在是防抖的（避免每次按键都写盘）：要"立刻落盘"的测试自己显式喊一次。
+    first.flushComposerDraftsNow()
     expect(installStorageStub().getItem(STORAGE_KEY)).toContain('崩溃前的草稿')
 
     // 重新加载模块 = 应用重启（内存 Map 清空），草稿应从落盘内容恢复。
@@ -81,6 +83,8 @@ describe('composer draft store', () => {
         attachments: [],
       })
     }
+    // 淘汰发生在落盘时（写入现在是防抖的），所以先显式落一次盘。
+    store.flushComposerDraftsNow()
     // 最早写的那些应先被淘汰，最近写的必须还在
     expect(store.readComposerDraft('conversation-0')).toBeUndefined()
     expect(store.readComposerDraft('conversation-4')).toBeUndefined()
