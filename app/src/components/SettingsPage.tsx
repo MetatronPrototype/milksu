@@ -73,6 +73,7 @@ import SearchableModelPicker from '@/components/SearchableModelPicker'
 import { annotateModelFailures, type SearchableModelGroup } from '@/lib/modelPickerSearch'
 import VulnerabilityIntelSettingsPanel from '@/components/VulnerabilityIntelSettingsPanel'
 import SettingsMCPPanel from '@/components/SettingsMCPPanel'
+import { DeliveryLoopLevelSelect } from '@/components/DeliveryLoopLevelSelect'
 import EvalSettingsPanel from '@/components/EvalSettingsPanel'
 import LabSettingsPanel from '@/components/LabSettingsPanel'
 import PluginSettingsPanel from '@/components/PluginSettingsPanel'
@@ -124,6 +125,7 @@ import {
   resolveModelThinking,
 } from '@/lib/modelThinking'
 import { resolveModelContextWindow } from '@/lib/knownContextWindow'
+import { withDeliveryLoopLevel, type DeliveryLoopLevel } from '@/lib/deliveryLoopLevel'
 import type { ResolvedThemeMode } from '@/lib/themeMode'
 import { useT } from '@/hooks/useUiLocale'
 import {
@@ -430,13 +432,38 @@ export default function SettingsPage({
     })
     void store.save()
   }
+  // 熔断档位：与开关走同一条保存通道（后端有封印校验，不能直接改 settings.json）。
+  async function setAgentCollaborationLoopLevel(level: DeliveryLoopLevel) {
+    const current = state.working
+    if (!current || collaborationSaving) return
+    const next = withDeliveryLoopLevel({
+      allow_cross_conversation: current.agent_collaboration?.allow_cross_conversation === true,
+      allow_by_conversation: current.agent_collaboration?.allow_by_conversation ?? {},
+      result_reply_by_conversation: current.agent_collaboration?.result_reply_by_conversation ?? {},
+    }, level)
+    setCollaborationSaving(true)
+    setCollaborationError('')
+    try {
+      await invokeCommand('set_agent_collaboration', { value: next })
+      store.patchWorking(draft => {
+        draft.agent_collaboration = next
+      })
+    } catch (reason) {
+      setCollaborationError(desktopErrorMessage(reason))
+    } finally {
+      setCollaborationSaving(false)
+    }
+  }
   async function setAgentCollaborationEnabled(value: boolean) {
     const current = state.working
     if (!current || collaborationSaving) return
-    const next = {
+    // 开关与档位是同一份协作设置：保存开关时必须**带上现有的 loop_level**，
+    // 否则切一次开关就把用户选的档位抹掉了。
+    const next = withDeliveryLoopLevel({
       allow_cross_conversation: Boolean(value),
       allow_by_conversation: current.agent_collaboration?.allow_by_conversation ?? {},
-    }
+      result_reply_by_conversation: current.agent_collaboration?.result_reply_by_conversation ?? {},
+    }, current.agent_collaboration?.loop_level)
     setCollaborationSaving(true)
     setCollaborationError('')
     try {
@@ -896,6 +923,21 @@ export default function SettingsPage({
                 {collaborationError ? (
                   <p className="px-4 py-3 text-caption text-destructive">{collaborationError}</p>
                 ) : null}
+                <SettingsRow
+                  label={t('投递熔断档位', 'Delivery loop breaker level')}
+                  description={t(
+                    '两个对话在 60 秒内互相投递过多会被短暂冻结。严格：最多 3 次，首次冻结 60 秒；标准（默认）：最多 8 次；宽松：最多 20 次，首次只冻 30 秒。只拦“反向”那一半，同方向继续干活不受影响；没有“关闭”——这道防护防的是两个 agent 永远停不下来。',
+                    'Two chats that bounce messages back and forth inside 60 seconds are frozen briefly. Strict: at most 3, first freeze 60s; Standard (default): at most 8; Loose: at most 20, first freeze 30s. Only the reverse direction is stopped, and there is no “off” — this guard exists because two agents will never stop on their own.',
+                  )}
+                  divider={false}
+                  trailing={(
+                    <DeliveryLoopLevelSelect
+                      value={working.agent_collaboration?.loop_level}
+                      disabled={collaborationSaving}
+                      onChange={level => void setAgentCollaborationLoopLevel(level)}
+                    />
+                  )}
+                />
                 <SettingsRow
                   label={t('允许跨项目投递', 'Allow cross-project delivery')}
                   description={t(
