@@ -76,6 +76,15 @@
   margin-inline: 0;
 }
 
+/* 拖窗口冻结：转录里有两千多条消息时，一改窗口尺寸就要整页重新排版（真机实测最长长任务 9134ms）。
+   content-visibility: auto 让浏览器跳过屏幕外内容的布局与绘制；contain-intrinsic-size 给它一个合理的
+   高度估值，免得滚动条长度剧烈跳动（auto 关键字会在首次渲染后记住真实高度，越用越准）。
+   纯 CSS：不动组件结构、不动数据与顺序、不动滚动语义。 */
+[data-agent-conversation] .agent-turn {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 220px;
+}
+
 [data-agent-conversation] .agent-time {
   display: flex;
   align-items: center;
