@@ -2820,11 +2820,28 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     }
     if (steering && activeKernel !== 'pi' && activeKernel !== 'dsh') return false
     if ((steering || answeringAsk) && attachments.length) return false
+    // 这条排程派发可能已经被「加入对话」接管：注入时 app 已经追加了一条带 fromQueuedGuidance 的
+    // 可见消息（并已把它并入正在跑的这一轮）。若这里再追加一条，读者就会看到同一段正文两条
+    // （真机：相隔 2-3 秒），而引擎其实只收到一条。
+    //
+    // 只跳过"追加那条 user 消息"：派发/队列/标题/持久化全部照旧 —— 上次我用 `steering` 提前
+    // `return false` 短路了派发，当场被 20 条既有用例拦下（DSH/Multitask、/goal、Stop/compact
+    // 都共用 `steering`）。匹配只能用文本 + 时间窗（id 是这里新生成的，对不上）。
+    const messageId = crypto.randomUUID()
+    const messageTimestamp = Date.now()
+    const alreadyHandledByInjection = steering && !attachments.length && (
+      (activeConversation?.messages ?? []).some(item => (
+        item.role === 'user'
+        && item.fromQueuedGuidance === true
+        && item.content.trim() === visiblePrompt.trim()
+        && messageTimestamp - item.timestamp < 30_000
+      ))
+    )
     const message: Message = {
-      id: crypto.randomUUID(),
+      id: messageId,
       role: 'user',
       content: visiblePrompt,
-      timestamp: Date.now(),
+      timestamp: messageTimestamp,
       status: steering ? 'queued' : undefined,
       attachments: attachments.length ? attachments : undefined,
       origin,
@@ -2868,7 +2885,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         title: conversation.title === DEFAULT_CODING_CONVERSATION_TITLE
           ? fallbackTitle
           : conversation.title,
-        messages: [...conversation.messages, message],
+        messages: alreadyHandledByInjection
+          ? conversation.messages
+          : [...conversation.messages, message],
       }))
     }
     if (pendingGoalObjective) pendingDshGoals.set(conversationId, pendingGoalObjective)
