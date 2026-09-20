@@ -77,6 +77,50 @@ describe('queued guidance', () => {
     expect(messages[0]).toMatchObject({ content: '第一条', fromQueuedGuidance: true })
   })
 
+  // 事故现场：读者把一条排程引导"加入对话"之后，本地排程又派发同一段文本 ⇒
+  // app 会话里就出现了两条相同气泡（真机：相隔 2-3 秒），而引擎其实只收到一条。
+  it('does not append a second copy when the schedule dispatches text already injected', async () => {
+    const { conversations } = await loadRuntime()
+    seedQueue(conversations, ['第一条'])
+    expect(await conversations.injectQueuedGuidance(0)).toBe(true)
+    const injected = conversations.conversations
+      .find(item => item.id === 'conversation-1')?.messages ?? []
+    expect(injected).toHaveLength(1)
+    expect(injected[0]).toMatchObject({ content: '第一条', fromQueuedGuidance: true })
+
+    // 排程随后照常派发同一段文本：这一轮正在跑，所以走的是 steering 分支。
+    conversations.store.setState({ runningIds: new Set(['conversation-1']) })
+    await conversations.send('第一条')
+
+    // ① 转写里该正文恰 1 条 —— 派发不许再追加第二份。
+    const messages = conversations.conversations
+      .find(item => item.id === 'conversation-1')?.messages ?? []
+    expect(messages.filter(item => item.role === 'user' && item.content === '第一条')).toHaveLength(1)
+  })
+
+  // ② 派发本身必须照旧发生（上次我提前 return 短路了它，被 20 条既有用例拦下）。
+  it('still dispatches the scheduled text to the engine', async () => {
+    const { conversations } = await loadRuntime()
+    seedQueue(conversations, ['第一条'])
+    expect(await conversations.injectQueuedGuidance(0)).toBe(true)
+    commandCalls.length = 0
+    conversations.store.setState({ runningIds: new Set(['conversation-1']) })
+    await conversations.send('第一条')
+    expect(commandCalls.some(call => call.command === 'steer_message')).toBe(true)
+  })
+
+  // ③ 队列不许把已经并进本轮的文本再收回来（截图里「⏱ …已并入本回合」的来源）。
+  it('does not put an already injected guidance back into the queue', async () => {
+    const { conversations } = await loadRuntime()
+    seedQueue(conversations, ['第一条', '第二条'])
+    expect(await conversations.injectQueuedGuidance(0)).toBe(true)
+    expect(queueOf(conversations)).toEqual(['第二条'])
+    conversations.store.setState({ runningIds: new Set(['conversation-1']) })
+    await conversations.send('第一条')
+    // 只剩没被注入的那条；别的条目要留着，命中的那条不许回来。
+    expect(queueOf(conversations)).toEqual(['第二条'])
+  })
+
   it('refuses to inject on a kernel that cannot take mid-turn steering', async () => {
     stored = [conversation('conversation-1', 'dsh')]
     const { conversations } = await loadRuntime()
