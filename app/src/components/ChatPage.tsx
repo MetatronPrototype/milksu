@@ -2,6 +2,7 @@ import {
   forwardRef,
   lazy,
   Suspense,
+  memo,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -686,6 +687,38 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const runTimingPresentation = useMemo(() => (
     presentRunTiming(effectiveTurnStatus, runClockNow)
   ), [effectiveTurnStatus, runClockNow])
+  // 打字卡顿的根：runClockNow / waitingNow 每秒变一次 ⇒ ChatPage 每秒整体重渲染；而消息条目
+  // 没有 memo、下面这些回调每次渲染都是新身份 ⇒ 2300+ 条消息每秒被全部重渲染一次（真机实测：
+  // 属性写入约 265 次/秒、最长一次卡 744ms、每秒新增约 77 个 DOM 节点）。
+  // 这里把回调身份钉死（永远调用"最新的那一份"），并让消息条目 memo 化，
+  // 这样"每秒一次的页面重渲染"就不会传导到每一条消息上。
+  const latestTranscriptHandlers = useRef({
+    onRespondApproval,
+    onEditUser,
+    onRewindContext,
+    resumeAfterFailure,
+    branchFromAssistantMessage,
+  })
+  useEffect(() => {
+    latestTranscriptHandlers.current = {
+      onRespondApproval,
+      onEditUser,
+      onRewindContext,
+      resumeAfterFailure,
+      branchFromAssistantMessage,
+    }
+  })
+  const transcriptHandlers = useMemo(() => ({
+    onRespondApproval: (requestId: string, approved: boolean, scope?: 'once' | 'conversation', choice?: string) =>
+      latestTranscriptHandlers.current.onRespondApproval?.(requestId, approved, scope, choice),
+    onRetry: () => latestTranscriptHandlers.current.resumeAfterFailure(),
+    onEditUser: (messageId: string, content: string) =>
+      latestTranscriptHandlers.current.onEditUser?.(messageId, content),
+    onRewindContext: () => latestTranscriptHandlers.current.onRewindContext?.(),
+    onBranchAssistant: (messageId: string) =>
+      latestTranscriptHandlers.current.branchFromAssistantMessage(messageId),
+  }), [])
+  const MemoChatMessageItem = useMemo(() => memo(ChatMessageItem), [])
   const effectiveExecutionMode = useMemo(() => (
     normalizeCodingExecutionMode(executionMode)
   ), [executionMode])
@@ -2725,7 +2758,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       onToggleEntry={(entryId, open) => handleActivityEntryToggle(item.id, entryId, open)}
                     />
                   ) : (
-                    <ChatMessageItem
+                    <MemoChatMessageItem
                       key={item.id}
                       message={item.message}
                       recoverable={item.message.id === recoverableFailureId}
@@ -2733,11 +2766,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       canRewind={item.message.id === rewindableUserMessageId}
                       rewindDisabled={rewindUnavailable}
                       kernel={agentKernel}
-                      onRespondApproval={(requestId, approved, scope, choice) => onRespondApproval?.(requestId, approved, scope, choice)}
-                      onRetry={resumeAfterFailure}
-                      onEditUser={(messageId, content) => onEditUser?.(messageId, content)}
-                      onRewindContext={() => onRewindContext?.()}
-                      onBranchAssistant={branchFromAssistantMessage}
+                      {...transcriptHandlers}
                     />
                   )
                 ))}
