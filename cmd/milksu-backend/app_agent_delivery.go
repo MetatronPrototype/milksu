@@ -442,7 +442,10 @@ func (a *App) DeliverAgentMessage(input agentDeliveryInput) (map[string]any, err
 		log.Printf("[delivery] refused reason=list_failed source=%s target=%s", input.Origin.ConversationID, input.TargetConversationID)
 		return nil, err
 	}
-	policy := agentCollaborationPolicyFrom(a.settings.Get().AgentCollaboration)
+	collaboration := a.settings.Get().AgentCollaboration
+	// 熔断档位与协作策略来自同一份设置：读不到/空/非法 ⇒ 标准档（不报错、不放宽）。
+	setAgentDeliveryLoopLevel(agentDeliveryLoopLevelFrom(collaboration))
+	policy := agentCollaborationPolicyFrom(collaboration)
 	target, err := validateAgentDeliveryWithPolicy(stored, input, policy)
 	if err != nil {
 		// A refused delivery used to leave only a renderer-side notice. The backend log is

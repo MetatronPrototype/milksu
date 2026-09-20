@@ -122,6 +122,15 @@ type RemoteControlConfig struct {
 // inside the same project is allowed, a different project is refused. Turning the switch on
 // is not enough by itself - the source conversation must also list the target in its own
 // allowlist.
+// normalizeLoopLevelOrEmpty keeps the stored value empty when it is empty (so an untouched
+// settings file stays byte-identical) and otherwise stores the normalized level.
+func normalizeLoopLevelOrEmpty(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return NormalizeDeliveryLoopLevel(value)
+}
+
 type AgentCollaborationConfig struct {
 	AllowCrossConversation bool `json:"allow_cross_conversation"`
 	// AllowByConversation is keyed by source conversation id. Each value is the set of
@@ -132,6 +141,30 @@ type AgentCollaborationConfig struct {
 	// with a result reply. A reply is result-only by construction: a request in the reverse
 	// direction still needs the other side's own allow list.
 	ResultReplyByConversation map[string][]string `json:"result_reply_by_conversation,omitempty"`
+	// LoopLevel is the delivery loop breaker's strictness: strict | standard | loose. An empty or
+	// unknown value means standard - the breaker must never be loosened or disabled by a bad value.
+	LoopLevel string `json:"loop_level,omitempty"`
+}
+
+// Delivery loop breaker strictness levels. There is deliberately no "off": the breaker protects
+// against two agents that will never stop on their own.
+const (
+	DeliveryLoopLevelStrict   = "strict"
+	DeliveryLoopLevelStandard = "standard"
+	DeliveryLoopLevelLoose    = "loose"
+)
+
+// NormalizeDeliveryLoopLevel maps anything unknown (including empty) to standard, so a bad stored
+// value can neither disable the breaker nor loosen it silently.
+func NormalizeDeliveryLoopLevel(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case DeliveryLoopLevelStrict:
+		return DeliveryLoopLevelStrict
+	case DeliveryLoopLevelLoose:
+		return DeliveryLoopLevelLoose
+	default:
+		return DeliveryLoopLevelStandard
+	}
 }
 
 type AppSettings struct {
@@ -1124,6 +1157,7 @@ func normalizeAgentCollaboration(value *AgentCollaborationConfig) *AgentCollabor
 		AllowCrossConversation:    value.AllowCrossConversation,
 		AllowByConversation:       normalizeConversationIDList(value.AllowByConversation),
 		ResultReplyByConversation: normalizeConversationIDList(value.ResultReplyByConversation),
+		LoopLevel:                 normalizeLoopLevelOrEmpty(value.LoopLevel),
 	}
 	return &config
 }
