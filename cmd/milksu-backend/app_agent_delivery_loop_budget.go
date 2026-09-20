@@ -29,10 +29,21 @@ type loopBudgetConfig struct {
 
 // loopBudgetLevels is the three-way setting. There is deliberately no "off": the breaker protects
 // against two agents that will never stop on their own.
+// loopBudgetLevels is the three-way setting. There is deliberately no "off": the breaker exists to
+// stop two agents that will never stop on their own.
+//
+// Standard is 8 because of how the guard counts: every *alternation* is a reversal, so an ordinary
+// "reply, answer, one clarification" already produces 4-6 of them - a budget of 3 fires on ordinary
+// collaboration, which is exactly the trap the reader hit. A genuine unattended ping-pong runs at about
+// one per second and blows past 8 immediately, and two other guards still apply
+// (agentDeliverySourceBurst = 12 per 10s across targets, and the 4000 character cap per message), so 8
+// can be generous here without letting a flood through.
+//   strict  3 / 60s, first cooldown 60s - for people who do not want fast automatic round trips
+//   loose  20 / 60s, first cooldown 30s - for several agents collaborating densely
 var loopBudgetLevels = map[string]loopBudgetConfig{
-	"strict":   {Allow: 1, FirstCooldown: 60 * time.Second, RepeatCooldown: 5 * time.Minute, Window: loopBudgetWindow},
-	"standard": {Allow: 3, FirstCooldown: 60 * time.Second, RepeatCooldown: 5 * time.Minute, Window: loopBudgetWindow},
-	"loose":    {Allow: 8, FirstCooldown: 30 * time.Second, RepeatCooldown: 5 * time.Minute, Window: loopBudgetWindow},
+	"strict":   {Allow: 3, FirstCooldown: 60 * time.Second, RepeatCooldown: 5 * time.Minute, Window: loopBudgetWindow},
+	"standard": {Allow: 8, FirstCooldown: 60 * time.Second, RepeatCooldown: 5 * time.Minute, Window: loopBudgetWindow},
+	"loose":    {Allow: 20, FirstCooldown: 30 * time.Second, RepeatCooldown: 5 * time.Minute, Window: loopBudgetWindow},
 }
 
 // loopBudgetConfigFor falls back to the standard level for anything unknown, so a bad stored value

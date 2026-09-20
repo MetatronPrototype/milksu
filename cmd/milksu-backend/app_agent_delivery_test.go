@@ -203,10 +203,24 @@ func TestAgentDeliveryLoopGuardBreaksOnlyAReversal(t *testing.T) {
 		t.Fatalf("same-direction work must not open the circuit, got %s", remaining)
 	}
 
+	// A single reversal is an ordinary reply, so it must not break the pair any more.
 	guard.record("conversation-b", "conversation-a", start.Add(20*time.Second))
-	remaining := guard.remaining("conversation-a", "conversation-b", start.Add(21*time.Second))
+	if remaining := guard.remaining("conversation-a", "conversation-b", start.Add(21*time.Second)); remaining != 0 {
+		t.Fatalf("one ordinary reversal must not open the circuit, got %s", remaining)
+	}
+
+	// Going past the budget for the window is what breaks it.
+	for round := 0; round < 12; round++ {
+		source, target := "conversation-a", "conversation-b"
+		if round%2 == 1 {
+			source, target = "conversation-b", "conversation-a"
+		}
+		guard.record(source, target, start.Add(time.Duration(20+round)*time.Second))
+	}
+	brokenAt := start.Add(35 * time.Second)
+	remaining := guard.remaining("conversation-a", "conversation-b", brokenAt)
 	if remaining <= 0 || remaining > agentDeliveryLoopCooldown {
-		t.Fatalf("a reversal inside the window must break the pair, got %s", remaining)
+		t.Fatalf("going past the budget must break the pair, got %s", remaining)
 	}
 	// The pair is unordered: the direction that opened it is broken too.
 	if guard.remaining("conversation-b", "conversation-a", start.Add(21*time.Second)) <= 0 {
@@ -222,11 +236,18 @@ func TestAgentDeliveryLoopGuardRecoversAfterCooldown(t *testing.T) {
 	guard := newLoopGuard()
 	start := time.Now()
 	guard.record("conversation-a", "conversation-b", start)
-	guard.record("conversation-b", "conversation-a", start.Add(5*time.Second))
-	if guard.remaining("conversation-a", "conversation-b", start.Add(6*time.Second)) <= 0 {
-		t.Fatal("the circuit must be open right after the reversal")
+	for round := 0; round < 12; round++ {
+		source, target := "conversation-a", "conversation-b"
+		if round%2 == 1 {
+			source, target = "conversation-b", "conversation-a"
+		}
+		guard.record(source, target, start.Add(time.Duration(round)*time.Second))
 	}
-	afterCooldown := start.Add(agentDeliveryLoopCooldown + 6*time.Second)
+	if guard.remaining("conversation-a", "conversation-b", start.Add(13*time.Second)) <= 0 {
+		t.Fatal("the circuit must be open after going past the budget")
+	}
+	// 首犯是短冷却（60 秒），不是 5 分钟。
+	afterCooldown := start.Add(13*time.Second + loopBudgetLevels["standard"].FirstCooldown + 2*time.Second)
 	if remaining := guard.remaining("conversation-a", "conversation-b", afterCooldown); remaining != 0 {
 		t.Fatalf("the pair must recover after the cooldown, got %s", remaining)
 	}

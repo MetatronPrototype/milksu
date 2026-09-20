@@ -333,11 +333,14 @@ type agentDeliveryLoopGuard struct {
 	mu        sync.Mutex
 	pairs     map[string]agentDeliveryPairState
 	openUntil map[string]time.Time
+	// budgets is the per-pair reverse-delivery budget; see app_agent_delivery_loop_budget.go.
+	budgets map[string]loopBudgetState
 }
 
 var agentDeliveryLoops = &agentDeliveryLoopGuard{
 	pairs:     map[string]agentDeliveryPairState{},
 	openUntil: map[string]time.Time{},
+	budgets:   map[string]loopBudgetState{},
 }
 
 // A pair is unordered: the point is the ping-pong, not which side started it.
@@ -365,19 +368,30 @@ func (guard *agentDeliveryLoopGuard) record(source, target string, now time.Time
 	guard.mu.Lock()
 	defer guard.mu.Unlock()
 	key := agentDeliveryPairKey(source, target)
-	previous := guard.pairs[key]
-	if previous.lastSource != "" && previous.lastSource != source &&
-		now.Sub(previous.lastAt) <= agentDeliveryLoopWindow {
-		guard.openUntil[key] = now.Add(agentDeliveryLoopCooldown)
-	}
+	previous, ok := guard.pairs[key]
 	guard.pairs[key] = agentDeliveryPairState{lastSource: source, lastAt: now}
+	// Only a reversal can build a loop; two messages in the same direction are ordinary work.
+	if !ok || previous.lastSource == source {
+		return
+	}
+	if guard.budgets == nil {
+		guard.budgets = map[string]loopBudgetState{}
+	}
+	// One reversal is an ordinary reply, so the pair is broken only once it goes past its budget for the
+	// window; the cooldown starts short and escalates only on a repeat offence.
+	state, decision := decideLoopBudget(guard.budgets[key], loopBudgetConfigFor(agentDeliveryLoopLevel()), now)
+	guard.budgets[key] = state
+	if decision.Allowed {
+		return
+	}
+	guard.openUntil[key] = now.Add(decision.Remaining)
 }
-
 func (guard *agentDeliveryLoopGuard) reset() {
 	guard.mu.Lock()
 	defer guard.mu.Unlock()
 	guard.pairs = map[string]agentDeliveryPairState{}
 	guard.openUntil = map[string]time.Time{}
+	guard.budgets = map[string]loopBudgetState{}
 }
 
 // SettleAgentDelivery answers the sidecar tool call that is waiting on a delivery the

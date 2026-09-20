@@ -30,7 +30,8 @@ func TestLoopBudgetStopsRealSpam(t *testing.T) {
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	var state loopBudgetState
 	var decision loopBudgetDecision
-	for round := 0; round < 5; round++ {
+	// 标准档 N=8：要刷够 12 次才越界（5 次在预算内，不该拦）
+	for round := 0; round < 12; round++ {
 		state, decision = decideLoopBudget(state, config, now)
 		now = now.Add(time.Second)
 	}
@@ -103,8 +104,8 @@ func TestLoopBudgetWindowRolls(t *testing.T) {
 // 三档：只有 N 与首犯冷却不同；没有"关闭"这一档。
 func TestLoopBudgetLevels(t *testing.T) {
 	strict, standard, loose := loopBudgetConfigFor("strict"), loopBudgetConfigFor("standard"), loopBudgetConfigFor("loose")
-	if strict.Allow != 1 || standard.Allow != 3 || loose.Allow != 8 {
-		t.Fatalf("budgets must be 1/3/8, got %d/%d/%d", strict.Allow, standard.Allow, loose.Allow)
+	if strict.Allow != 3 || standard.Allow != 8 || loose.Allow != 20 {
+		t.Fatalf("budgets must be 3/8/20, got %d/%d/%d", strict.Allow, standard.Allow, loose.Allow)
 	}
 	if strict.FirstCooldown != 60*time.Second || standard.FirstCooldown != 60*time.Second || loose.FirstCooldown != 30*time.Second {
 		t.Fatalf("first cooldowns must be 60/60/30s")
@@ -116,23 +117,35 @@ func TestLoopBudgetLevels(t *testing.T) {
 	if loopBudgetConfigFor("nonsense") != standard {
 		t.Fatalf("an unknown level must fall back to standard")
 	}
-	// 严格档：第二次反向即拦
+	// 严格档：允许 3 次，第 4 次才拦
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
-	state, first := decideLoopBudget(loopBudgetState{}, strict, now)
-	if !first.Allowed {
-		t.Fatalf("strict must still allow the first reverse delivery")
+	var strictState loopBudgetState
+	var strictLast loopBudgetDecision
+	for round := 0; round < strict.Allow; round++ {
+		var allowed loopBudgetDecision
+		strictState, allowed = decideLoopBudget(strictState, strict, now.Add(time.Duration(round)*time.Second))
+		if !allowed.Allowed {
+			t.Fatalf("strict must allow its budget of %d, blocked at %d", strict.Allow, round+1)
+		}
 	}
-	if _, second := decideLoopBudget(state, strict, now.Add(time.Second)); second.Allowed {
-		t.Fatalf("strict must block the second reverse delivery")
+	strictState, strictLast = decideLoopBudget(strictState, strict, now.Add(time.Duration(strict.Allow)*time.Second))
+	if strictLast.Allowed {
+		t.Fatalf("strict must block past its budget of %d", strict.Allow)
 	}
-	// 宽松档：第 9 次才拦
+	if strictLast.Remaining != strict.FirstCooldown {
+		t.Fatalf("strict first offence must serve %s, got %s", strict.FirstCooldown, strictLast.Remaining)
+	}
+	// 宽松档：允许 20 次，第 21 次才拦，首犯 30 秒
 	var looseState loopBudgetState
 	var last loopBudgetDecision
-	for round := 0; round < 9; round++ {
-		looseState, last = decideLoopBudget(looseState, loose, now)
+	for round := 0; round < loose.Allow+1; round++ {
+		looseState, last = decideLoopBudget(looseState, loose, now.Add(time.Duration(round)*time.Second))
 	}
 	if last.Allowed {
-		t.Fatalf("loose must block past its budget of 8")
+		t.Fatalf("loose must block past its budget of %d", loose.Allow)
+	}
+	if last.Remaining != loose.FirstCooldown {
+		t.Fatalf("loose first offence must serve %s, got %s", loose.FirstCooldown, last.Remaining)
 	}
 	if last.Remaining != loose.FirstCooldown {
 		t.Fatalf("loose first offence must serve %s, got %s", loose.FirstCooldown, last.Remaining)
