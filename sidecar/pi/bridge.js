@@ -62,6 +62,7 @@ import {
   describeLoadedExtensions,
 } from "./bridge-resource-policy.js";
 import { preparePromptAttachments } from "./bridge-attachments.js";
+import { heldAttachmentNoticePayload } from "./bridge-image-precheck.js";
 import {
   backgroundTaskMetasForSession,
   projectBackgroundTaskMetas,
@@ -2251,6 +2252,12 @@ async function sendMessage(command) {
       command.attachments,
       attachmentRoot,
     );
+    // 被扣下的图（例如超过服务端尺寸上限）必须**当面**告诉读者，而不是只让模型知道：
+    // 读者看不到原因就只能反复重试上传。held 为空时 **绝不发事件**（不刷屏）。
+    const heldNotice = heldAttachmentNoticePayload(prepared.held);
+    if (heldNotice) {
+      emit(conversationId, "attachment.held", heldNotice);
+    }
     const contract = normalizeCodingTurnContract(command.turnPolicy);
     const prompt = `${command.prompt ?? ""}${prepared.context}`;
     const controller = sessionPolicyControllers.get(conversationId);
