@@ -1428,6 +1428,20 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       }))
       return false
     }
+    // 引擎自己那份队列也要撤掉：本地移除只是本地，引擎在本轮结束后会照常派发同一段正文，
+    // 读者就会看到相隔约两秒的两条相同气泡，而且模型真的收到两遍（真机 + session 存档已取证）。
+    // 参数与「✕ 撤回」按钮（removeQueuedGuidance）保持同一形状；引擎拿 expected 做保护，
+    // 若这条已经被消费掉，它会报错并还原，这里按"尽力而为"处理，不改动本次注入的结果。
+    try {
+      await invokeCommand('remove_queued_message', {
+        conversationId,
+        queue: 'steering',
+        index,
+        expected: prompt,
+      })
+    } catch {
+      // 已经被引擎消费掉就会到这里；本地移除照做，不因为取消失败而回滚整次注入。
+    }
     setMessageQueue(conversationId, {
       steering: queue.steering.filter((_item, itemIndex) => itemIndex !== index),
       followUp: queue.followUp,
@@ -1435,18 +1449,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     const injected = new Map(s.injectedSteering)
     injected.set(conversationId, [...(injected.get(conversationId) ?? []), prompt])
     s.injectedSteering = injected
-    // 显示在转写里：读者把它并进了本轮，它就该看得见，而不是只存在于 pi 内部。
-    update(conversationId, current => ({
-      ...current,
-      messages: [...current.messages, {
-        id: crypto.randomUUID(),
-        role: 'user' as const,
-        content: prompt,
-        timestamp: Date.now(),
-        status: 'done' as const,
-        fromQueuedGuidance: true,
-      }],
-    }))
+    // 不要在这里再往转写追加一条 user 消息：steer_message 已经让 pi 把它写进 session，
+    // app 再写一条就是同一段正文两份（真机上是相隔约两秒的两条相同气泡，模型也真的收到两遍）。
+    // 读者要看得见，由 injectedSteering 那一处渲染承担（「已加入本轮」）。
     // 手动加入就是读者接管了：队列重新被信任。
     markQueueInterrupted(conversationId, false)
     return true
@@ -3726,7 +3731,17 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       if (type === 'session.queue_updated') {
         const previousQueue = s.messageQueues.get(sessionId)
           ?? { steering: [], followUp: [] }
-        const nextQueue = projectCodingMessageQueue(steering, followUp)
+        const engineQueue = projectCodingMessageQueue(steering, followUp)
+        // 以本地为准：本会话已经"加入对话"（= 已注入本轮）的条目不接受引擎回声放回队列，
+        // 否则读者会看到同一段正文既在「已加入本轮」又回到队列里（真机截图：⏱ …已并入本回合）。
+        // 队列的唯一真相源是 MilkSU 本地，引擎回声只用来同步它没见过的变化。
+        const injectedLocally = new Set(s.injectedSteering.get(sessionId) ?? [])
+        const nextQueue = injectedLocally.size
+          ? {
+              steering: engineQueue.steering.filter(text => !injectedLocally.has(text)),
+              followUp: engineQueue.followUp,
+            }
+          : engineQueue
         const appliedSteeringCount = Math.max(
           0,
           previousQueue.steering.length - nextQueue.steering.length,
