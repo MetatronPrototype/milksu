@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { AttachmentPixelBadge } from '@/components/AttachmentPixelBadge'
 import { Button } from '@/components/ui'
 import { invokeCommand } from '@/desktop'
 import {
@@ -778,8 +779,12 @@ export default function ChatMessageItem({
                       <FileText className="size-3.5 shrink-0" />
                       <span className="truncate">{attachment.name}</span>
                       <span className="shrink-0 opacity-65">{formatAttachmentSize(attachment.size)}</span>
+                      <AttachmentPixelBadge attachmentKey={`${attachment.id}:${attachment.name}`} />
                     </span>
                   )}
+                  <span className="agent-attachment-pixels">
+                    <AttachmentPixelBadge attachmentKey={`${attachment.id}:${attachment.name}`} />
+                  </span>
                 </button>
               ))}
               {fileAttachments.map(attachment => (
@@ -791,6 +796,8 @@ export default function ChatMessageItem({
                   <FileText className="size-3.5 shrink-0" />
                   <span className="truncate">{attachment.name}</span>
                   <span className="shrink-0 opacity-65">{formatAttachmentSize(attachment.size)}</span>
+                  {/* 图片附件显示像素尺寸（量不到就什么都不渲染）。key 与 chip 侧一致 ⇒ 共用同一份缓存。 */}
+                  <AttachmentPixelBadge attachmentKey={`${attachment.id}:${attachment.name}`} />
                 </span>
               ))}
             </div>
