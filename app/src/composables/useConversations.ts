@@ -3731,7 +3731,17 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       if (type === 'session.queue_updated') {
         const previousQueue = s.messageQueues.get(sessionId)
           ?? { steering: [], followUp: [] }
-        const nextQueue = projectCodingMessageQueue(steering, followUp)
+        const engineQueue = projectCodingMessageQueue(steering, followUp)
+        // 以本地为准：本会话已经"加入对话"（= 已注入本轮）的条目不接受引擎回声放回队列，
+        // 否则读者会看到同一段正文既在「已加入本轮」又回到队列里（真机截图：⏱ …已并入本回合）。
+        // 队列的唯一真相源是 MilkSU 本地，引擎回声只用来同步它没见过的变化。
+        const injectedLocally = new Set(s.injectedSteering.get(sessionId) ?? [])
+        const nextQueue = injectedLocally.size
+          ? {
+              steering: engineQueue.steering.filter(text => !injectedLocally.has(text)),
+              followUp: engineQueue.followUp,
+            }
+          : engineQueue
         const appliedSteeringCount = Math.max(
           0,
           previousQueue.steering.length - nextQueue.steering.length,
