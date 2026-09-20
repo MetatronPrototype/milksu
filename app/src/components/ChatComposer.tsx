@@ -122,6 +122,8 @@ import {
   COMPOSER_ADD_MENU_HEIGHT_CAP,
   layoutComposerAddMenu,
 } from '@/lib/composerAddMenu'
+import { AttachmentPixelBadge } from '@/components/AttachmentPixelBadge'
+import { rememberAttachmentPixels } from '@/lib/attachmentPixelCache'
 import { shouldShowMultitaskCapsule } from '@/lib/composerMultitask'
 import { useT } from '@/hooks/useUiLocale'
 
@@ -977,6 +979,14 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
       })))
       const imported = await invokeCommand<CodingAttachment[]>('import_coding_attachments', { payloads })
       mergeCodingAttachments(imported)
+      // 量像素尺寸：此刻手上就有 File（= 已有的 blob，不重复读图），量一次记进共享缓存，
+      // 之后 chip 与消息附件都只读缓存。刻意不 await —— 取不到就不显示，绝不阻塞输入框。
+      imported.forEach((attachment, index) => {
+        const file = files[index]
+        if (file && isImageAttachment(attachment)) {
+          void rememberAttachmentPixels(attachmentKey(attachment), file)
+        }
+      })
     } catch (reason) {
       toastError(reason, t('暂时无法添加附件。', 'Attachments cannot be added right now.'))
     } finally {
@@ -1732,6 +1742,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                         <FileText className="size-3.5 shrink-0 text-muted-foreground" />
                         <span className="max-w-52 truncate">{attachment.name}</span>
                         <span className="shrink-0 text-muted-foreground">{formatAttachmentSize(attachment.size)}</span>
+                        <AttachmentPixelBadge attachmentKey={key} />
                       </button>
                       <button type="button" className="rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t(`移除 ${attachment.name}`, `Remove ${attachment.name}`)} onClick={() => removeCodingAttachment(attachment)}>
                         <X className="size-3.5" />
