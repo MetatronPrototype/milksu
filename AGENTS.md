@@ -386,3 +386,12 @@ deferred to one destructive pre-release consolidation after the product slices a
 - Each selected vertical slice is reviewed, tested, committed and pushed only to MilkSU's authorized remote.
 - Development-time documentation records tests, receipts, checkpoints and necessary ADRs. Final architecture,
   milestone, status and release claims are updated only during the final documentation closeout.
+
+## 投递纪律：被熔断拦下的回执先落盘，下一轮开头补上摘要
+
+跨会话投递（`deliver_to_conversation`）可能被环路熔断拒绝（`loop-circuit-open`）。被拒绝**不等于**对方收到，
+而"对方没收到"会被误读成"对方没干活"，因此重复派单——这个因果链已经真实吃掉过一次半小时。
+
+- 被拒绝时：**先把回执全文写进文件**（`/tmp/receipt-<NN>-<slug>.md`），不要在同一个回合反复重试（重试也只会被拒）。
+- 下一轮开头：**先补一段**「上一条回执 #NN 被熔断拦下，摘要如下 + 全文在 <路径>」，再做本轮工作。
+- 汇报给读者时也要说明"这条回执没有送达"，让读者可以代为转达。

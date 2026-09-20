@@ -203,14 +203,33 @@ func TestAgentDeliveryLoopGuardBreaksOnlyAReversal(t *testing.T) {
 		t.Fatalf("same-direction work must not open the circuit, got %s", remaining)
 	}
 
+	// A single reversal is an ordinary reply, so it must not break the pair any more.
 	guard.record("conversation-b", "conversation-a", start.Add(20*time.Second))
-	remaining := guard.remaining("conversation-a", "conversation-b", start.Add(21*time.Second))
-	if remaining <= 0 || remaining > agentDeliveryLoopCooldown {
-		t.Fatalf("a reversal inside the window must break the pair, got %s", remaining)
+	if remaining := guard.remaining("conversation-a", "conversation-b", start.Add(21*time.Second)); remaining != 0 {
+		t.Fatalf("one ordinary reversal must not open the circuit, got %s", remaining)
 	}
-	// The pair is unordered: the direction that opened it is broken too.
-	if guard.remaining("conversation-b", "conversation-a", start.Add(21*time.Second)) <= 0 {
-		t.Fatal("the broken pair must cover both directions")
+
+	// Going past the budget for the window is what breaks it.
+	for round := 0; round < 12; round++ {
+		source, target := "conversation-a", "conversation-b"
+		if round%2 == 1 {
+			source, target = "conversation-b", "conversation-a"
+		}
+		guard.record(source, target, start.Add(time.Duration(20+round)*time.Second))
+	}
+	brokenAt := start.Add(35 * time.Second)
+	remaining := guard.remaining("conversation-a", "conversation-b", brokenAt)
+	if remaining <= 0 || remaining > agentDeliveryLoopCooldown {
+		t.Fatalf("going past the budget must break the pair, got %s", remaining)
+	}
+	// A ping-pong needs both sides, so the cooldown only has to stop the other direction. The direction
+	// that tripped the budget may keep working; same-direction floods are capped by sourceBurst instead.
+	// 冷却只该停住"另一半"：不论是哪一步越界，被拦的必须恰好是其中一个方向。
+	// （不写死是哪一侧，语义才是它真正要保证的东西。）
+	forwardBlocked := guard.remaining("conversation-a", "conversation-b", brokenAt.Add(2*time.Second)) > 0
+	reverseBlocked := guard.remaining("conversation-b", "conversation-a", brokenAt.Add(2*time.Second)) > 0
+	if forwardBlocked == reverseBlocked {
+		t.Fatalf("exactly one direction must be stopped by the cooldown, got forward=%v reverse=%v", forwardBlocked, reverseBlocked)
 	}
 	// A pair that did not ping-pong is untouched.
 	if guard.remaining("conversation-a", "conversation-c", start.Add(21*time.Second)) != 0 {
@@ -222,11 +241,18 @@ func TestAgentDeliveryLoopGuardRecoversAfterCooldown(t *testing.T) {
 	guard := newLoopGuard()
 	start := time.Now()
 	guard.record("conversation-a", "conversation-b", start)
-	guard.record("conversation-b", "conversation-a", start.Add(5*time.Second))
-	if guard.remaining("conversation-a", "conversation-b", start.Add(6*time.Second)) <= 0 {
-		t.Fatal("the circuit must be open right after the reversal")
+	for round := 0; round < 12; round++ {
+		source, target := "conversation-a", "conversation-b"
+		if round%2 == 1 {
+			source, target = "conversation-b", "conversation-a"
+		}
+		guard.record(source, target, start.Add(time.Duration(round)*time.Second))
 	}
-	afterCooldown := start.Add(agentDeliveryLoopCooldown + 6*time.Second)
+	if guard.remaining("conversation-a", "conversation-b", start.Add(13*time.Second)) <= 0 {
+		t.Fatal("the circuit must be open after going past the budget")
+	}
+	// 首犯是短冷却（60 秒），不是 5 分钟。
+	afterCooldown := start.Add(13*time.Second + loopBudgetLevels["standard"].FirstCooldown + 2*time.Second)
 	if remaining := guard.remaining("conversation-a", "conversation-b", afterCooldown); remaining != 0 {
 		t.Fatalf("the pair must recover after the cooldown, got %s", remaining)
 	}
