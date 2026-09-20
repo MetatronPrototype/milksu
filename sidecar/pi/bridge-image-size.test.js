@@ -36,16 +36,20 @@ function jpegSof(marker = 0xc0, { leading = true, width = WIDTH, height = HEIGHT
   return Buffer.concat(parts);
 }
 
-function heicHeader(width = WIDTH, height = HEIGHT) {
+function ispeBox(width, height) {
+  // 真实 ISO-BMFF 的 ispe 盒：size(4) + 'ispe'(4) + version/flags(4) + width(4) + height(4)
+  const box = Buffer.alloc(20, 0);
+  box.writeUInt32BE(20, 0);
+  box.write("ispe", 4, "latin1");
+  box.writeUInt32BE(width, 12);
+  box.writeUInt32BE(height, 16);
+  return box;
+}
+
+function heicHeader(width = WIDTH, height = HEIGHT, extra = []) {
   const head = Buffer.alloc(24, 0);
   head.write("ftypheic", 4, "latin1");
-  // 真实 ISO-BMFF 的 ispe 盒：size(4) + 'ispe'(4) + version/flags(4) + width(4) + height(4)
-  const ispe = Buffer.alloc(20, 0);
-  ispe.writeUInt32BE(20, 0);
-  ispe.write("ispe", 4, "latin1");
-  ispe.writeUInt32BE(width, 12);
-  ispe.writeUInt32BE(height, 16);
-  return Buffer.concat([head, ispe]);
+  return Buffer.concat([head, ...extra, ispeBox(width, height)]);
 }
 
 test("reads the pixel size out of a PNG header", () => {
@@ -81,6 +85,37 @@ test("reads the pixel size out of a HEIC header", () => {
     mediaType: "image/heic",
     format: "heic",
   });
+});
+
+// 真机那张 5712x4284 的 HEIC 里，第一个 ispe 是 640x896 的缩略图 ⇒ 取第一个会报到错尺寸。
+test("a HEIC with a thumbnail first reports the primary image, not the thumbnail", () => {
+  const size = imageSizeFromHeader(heicHeader(5712, 4284, [ispeBox(640, 896), ispeBox(416, 312)]));
+  assert.equal(size.width, 5712);
+  assert.equal(size.height, 4284);
+});
+
+// 反过来的顺序也必须取主图（防"只取最后一个"）。
+test("a HEIC whose largest ispe comes first still reports the primary image", () => {
+  const size = imageSizeFromHeader(heicHeader(5712, 4284, [ispeBox(2856, 2142), ispeBox(640, 896)]));
+  assert.equal(size.width, 5712);
+  assert.equal(size.height, 4284);
+});
+
+// 面积并列时取更早的那个（真机里 5712x4284 与 4284x5712 面积相同，sips 报的是前者）。
+test("an equal-area tie keeps the earlier box", () => {
+  const size = imageSizeFromHeader(heicHeader(5712, 4284, [ispeBox(4284, 5712)]));
+  assert.deepEqual([size.width, size.height], [4284, 5712]);
+});
+
+// 一个 ispe 都读不出来 ⇒ null（绝不退化成缩略图尺寸）。
+test("a HEIC whose ispe boxes are unreadable yields null, never a thumbnail size", () => {
+  const head = Buffer.alloc(24, 0);
+  head.write("ftypheic", 4, "latin1");
+  const broken = ispeBox(640, 896);
+  broken.writeUInt32BE(0, 0); // 盒长度非法 ⇒ 视为图像数据里的巧合
+  assert.equal(imageSizeFromHeader(Buffer.concat([head, broken])), null);
+  // 只写了半截的 ispe
+  assert.equal(imageSizeFromHeader(Buffer.concat([head, ispeBox(640, 896).subarray(0, 10)])), null);
 });
 
 // 读不出来就说 null（调用方不显示尺寸），绝不猜、绝不抛。

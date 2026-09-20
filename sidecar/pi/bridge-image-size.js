@@ -88,16 +88,38 @@ function jpegSize(buffer) {
   return null
 }
 
-// HEIC/HEIF: the only header we can trust across brands is the ISO-BMFF `ispe` box.
+// HEIC/HEIF: one file holds several `ispe` boxes - a thumbnail, a few previews, sometimes a gain map -
+// and the primary image is usually NOT the first one. On the real 5712x4284 file we checked, the first
+// `ispe` (byte 2357) is a 640x896 thumbnail and the primary image is the next one, so returning the
+// first box silently reported the thumbnail.
+//
+// Resolving the primary item properly means walking meta -> pitm -> iprp/ipma and matching the item's
+// property index, which is a much larger parser than this needs. So we scan a bounded window, read
+// every `ispe` we find, and take the largest - which on the real file picks 5712x4284, agreeing with
+// `sips`. THIS IS A HEURISTIC, not a spec-conformant primary-item lookup: a gain map larger than the
+// primary image would defeat it. The earlier box wins a tie.
+const HEIC_SCAN_LIMIT = 256 * 1024
+
 function heicSize(buffer) {
   const probe = buffer.toString("latin1", 0, Math.min(buffer.length, 32))
   if (!/ftyp(heic|heix|hevc|hevx|mif1|msf1|avif)/.test(probe)) return null
-  const at = buffer.indexOf("ispe", 0, "latin1")
-  if (at < 0 || at + 12 > buffer.length) return null
-  const width = buffer.readUInt32BE(at + 8)
-  const height = buffer.readUInt32BE(at + 12)
-  if (looksNonsense(width, height)) return null
-  return { width, height, mediaType: "image/heic", format: "heic" }
+  const window = buffer.subarray(0, Math.min(buffer.length, HEIC_SCAN_LIMIT))
+  let best = null
+  let at = -1
+  while ((at = window.indexOf("ispe", at + 1, "latin1")) >= 0) {
+    if (at + 16 > window.length) break
+    // The box is size(4) + 'ispe'(4) + version/flags(4) + width(4) + height(4); a size field that is
+    // obviously not a box header means this ASCII is a coincidence inside image data, so skip it.
+    const boxSize = window.readUInt32BE(at - 4)
+    if (boxSize < 12 || boxSize > 4096) continue
+    const width = window.readUInt32BE(at + 8)
+    const height = window.readUInt32BE(at + 12)
+    if (looksNonsense(width, height)) continue
+    // Largest area wins (the primary image is the big one); ties keep the earlier box.
+    if (!best || width * height > best.width * best.height) best = { width, height }
+  }
+  if (!best) return null
+  return { width: best.width, height: best.height, mediaType: "image/heic", format: "heic" }
 }
 
 /**
