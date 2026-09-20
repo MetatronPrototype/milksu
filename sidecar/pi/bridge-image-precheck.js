@@ -69,3 +69,17 @@ export function heldImageNoteForAgent(entry) {
   const limit = Number(entry?.limit) || MAX_IMAGE_SIDE
   return `- ${name}: NOT sent to the model (${width}×${height} px exceeds the ${limit} px limit). It was left out of this turn and out of the conversation history; do not retry the upload, read the file locally instead.`
 }
+
+/**
+ * 被扣下的图要给读者一句**能照做**的话：附件名 + 尺寸 + 上限 + "不要重试上传" + "改用本机识别或换一张图"。
+ * 中英成对（仓库有 uiLocaleCoverage 测试会抓中文没配英文）。`held` 为空 ⇒ 返回 null ⇒ 调用方**不发事件**
+ * （不许刷屏）。
+ */
+export function heldAttachmentNoticePayload(held) {
+  const entries = Array.isArray(held) ? held.filter(Boolean) : []
+  if (!entries.length) return null
+  return {
+    notice: entries.map((entry) => heldImageNotice(entry, true)).join("\n"),
+    noticeEnglish: entries.map((entry) => heldImageNotice(entry, false)).join("\n"),
+  }
+}

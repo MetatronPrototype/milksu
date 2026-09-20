@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   IMAGE_HELD_OVERSIZED,
+  heldAttachmentNoticePayload,
   MAX_IMAGE_SIDE,
   heldImageNoteForAgent,
   heldImageNotice,
@@ -110,4 +111,32 @@ test("handles empty and junk input", () => {
   assert.deepEqual(precheckImages(undefined), { sendable: [], held: [] });
   assert.deepEqual(precheckImages([null]).held, []);
   assert.deepEqual(precheckImages([null]).sendable, [null]);
+});
+
+// 被扣下的图必须当面告诉读者：哪张、多大、为什么、下一步怎么做。
+test("a held image produces a notice naming the file, its size, the limit and what to do", () => {
+  const held = precheckImages([image({ width: 1179, height: 17728 })]).held;
+  const payload = heldAttachmentNoticePayload(held);
+  assert.ok(payload, "a held image must produce a notice");
+  assert.match(payload.notice, /IMG_2696\.JPG/);
+  assert.match(payload.notice, /1179×17728 px/);
+  assert.match(payload.notice, /8000 px/);
+  assert.match(payload.notice, /没有发送/);
+  assert.match(payload.notice, /不要重试上传/);
+  assert.match(payload.notice, /本机识别/);
+  // 双语成对（uiLocaleCoverage 会抓中文没配英文）
+  assert.match(payload.noticeEnglish, /IMG_2696\.JPG/);
+  assert.match(payload.noticeEnglish, /1179×17728 px/);
+  assert.match(payload.noticeEnglish, /was not sent/);
+  assert.match(payload.noticeEnglish, /Do not retry the upload/);
+});
+
+// held 为空 ⇒ 不许发事件（不刷屏）。
+test("nothing held means no notice at all", () => {
+  assert.equal(heldAttachmentNoticePayload([]), null);
+  assert.equal(heldAttachmentNoticePayload(undefined), null);
+  assert.equal(heldAttachmentNoticePayload(null), null);
+  assert.equal(heldAttachmentNoticePayload([null, undefined]), null);
+  // 限内的图 ⇒ precheck 不扣 ⇒ 也就没有通知
+  assert.equal(heldAttachmentNoticePayload(precheckImages([image({ width: 800, height: 600 })]).held), null);
 });
