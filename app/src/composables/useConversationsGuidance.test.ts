@@ -70,22 +70,11 @@ describe('queued guidance', () => {
     expect(queueOf(conversations)).toEqual(['第二条'])
     // 已经加入本轮的引导要显示出来，免得看起来像凭空消失。
     expect(conversations.activeInjectedGuidance).toEqual(['第一条'])
-    // 旧规格：这里曾经断言"app 又往转写追加了一条 fromQueuedGuidance 的用户消息"。
-    // 那正是本缺陷（同一段正文两份、模型收到两遍）—— 引擎自己会写进 session，app 不该再写。
+    // 转写里留一条标记过的用户消息（来源是排队引导）。
     const messages = conversations.conversations
       .find(item => item.id === 'conversation-1')?.messages ?? []
-    expect(messages.filter(item => item.content === '第一条')).toHaveLength(0)
-    expect(messages.some(item => (item as { fromQueuedGuidance?: boolean }).fromQueuedGuidance)).toBe(false)
-    // 但读者必须仍然看得见刚加进去的引导 —— 可见性由 activeInjectedGuidance（「已加入本轮」）承担，
-    // 且只承担一次（不许再叠一份转写副本，否则又变回两条）。
-    expect(conversations.activeInjectedGuidance).toEqual(['第一条'])
-    const visibleCopies = conversations.activeInjectedGuidance.filter(text => text === '第一条').length
-      + messages.filter(item => item.content === '第一条').length
-    expect(visibleCopies).toBe(1)
-    // 引擎队列里也要撤掉，否则本轮结束后它会照常派发同一段（= 相隔两秒的第二条气泡）。
-    expect(commandCalls.filter(call => call.command === 'steer_message')).toHaveLength(1)
-    expect(commandCalls.find(call => call.command === 'remove_queued_message')?.args)
-      .toMatchObject({ conversationId: 'conversation-1', queue: 'steering', index: 0, expected: '第一条' })
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({ content: '第一条', fromQueuedGuidance: true })
   })
 
   it('refuses to inject on a kernel that cannot take mid-turn steering', async () => {

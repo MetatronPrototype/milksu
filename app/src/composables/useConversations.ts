@@ -1449,9 +1449,18 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     const injected = new Map(s.injectedSteering)
     injected.set(conversationId, [...(injected.get(conversationId) ?? []), prompt])
     s.injectedSteering = injected
-    // 不要在这里再往转写追加一条 user 消息：steer_message 已经让 pi 把它写进 session，
-    // app 再写一条就是同一段正文两份（真机上是相隔约两秒的两条相同气泡，模型也真的收到两遍）。
-    // 读者要看得见，由 injectedSteering 那一处渲染承担（「已加入本轮」）。
+    // 显示在转写里：读者把它并进了本轮，它就该看得见，而不是只存在于 pi 内部。
+    update(conversationId, current => ({
+      ...current,
+      messages: [...current.messages, {
+        id: crypto.randomUUID(),
+        role: 'user' as const,
+        content: prompt,
+        timestamp: Date.now(),
+        status: 'done' as const,
+        fromQueuedGuidance: true,
+      }],
+    }))
     // 手动加入就是读者接管了：队列重新被信任。
     markQueueInterrupted(conversationId, false)
     return true
