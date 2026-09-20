@@ -384,6 +384,9 @@ export interface AgentCollaborationConfig {
   // A reply is result-only: a request in the reverse direction still needs the replier's
   // own allowlist.
   result_reply_by_conversation?: Record<string, string[]>
+  // Delivery loop breaker level: 'strict' | 'standard' | 'loose'. Missing, empty or anything
+  // unrecognised means 'standard' (both here and in the Go settings); there is no "off".
+  loop_level?: string
 }
 
 // NetworkStatus reports the proxy preference together with the proxy that actually
