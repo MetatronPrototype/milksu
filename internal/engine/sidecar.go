@@ -59,9 +59,12 @@ func sidecarEnvironment(settings config.AppSettings) ([]string, error) {
 	}
 	attachmentRoot := filepath.Join(runtimeHome, "attachments")
 	collaborationRoot := filepath.Join(runtimeHome, "coding-collaboration")
+	// 没送达的跨会话回执落到这里（侧车用它决定 spool 目录）。由启动处设置，不靠人手设环境变量。
+	deliverySpoolRoot := filepath.Join(runtimeHome, "delivery-spool")
 	for label, directory := range map[string]string{
 		"Coding attachment":    attachmentRoot,
 		"Coding collaboration": collaborationRoot,
+		"Delivery spool":       deliverySpoolRoot,
 	} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return nil, fmt.Errorf("create %s directory: %w", label, err)
@@ -89,6 +92,7 @@ func sidecarEnvironment(settings config.AppSettings) ([]string, error) {
 		"MILKSU_PI_AGENT_DIR="+filepath.Join(runtimeHome, "pi"),
 		"MILKSU_CODING_ATTACHMENT_ROOT="+attachmentRoot,
 		"MILKSU_CODING_COLLABORATION_ROOT="+collaborationRoot,
+		"MILKSU_DELIVERY_SPOOL_DIR="+deliverySpoolRoot,
 		"MILKSU_VISION_CACHE="+filepath.Join(runtimeHome, "vision-cache.json"),
 		// Keep Pi's provider-native prompt cache alive across normal human pauses.
 		// Explicit one-off compaction requests still override this with "none".
