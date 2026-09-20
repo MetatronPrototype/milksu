@@ -2820,11 +2820,28 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     }
     if (steering && activeKernel !== 'pi' && activeKernel !== 'dsh') return false
     if ((steering || answeringAsk) && attachments.length) return false
+    // 这条排程派发可能已经被「加入对话」接管：注入时 app 已经追加了一条带 fromQueuedGuidance 的
+    // 可见消息（并已把它并入正在跑的这一轮）。若这里再追加一条，读者就会看到同一段正文两条
+    // （真机：相隔 2-3 秒），而引擎其实只收到一条。
+    //
+    // 只跳过"追加那条 user 消息"：派发/队列/标题/持久化全部照旧 —— 上次我用 `steering` 提前
+    // `return false` 短路了派发，当场被 20 条既有用例拦下（DSH/Multitask、/goal、Stop/compact
+    // 都共用 `steering`）。匹配只能用文本 + 时间窗（id 是这里新生成的，对不上）。
+    const messageId = crypto.randomUUID()
+    const messageTimestamp = Date.now()
+    const alreadyHandledByInjection = steering && !attachments.length && (
+      (activeConversation?.messages ?? []).some(item => (
+        item.role === 'user'
+        && item.fromQueuedGuidance === true
+        && item.content.trim() === visiblePrompt.trim()
+        && messageTimestamp - item.timestamp < 30_000
+      ))
+    )
     const message: Message = {
-      id: crypto.randomUUID(),
+      id: messageId,
       role: 'user',
       content: visiblePrompt,
-      timestamp: Date.now(),
+      timestamp: messageTimestamp,
       status: steering ? 'queued' : undefined,
       attachments: attachments.length ? attachments : undefined,
       origin,
@@ -2868,7 +2885,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         title: conversation.title === DEFAULT_CODING_CONVERSATION_TITLE
           ? fallbackTitle
           : conversation.title,
-        messages: [...conversation.messages, message],
+        messages: alreadyHandledByInjection
+          ? conversation.messages
+          : [...conversation.messages, message],
       }))
     }
     if (pendingGoalObjective) pendingDshGoals.set(conversationId, pendingGoalObjective)
@@ -2892,10 +2911,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         })
         const currentQueue = s.messageQueues.get(conversationId)
           ?? { steering: [], followUp: [] }
-        setMessageQueue(conversationId, projectCodingMessageQueue(
-          [...currentQueue.steering, visiblePrompt],
-          currentQueue.followUp,
-        ))
+        // 这段文本已经并进正在跑的这一轮了（same flag as the transcript append above）⇒ 再把它放回
+        // 本地队列是错的：读者会看到「⏱ …已并入本回合」又冒出来。命中时保持队列原样（别清空，
+        // 队列里别的条目要留着）。
+        setMessageQueue(conversationId, alreadyHandledByInjection
+          ? currentQueue
+          : projectCodingMessageQueue(
+              [...currentQueue.steering, visiblePrompt],
+              currentQueue.followUp,
+            ))
         return true
       } catch (reason) {
         if (missingPiSession(reason)) {
@@ -4007,6 +4031,16 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           } else {
             setMessageQueue(sessionId, { steering: [], followUp: [] })
             markQueueStalled(sessionId, false)
+          }
+          // 回合结束了：这些引导已经进入这一轮，"已加入本轮"的通知到此为止 ——
+          // 否则它会一直挂在输入框上方（用户看到的就是这个：回合结束后还列着 2 条）。
+          // 只在回合结束时清；回合还在跑时必须继续显示（它是"本轮已并入"的通知）。
+          // ⚠️ 去重用的"最近注入"记录将来要单独另存一份并保留 30 秒（引擎回声可能在回合结束后才到），
+          //    那份记录与这里的显示列表是两件事 —— 目前引擎回声去重尚未落地，先不混在一起。
+          if (s.injectedSteering.has(sessionId)) {
+            const withoutInjected = new Map(s.injectedSteering)
+            withoutInjected.delete(sessionId)
+            s.injectedSteering = withoutInjected
           }
           finishRun(sessionId)
         } else if (type === 'tool.started' || type === 'tool.completed') {
