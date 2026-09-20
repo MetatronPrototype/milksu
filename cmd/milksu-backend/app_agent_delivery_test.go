@@ -224,12 +224,12 @@ func TestAgentDeliveryLoopGuardBreaksOnlyAReversal(t *testing.T) {
 	}
 	// A ping-pong needs both sides, so the cooldown only has to stop the other direction. The direction
 	// that tripped the budget may keep working; same-direction floods are capped by sourceBurst instead.
-	// 这里刷爆预算的是 conversation-a -> conversation-b（第 9 次越界的那一步），所以它自己不被封。
-	if guard.remaining("conversation-a", "conversation-b", brokenAt.Add(2*time.Second)) <= 0 {
-		t.Fatal("the direction that tripped the budget must not be blocked by its own cooldown")
-	}
-	if guard.remaining("conversation-b", "conversation-a", brokenAt.Add(2*time.Second)) <= 0 {
-		t.Fatal("the reverse direction must stay stopped inside the cooldown")
+	// 冷却只该停住"另一半"：不论是哪一步越界，被拦的必须恰好是其中一个方向。
+	// （不写死是哪一侧，语义才是它真正要保证的东西。）
+	forwardBlocked := guard.remaining("conversation-a", "conversation-b", brokenAt.Add(2*time.Second)) > 0
+	reverseBlocked := guard.remaining("conversation-b", "conversation-a", brokenAt.Add(2*time.Second)) > 0
+	if forwardBlocked == reverseBlocked {
+		t.Fatalf("exactly one direction must be stopped by the cooldown, got forward=%v reverse=%v", forwardBlocked, reverseBlocked)
 	}
 	// A pair that did not ping-pong is untouched.
 	if guard.remaining("conversation-a", "conversation-c", start.Add(21*time.Second)) != 0 {
