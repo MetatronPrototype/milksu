@@ -5,36 +5,45 @@ import AgentDecisionMark from '@/components/AgentDecisionMark'
 
 afterEach(cleanup)
 
+// 用户真机反馈："不太可见啊，改成黄色圈吧" —— 小方阵在深色底上太碎，改成琥珀圆环。
 describe('needs-decision mark', () => {
-  // 复用运行中那套 9 格方阵：换标记时侧栏不会跳动。
-  it('reuses the nine-cell grid and lights the question-mark cells', () => {
+  it('renders an amber ring, not the old pixel grid', () => {
     const { container } = render(<AgentDecisionMark />)
-    const cells = container.querySelectorAll('.agent-pixel__cell')
-    expect(cells).toHaveLength(9)
-    // "?" 的形状：第 1 行全亮 + 第 2 行最右 + 第 3 行中间 = 5 格
-    expect(container.querySelectorAll('.agent-pixel__cell--decision-on')).toHaveLength(5)
-    // 琥珀色这一层挂在容器上（颜色与缓慢呼吸都由 CSS 负责，不是每帧走 React）。
-    expect(container.querySelector('.agent-pixel--decision')).not.toBeNull()
+    // 圆环：rounded-full + 较粗描边 + 琥珀色
+    const ring = container.querySelector('.agent-decision-ring__circle')
+    expect(ring).not.toBeNull()
+    expect(ring?.className).toContain('rounded-full')
+    expect(ring?.className).toContain('border-2')
+    expect(ring?.className).toMatch(/border-amber-500\b/)
+    // 旧形态（9 格像素方阵）必须彻底消失：那是"不够可见"的原因。
+    expect(container.querySelectorAll('.agent-pixel__cell')).toHaveLength(0)
+    expect(container.querySelector('.agent-pixel--decision')).toBeNull()
   })
 
-  // 无障碍：这是状态，不是按钮；标签是"需要你决定"。
-  it('announces itself as a status with the decision label', () => {
+  // 直径与侧栏其它行内图标一致（size-3.5 = 14px），否则换标记时那一行会跳。
+  it('is as big as the sidebar row icons', () => {
+    const { container } = render(<AgentDecisionMark />)
+    expect(container.querySelector('.agent-decision-ring')?.className).toContain('size-3.5')
+    expect(container.querySelector('.agent-decision-ring__circle')?.className).toContain('size-3.5')
+  })
+
+  // 可见性：除了描边，还有一层淡琥珀底与外发光（克制，不是刺眼闪烁）。
+  it('adds a restrained fill and glow so it reads on a dark sidebar', () => {
+    const { container } = render(<AgentDecisionMark />)
+    const ring = container.querySelector('.agent-decision-ring__circle')
+    expect(ring?.className).toMatch(/bg-amber-500\/15\b/)
+  })
+
+  it('announces itself as a status with a bilingual label', () => {
     render(<AgentDecisionMark />)
     const status = screen.getByRole('status')
     expect(status.getAttribute('aria-label')).toBe('需要你决定')
+    // 环本身对读屏是装饰（aria-hidden），文本由 role=status 的 aria-label 承担。
     expect(status.textContent).toBe('')
   })
 
   it('accepts a custom label', () => {
     render(<AgentDecisionMark label="Needs your decision" />)
     expect(screen.getByRole('status').getAttribute('aria-label')).toBe('Needs your decision')
-  })
-
-  // 点亮的格子带的是"呼吸"动画类，而不是运行中那种快跳动画。
-  it('breathes slowly instead of using the running animation', () => {
-    const { container } = render(<AgentDecisionMark />)
-    const on = container.querySelector('.agent-pixel__cell--decision-on')
-    expect(on).not.toBeNull()
-    expect(on?.className).not.toContain('agent-pixel__cell--on')
   })
 })

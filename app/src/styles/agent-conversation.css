@@ -348,21 +348,16 @@
   animation: agent-pixel-on 650ms ease-in-out infinite;
 }
 
-/* 「这个会话在等你拍板」：同一套 9 格方阵，换成琥珀色问号、缓慢呼吸（不是运行中那种快跳）。
-   只动 opacity，走合成层，不给转录增加布局/重绘负担。 */
-.agent-pixel--decision .agent-pixel__cell {
-  background: var(--agent-decision-color, #f59e0b);
-  opacity: 0.12;
-  animation: none;
+/* 「这个会话在等你拍板」：琥珀色圆环（直径与侧栏其它行内图标一致 = size-3.5）。
+   之前是 3×3 像素方阵，用户真机反馈"不太可见"：小方阵在深色底上太碎。
+   颜色走仓库既有的 amber token；只做缓慢的 opacity/scale 呼吸，不做闪烁。 */
+.agent-decision-ring__circle {
+  animation: agent-decision-ring-breathe 2.4s ease-in-out infinite;
 }
 
-.agent-pixel--decision .agent-pixel__cell--decision-on {
-  animation: agent-pixel-decision-breathe 2.4s ease-in-out infinite;
-}
-
-@keyframes agent-pixel-decision-breathe {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
+@keyframes agent-decision-ring-breathe {
+  0%, 100% { opacity: 0.75; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.06); }
 }
 
 [data-agent-conversation] .agent-pixel-loader__label {
@@ -434,7 +429,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .agent-pixel__cell,
-  .agent-pixel--decision .agent-pixel__cell--decision-on,
+  .agent-decision-ring__circle,
   [data-agent-conversation] .agent-pixel-loader__label--run {
     animation: none;
   }
