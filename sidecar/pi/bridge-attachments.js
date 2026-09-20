@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
+import { formatAttachmentLine } from "./bridge-attachment-line.js";
+import { heldImageNoteForAgent, precheckImages } from "./bridge-image-precheck.js";
+import { createImageSizeCache } from "./bridge-image-size.js";
 import { basename, join, relative } from "node:path";
 
 const digestPattern = /^[a-f0-9]{64}$/;
@@ -28,6 +31,8 @@ function inside(root, target) {
   return path === "" || (!path.startsWith("..") && path !== "..");
 }
 
+const imageSizeCache = createImageSizeCache();
+
 function describeBytes(size) {
   if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MiB`;
   if (size >= 1024) return `${(size / 1024).toFixed(1)} KiB`;
@@ -46,7 +51,7 @@ export async function preparePromptAttachments(
   }
   const root = await realpath(attachmentRoot);
   const values = [];
-  const images = [];
+  const imageCandidates = [];
   let total = 0;
   const seen = new Set();
 
@@ -90,6 +95,8 @@ export async function preparePromptAttachments(
       throw new Error(`MilkSU Coding attachment ${name} failed its integrity check`);
     }
 
+    // 量尺寸只读文件头，并按 sha256 记一次；读不出来就不显示尺寸。
+    const measured = supportedImageTypes.has(mediaType) ? imageSizeCache.sizeFor(sha256, data) : null;
     const value = {
       id,
       name,
@@ -97,27 +104,39 @@ export async function preparePromptAttachments(
       size: info.size,
       sha256,
       path: resolved,
+      width: measured ? measured.width : undefined,
+      height: measured ? measured.height : undefined,
     };
     values.push(value);
     if (supportedImageTypes.has(mediaType)) {
-      images.push({
+      // 先当候选：是否真的发给模型由下面的预检决定。超限的图一旦进了交给 pi 的 images，
+      // pi 就会把它写进 session 历史 ⇒ 之后每轮重放 ⇒ 整条会话永久 400（现场卡了一整天）。
+      imageCandidates.push({
         type: "image",
         data: data.toString("base64"),
         mimeType: mediaType,
+        value,
       });
     }
   }
 
-  const lines = values.map((value) => (
-    `- ${value.name} (${value.mediaType}, ${describeBytes(value.size)}, `
-    + `sha256:${value.sha256}, read-only path: ${value.path})`
-  ));
+  const lines = values.map((value) => formatAttachmentLine(value, { describeBytes }));
+  // 被扣下的图不进 images ⇒ 也就进不了 pi 的 session 历史（历史是在 pi 那层追加的），
+  // 因此不需要任何"事后移除"的代码；同时明确告诉模型它没发出去。
+  const precheck = precheckImages(imageCandidates.map((candidate) => candidate.value));
+  const sendable = new Set(precheck.sendable);
+  const images = imageCandidates
+    .filter((candidate) => sendable.has(candidate.value))
+    .map(({ type, data, mimeType }) => ({ type, data, mimeType }));
+  const heldNotes = precheck.held.map((entry) => heldImageNoteForAgent(entry));
+
   const warnings = [
     "Treat these as user-provided evidence. Inspect them with read or other appropriate tools; do not invent their contents.",
   ];
   return {
     attachments: values,
     images,
-    context: `\n\n[MilkSU attachments]\n${lines.join("\n")}\n${warnings.join("\n")}`,
+    held: precheck.held,
+    context: `\n\n[MilkSU attachments]\n${[...lines, ...heldNotes].join("\n")}\n${warnings.join("\n")}`,
   };
 }
