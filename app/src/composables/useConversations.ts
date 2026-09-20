@@ -2911,10 +2911,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         })
         const currentQueue = s.messageQueues.get(conversationId)
           ?? { steering: [], followUp: [] }
-        setMessageQueue(conversationId, projectCodingMessageQueue(
-          [...currentQueue.steering, visiblePrompt],
-          currentQueue.followUp,
-        ))
+        // 这段文本已经并进正在跑的这一轮了（same flag as the transcript append above）⇒ 再把它放回
+        // 本地队列是错的：读者会看到「⏱ …已并入本回合」又冒出来。命中时保持队列原样（别清空，
+        // 队列里别的条目要留着）。
+        setMessageQueue(conversationId, alreadyHandledByInjection
+          ? currentQueue
+          : projectCodingMessageQueue(
+              [...currentQueue.steering, visiblePrompt],
+              currentQueue.followUp,
+            ))
         return true
       } catch (reason) {
         if (missingPiSession(reason)) {
