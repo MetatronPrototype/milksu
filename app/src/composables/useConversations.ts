@@ -1428,6 +1428,20 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       }))
       return false
     }
+    // 引擎自己那份队列也要撤掉：本地移除只是本地，引擎在本轮结束后会照常派发同一段正文，
+    // 读者就会看到相隔约两秒的两条相同气泡，而且模型真的收到两遍（真机 + session 存档已取证）。
+    // 参数与「✕ 撤回」按钮（removeQueuedGuidance）保持同一形状；引擎拿 expected 做保护，
+    // 若这条已经被消费掉，它会报错并还原，这里按"尽力而为"处理，不改动本次注入的结果。
+    try {
+      await invokeCommand('remove_queued_message', {
+        conversationId,
+        queue: 'steering',
+        index,
+        expected: prompt,
+      })
+    } catch {
+      // 已经被引擎消费掉就会到这里；本地移除照做，不因为取消失败而回滚整次注入。
+    }
     setMessageQueue(conversationId, {
       steering: queue.steering.filter((_item, itemIndex) => itemIndex !== index),
       followUp: queue.followUp,
