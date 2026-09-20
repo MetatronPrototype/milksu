@@ -348,15 +348,26 @@
   animation: agent-pixel-on 650ms ease-in-out infinite;
 }
 
-/* 「这个会话在等你拍板」：琥珀色圆环（直径与侧栏其它行内图标一致 = size-3.5）。
-   之前是 3×3 像素方阵，用户真机反馈"不太可见"：小方阵在深色底上太碎。
-   颜色走仓库既有的 amber token；只做缓慢的 opacity/scale 呼吸，不做闪烁。 */
-.agent-decision-ring__circle {
-  animation: agent-decision-ring-breathe 2.4s ease-in-out infinite;
+/* 「这个会话在等你拍板」：3×3 像素点阵、中心留空 ⇒ 8 个方形小格绕成一圈、琥珀色。
+   沿用 AgentPixelLoader 的格子语言（方形、极小圆角），所以整组尺寸 ≈ 3×3 + 2×1 的间距 ≈ 11px，
+   正好装在与行内图标一致的 size-3.5（14px）里。颜色走仓库既有的 amber token。
+   整组做轻微呼吸，不逐格跑马灯/闪烁。 */
+.agent-decision-grid__cell {
+  width: 3px;
+  height: 3px;
 }
 
-@keyframes agent-decision-ring-breathe {
-  0%, 100% { opacity: 0.75; transform: scale(0.92); }
+.agent-decision-grid__hole {
+  width: 3px;
+  height: 3px;
+}
+
+.agent-decision-grid__cells {
+  animation: agent-decision-grid-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes agent-decision-grid-breathe {
+  0%, 100% { opacity: 0.75; transform: scale(0.94); }
   50% { opacity: 1; transform: scale(1.06); }
 }
 
@@ -429,7 +440,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .agent-pixel__cell,
-  .agent-decision-ring__circle,
+  .agent-decision-grid__cells,
   [data-agent-conversation] .agent-pixel-loader__label--run {
     animation: none;
   }
