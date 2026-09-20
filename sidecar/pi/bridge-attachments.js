@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
+import { formatAttachmentLine } from "./bridge-attachment-line.js";
 import { basename, join, relative } from "node:path";
 
 const digestPattern = /^[a-f0-9]{64}$/;
@@ -108,10 +109,7 @@ export async function preparePromptAttachments(
     }
   }
 
-  const lines = values.map((value) => (
-    `- ${value.name} (${value.mediaType}, ${describeBytes(value.size)}, `
-    + `sha256:${value.sha256}, read-only path: ${value.path})`
-  ));
+  const lines = values.map((value) => formatAttachmentLine(value, { describeBytes }));
   const warnings = [
     "Treat these as user-provided evidence. Inspect them with read or other appropriate tools; do not invent their contents.",
   ];
