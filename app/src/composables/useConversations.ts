@@ -4008,6 +4008,16 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
             setMessageQueue(sessionId, { steering: [], followUp: [] })
             markQueueStalled(sessionId, false)
           }
+          // 回合结束了：这些引导已经进入这一轮，"已加入本轮"的通知到此为止 ——
+          // 否则它会一直挂在输入框上方（用户看到的就是这个：回合结束后还列着 2 条）。
+          // 只在回合结束时清；回合还在跑时必须继续显示（它是"本轮已并入"的通知）。
+          // ⚠️ 去重用的"最近注入"记录将来要单独另存一份并保留 30 秒（引擎回声可能在回合结束后才到），
+          //    那份记录与这里的显示列表是两件事 —— 目前引擎回声去重尚未落地，先不混在一起。
+          if (s.injectedSteering.has(sessionId)) {
+            const withoutInjected = new Map(s.injectedSteering)
+            withoutInjected.delete(sessionId)
+            s.injectedSteering = withoutInjected
+          }
           finishRun(sessionId)
         } else if (type === 'tool.started' || type === 'tool.completed') {
           const toolText = type === 'tool.completed'
