@@ -45,7 +45,8 @@ func TestDeliveryLoopStillStopsRealSpam(t *testing.T) {
 	if got < 50*time.Second {
 		t.Fatalf("the refusal must carry a readable remaining cooldown, got %s", got)
 	}
-	if again := agentDeliveryLoops.remaining("conv-b", "conv-a", now.Add(30*time.Second)); again <= 0 || again >= got {
+	// 只有反向那一侧被拦（刷爆预算的 conv-b -> conv-a 可以继续），所以递减检查也用它。
+	if again := agentDeliveryLoops.remaining("conv-a", "conv-b", now.Add(30*time.Second)); again <= 0 || again >= got {
 		t.Fatalf("remaining cooldown must count down inside the cooldown, got %s after %s", again, got)
 	}
 }

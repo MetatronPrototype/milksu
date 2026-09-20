@@ -335,12 +335,15 @@ type agentDeliveryLoopGuard struct {
 	openUntil map[string]time.Time
 	// budgets is the per-pair reverse-delivery budget; see app_agent_delivery_loop_budget.go.
 	budgets map[string]loopBudgetState
+	// openDirection remembers which way the delivery that tripped the budget was going.
+	openDirection map[string]string
 }
 
 var agentDeliveryLoops = &agentDeliveryLoopGuard{
 	pairs:     map[string]agentDeliveryPairState{},
 	openUntil: map[string]time.Time{},
 	budgets:   map[string]loopBudgetState{},
+	openDirection: map[string]string{},
 }
 
 // A pair is unordered: the point is the ping-pong, not which side started it.
@@ -355,15 +358,19 @@ func agentDeliveryPairKey(a, b string) string {
 func (guard *agentDeliveryLoopGuard) remaining(source, target string, now time.Time) time.Duration {
 	guard.mu.Lock()
 	defer guard.mu.Unlock()
-	until, ok := guard.openUntil[agentDeliveryPairKey(source, target)]
+	key := agentDeliveryPairKey(source, target)
+	until, ok := guard.openUntil[key]
 	if !ok || !now.Before(until) {
+		return 0
+	}
+	// A ping-pong needs both sides, so a cooldown only has to stop the *other* direction. The direction
+	// that tripped the budget may keep working: that is not a loop, and a same-direction flood is already
+	// capped by agentDeliverySourceBurst (12 per 10s across targets), so nothing is let through here.
+	if guard.openDirection[key] == source {
 		return 0
 	}
 	return until.Sub(now)
 }
-
-// record notes an accepted delivery and breaks the pair when it answers the other
-// direction inside the window.
 func (guard *agentDeliveryLoopGuard) record(source, target string, now time.Time) {
 	guard.mu.Lock()
 	defer guard.mu.Unlock()
@@ -377,6 +384,9 @@ func (guard *agentDeliveryLoopGuard) record(source, target string, now time.Time
 	if guard.budgets == nil {
 		guard.budgets = map[string]loopBudgetState{}
 	}
+	if guard.openDirection == nil {
+		guard.openDirection = map[string]string{}
+	}
 	// One reversal is an ordinary reply, so the pair is broken only once it goes past its budget for the
 	// window; the cooldown starts short and escalates only on a repeat offence.
 	state, decision := decideLoopBudget(guard.budgets[key], loopBudgetConfigFor(agentDeliveryLoopLevel()), now)
@@ -384,6 +394,7 @@ func (guard *agentDeliveryLoopGuard) record(source, target string, now time.Time
 	if decision.Allowed {
 		return
 	}
+	guard.openDirection[key] = source
 	guard.openUntil[key] = now.Add(decision.Remaining)
 }
 func (guard *agentDeliveryLoopGuard) reset() {
@@ -392,6 +403,7 @@ func (guard *agentDeliveryLoopGuard) reset() {
 	guard.pairs = map[string]agentDeliveryPairState{}
 	guard.openUntil = map[string]time.Time{}
 	guard.budgets = map[string]loopBudgetState{}
+	guard.openDirection = map[string]string{}
 }
 
 // SettleAgentDelivery answers the sidecar tool call that is waiting on a delivery the

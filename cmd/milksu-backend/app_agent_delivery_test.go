@@ -222,9 +222,14 @@ func TestAgentDeliveryLoopGuardBreaksOnlyAReversal(t *testing.T) {
 	if remaining <= 0 || remaining > agentDeliveryLoopCooldown {
 		t.Fatalf("going past the budget must break the pair, got %s", remaining)
 	}
-	// The pair is unordered: the direction that opened it is broken too.
-	if guard.remaining("conversation-b", "conversation-a", start.Add(21*time.Second)) <= 0 {
-		t.Fatal("the broken pair must cover both directions")
+	// A ping-pong needs both sides, so the cooldown only has to stop the other direction. The direction
+	// that tripped the budget may keep working; same-direction floods are capped by sourceBurst instead.
+	// 这里刷爆预算的是 conversation-a -> conversation-b（第 9 次越界的那一步），所以它自己不被封。
+	if guard.remaining("conversation-a", "conversation-b", brokenAt.Add(2*time.Second)) <= 0 {
+		t.Fatal("the direction that tripped the budget must not be blocked by its own cooldown")
+	}
+	if guard.remaining("conversation-b", "conversation-a", brokenAt.Add(2*time.Second)) <= 0 {
+		t.Fatal("the reverse direction must stay stopped inside the cooldown")
 	}
 	// A pair that did not ping-pong is untouched.
 	if guard.remaining("conversation-a", "conversation-c", start.Add(21*time.Second)) != 0 {
