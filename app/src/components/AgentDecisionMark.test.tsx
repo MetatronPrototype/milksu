@@ -1,59 +1,81 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import AgentDecisionMark from '@/components/AgentDecisionMark'
 
 afterEach(cleanup)
 
-// 用户要的形态：「完全一样的，原本的九格，但是点阵方形绕一圈并且黄色」
-// ⇒ 沿用 AgentPixelLoader 的像素格语言，3×3 但中心留空（= 8 格绕成一圈），琥珀色。
-describe('needs-decision mark', () => {
-  it('draws eight amber cells and leaves the centre empty', () => {
+// 用工作目录相对路径读源文件：jsdom 环境里 import.meta.url 不是 file 协议。
+const css = readFileSync(resolve(process.cwd(), 'src/styles/agent-conversation.css'), 'utf8')
+
+function ruleBody(selector: string) {
+  const start = css.indexOf(selector)
+  if (start < 0) return ''
+  const open = css.indexOf('{', start)
+  const close = css.indexOf('}', open)
+  return open < 0 || close < 0 ? '' : css.slice(open + 1, close)
+}
+
+// 用户反馈"尺寸和原来的不对"：待决策标记必须和运行中那个 loader **一样大**。
+describe('needs-decision mark size', () => {
+  it('keeps the original loader grid untouched at 4px cells and 1.5px gap', () => {
+    const grid = ruleBody('.agent-pixel {')
+    expect(grid).toContain('grid-template-columns: repeat(3, 4px)')
+    expect(grid).toContain('gap: 1.5px')
+    const cell = ruleBody('.agent-pixel__cell {')
+    expect(cell).toContain('width: 4px')
+    expect(cell).toContain('height: 4px')
+  })
+
+  // 尺寸一致靠"复用同一套网格与格子类"，而不是靠两处各写一份 4px（那样迟早漂移）。
+  it('reuses the very same grid classes as the loader', () => {
     const { container } = render(<AgentDecisionMark />)
-    const cells = container.querySelectorAll('.agent-decision-grid__cell')
+    expect(container.querySelectorAll('.agent-pixel')).toHaveLength(1)
+    const cells = container.querySelectorAll('.agent-pixel__cell')
     expect(cells).toHaveLength(8)
-    // 中心必须留空：占位元素在、但没有格子。
-    expect(container.querySelectorAll('.agent-decision-grid__hole')).toHaveLength(1)
-    // 点阵共 9 个位置：8 格 + 1 空
-    expect(container.querySelectorAll('.agent-decision-grid__cells > *')).toHaveLength(9)
-    // 第 5 个位置（索引 4）就是中心 ⇒ 没有格子类
-    const slots = container.querySelectorAll('.agent-decision-grid__cells > *')
-    expect(slots[4]?.className).not.toContain('agent-decision-grid__cell')
+    // 中心占位也走同一套 4px 尺寸（否则网格会被挤窄）。
+    const hole = ruleBody('.agent-pixel__cell--hole {')
+    expect(hole).toContain('width: 4px')
+    expect(hole).toContain('height: 4px')
   })
 
-  it('is amber, using the repository token', () => {
+  it('does not carry the old, smaller grid of its own any more', () => {
     const { container } = render(<AgentDecisionMark />)
-    for (const cell of container.querySelectorAll('.agent-decision-grid__cell')) {
-      expect(cell.className).toMatch(/bg-amber-500\b/)
-    }
+    expect(container.querySelector('.agent-decision-grid')).toBeNull()
+    expect(container.querySelectorAll('.agent-decision-grid__cell')).toHaveLength(0)
+    // 也不许自己写死 14px 的容器去挤网格。
+    expect(container.querySelector('.size-3\\.5')).toBeNull()
+    expect(css).not.toContain('.agent-decision-grid__cell')
+  })
+})
+
+describe('needs-decision mark appearance', () => {
+  it('draws eight amber cells with an empty centre', () => {
+    const { container } = render(<AgentDecisionMark />)
+    const cells = container.querySelectorAll('.agent-pixel__cell')
+    expect(cells).toHaveLength(8)
+    for (const cell of cells) expect(cell.className).toMatch(/bg-amber-500\b/)
+    const slots = container.querySelectorAll('.agent-pixel > *')
+    expect(slots).toHaveLength(9)
+    expect(slots[4]?.className).toContain('agent-pixel__cell--hole')
+    expect(slots[4]?.className).not.toContain('agent-pixel__cell ')
   })
 
-  // 与行内图标同尺寸（size-3.5 = 14px），否则那一行会跳。
-  it('is as big as the sidebar row icons', () => {
-    const { container } = render(<AgentDecisionMark />)
-    expect(container.querySelector('.agent-decision-grid')?.className).toContain('size-3.5')
-  })
-
-  // 不许旧形态残留：圆环（border-2 + rounded-full）和更早的九格方阵都要消失。
-  it('leaves no trace of the previous shapes', () => {
-    const { container } = render(<AgentDecisionMark />)
-    expect(container.querySelector('.agent-decision-ring__circle')).toBeNull()
-    expect(container.querySelector('.agent-pixel--decision')).toBeNull()
-    expect(container.querySelectorAll('.agent-pixel__cell')).toHaveLength(0)
-    expect(container.querySelector('.rounded-full')).toBeNull()
-    expect(container.querySelector('.border-2')).toBeNull()
+  // 待决策要"停下来等你"，不是运行中那种 650ms 快跳。
+  it('stops the running animation and breathes gently instead', () => {
+    const decision = ruleBody('.agent-pixel--decision .agent-pixel__cell {')
+    expect(decision).toContain('animation: none')
+    expect(ruleBody('.agent-pixel--decision {')).toContain('agent-decision-breathe 2.4s')
+    // 原版 loader 的动画定义保持不变（它仍然在转）。
+    expect(ruleBody('.agent-pixel__cell {')).toContain('agent-pixel-on 650ms')
   })
 
   it('announces itself as a status with a bilingual label', () => {
     render(<AgentDecisionMark />)
-    const status = screen.getByRole('status')
-    expect(status.getAttribute('aria-label')).toBe('需要你决定')
-    // 点阵对读屏是装饰（aria-hidden），文字由 role=status 的 aria-label 承担。
-    expect(status.textContent).toBe('')
-  })
-
-  it('accepts a custom label', () => {
+    expect(screen.getByRole('status').getAttribute('aria-label')).toBe('需要你决定')
     render(<AgentDecisionMark label="Needs your decision" />)
-    expect(screen.getByRole('status').getAttribute('aria-label')).toBe('Needs your decision')
+    expect(screen.getAllByRole('status')[1]?.getAttribute('aria-label')).toBe('Needs your decision')
   })
 })

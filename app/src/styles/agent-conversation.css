@@ -349,26 +349,29 @@
 }
 
 /* 「这个会话在等你拍板」：3×3 像素点阵、中心留空 ⇒ 8 个方形小格绕成一圈、琥珀色。
-   沿用 AgentPixelLoader 的格子语言（方形、极小圆角），所以整组尺寸 ≈ 3×3 + 2×1 的间距 ≈ 11px，
-   正好装在与行内图标一致的 size-3.5（14px）里。颜色走仓库既有的 amber token。
-   整组做轻微呼吸，不逐格跑马灯/闪烁。 */
-.agent-decision-grid__cell {
-  width: 3px;
-  height: 3px;
+   尺寸**复用原版网格**（.agent-pixel = repeat(3, 4px) + gap 1.5px；.agent-pixel__cell = 4×4）
+   —— 这里只改颜色与动画：上面那两条规则一个字都没动，所以运行中的 loader 渲染结果不变，
+   两个标记并排时大小完全一致（用户反馈"尺寸和原来的不对"就是这里）。
+   颜色用 .agent-pixel__cell--decision 上的 bg-amber-500（仓库既有 amber token，不硬编码色值）。 */
+.agent-pixel--decision {
+  animation: agent-decision-breathe 2.4s ease-in-out infinite;
 }
 
-.agent-decision-grid__hole {
-  width: 3px;
-  height: 3px;
+.agent-pixel--decision .agent-pixel__cell {
+  /* 关掉运行中那种 650ms 快跳：待决策要"停下来等你"，不是"还在忙"。 */
+  animation: none;
+  opacity: 1;
 }
 
-.agent-decision-grid__cells {
-  animation: agent-decision-grid-breathe 2.4s ease-in-out infinite;
+/* 中心留空：占位撑住网格，但不画格子。 */
+.agent-pixel__cell--hole {
+  width: 4px;
+  height: 4px;
 }
 
-@keyframes agent-decision-grid-breathe {
-  0%, 100% { opacity: 0.75; transform: scale(0.94); }
-  50% { opacity: 1; transform: scale(1.06); }
+@keyframes agent-decision-breathe {
+  0%, 100% { opacity: 0.75; transform: scale(0.96); }
+  50% { opacity: 1; transform: scale(1.04); }
 }
 
 [data-agent-conversation] .agent-pixel-loader__label {
@@ -440,7 +443,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .agent-pixel__cell,
-  .agent-decision-grid__cells,
+  .agent-pixel--decision,
   [data-agent-conversation] .agent-pixel-loader__label--run {
     animation: none;
   }
