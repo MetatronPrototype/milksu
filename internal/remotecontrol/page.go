@@ -73,8 +73,18 @@ const dashboardHTML = `<!doctype html>
   .approval .other { flex:1; min-width:0; padding:9px 11px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; }
   .approval .scope { display:flex; align-items:center; gap:6px; margin-top:8px; font-size:12px; color:var(--dim); }
   .conv-item .mark { color:var(--warn); font-weight:700; margin-left:6px; }
+  /* 与主界面同款的状态标记：3×3 像素点阵、4px 格子、1.5px 间距。
+     运行中 = 逐格呼吸；待决策 = 中心留空的琥珀色小环、整组 2.4 秒呼吸。
+     待决策优先于运行中（正在跑又在等人拍板时，用户最需要知道“轮到我”）。 */
+  .px-mark { display:inline-grid; grid-template-columns:repeat(3,4px); gap:1.5px; margin-right:6px; flex-shrink:0; }
+  .px-mark i { width:4px; height:4px; border-radius:1px; background:var(--fg); opacity:.15; animation:px-on 650ms ease-in-out infinite; animation-delay:calc(var(--i, 0) * 90ms); }
+  .px-mark.decision { margin-left:6px; margin-right:0; animation:px-breathe 2.4s ease-in-out infinite; }
+  .px-mark.decision i { background:var(--warn); opacity:1; animation:none; }
+  .px-mark i.hole { background:transparent; }
+  @keyframes px-on { 0%,100% { opacity:.15; } 50% { opacity:1; } }
+  @keyframes px-breathe { 0%,100% { opacity:.75; transform:scale(.96); } 50% { opacity:1; transform:scale(1.04); } }
+  @media (prefers-reduced-motion: reduce) { .px-mark, .px-mark i { animation:none; } }
   .conv-item .badge { margin-left:6px; font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:8px; padding:0 5px; }
-  .conv-item.waits { border-left:3px solid var(--warn); }
   .queue { border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:var(--card); }
   .queue-head { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--dim); }
   .queue-item { display:flex; gap:8px; align-items:center; margin-top:6px; font-size:13px; }
@@ -244,12 +254,19 @@ function renderDrawer() {
   $('conversationList').innerHTML = conversations.map(conversation => {
     const last = (conversation.messages || [])[(conversation.messages || []).length - 1]
     const preview = last ? String(last.text || '').slice(0, 46) : ''
-    // 等读者拍板的会话用琥珀问号标出来（与主机侧栏同口径），排队数量另给一枚小徽章。
-    const decision = conversation.needs_decision ? '<span class="mark" title="等你拍板">?</span>' : ''
+    // 状态标记与主界面同款：待决策优先于运行中；两者都是 3×3 点阵，只是一环一叶。
+    const slots = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    const statusMark = conversation.needs_decision
+      ? '<span class="px-mark decision" role="status" aria-label="需要你决定" title="需要你决定">' +
+        slots.map(index => index === 4 ? '<i class="hole"></i>' : '<i></i>').join('') + '</span>'
+      : conversation.running
+        ? '<span class="px-mark" role="status" aria-label="运行中" title="运行中">' +
+          slots.map(index => '<i style="--i:' + index + '"></i>').join('') + '</span>'
+        : ''
     const queued = (conversation.queue || []).length
     const queueBadge = queued ? '<span class="badge" title="排队中">' + queued + '</span>' : ''
-    return '<button class="conv-item' + (conversation.id === selectedId ? ' active' : '') + (conversation.needs_decision ? ' waits' : '') + '" data-conversation="' + escapeHtml(conversation.id) + '">' +
-      '<span class="t">' + escapeHtml(conversation.title || conversation.id) + (conversation.running ? ' ●' : '') + decision + queueBadge + '</span>' +
+    return '<button class="conv-item' + (conversation.id === selectedId ? ' active' : '') + '" data-conversation="' + escapeHtml(conversation.id) + '">' +
+      '<span class="t">' + statusMark + escapeHtml(conversation.title || conversation.id) + queueBadge + '</span>' +
       '<span class="m">' + escapeHtml(conversation.updated_at || '') + (preview ? ' · ' + escapeHtml(preview) : '') + '</span></button>'
   }).join('')
 }

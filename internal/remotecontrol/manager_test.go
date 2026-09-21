@@ -960,10 +960,18 @@ func TestPageCarriesTheParityControls(t *testing.T) {
 		"needs_decision",
 		"id=\"queue\"",
 		"/api/action/queue/clear",
+		// 状态标记跟主界面同款：3×3 点阵、中心留空的琥珀环 + 整组呼吸。
+		"px-mark decision",
+		"需要你决定",
+		"px-breathe",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Fatalf("the page is missing %s", marker)
 		}
+	}
+	// 早期版本用一个问号代替待决策标记，那是旧设计，不能再回来。
+	if strings.Contains(page, "等你拍板") {
+		t.Fatal("the decision mark must be the host's pixel ring, not a question mark")
 	}
 }
 
