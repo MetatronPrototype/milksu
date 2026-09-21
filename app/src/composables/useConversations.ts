@@ -4271,6 +4271,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     // **真正把消息送进目标对话是渲染层的活**（后端注释："它自己不启动回合；
     // 渲染层掌握调度，由它按目标的真实状态决定排队还是启动"）。
     // 不接这一处：投递永远不会落到目标对话，发信的工具也永远等不到回执。
+    // 后台任务：推送事件只在**变化时**来 ⇒ 重启后若已有任务在跑，在它下次变化前不会有事件 ✗，
+    // 那一刻"回合结束"就漏报 ✗。所以加载完成后**主动拉一次**现成命令 ✓（**只一次，不轮询** ✗）。
+    // 失败静默 ✓（拉不到就不提示，别打扰读者 ✗）。
+    void invokeCommand('refresh_coding_background_tasks').catch(() => undefined)
+
     disposeDelivery = await listenEvent<AgentDeliveryEvent>('agent-delivery', event => {
       const payload = event.payload
       const targetId = String(payload?.targetConversationId ?? '').trim()
