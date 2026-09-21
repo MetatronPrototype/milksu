@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,6 +21,9 @@ const (
 	remoteSnapshotMessages = 30
 	// remoteMessageRunes keeps one message small enough for a phone screen.
 	remoteMessageRunes = 700
+	// remoteAskToolName is the ask card the host renders with choices; the remote page shows
+	// the same options so a phone can answer it instead of only approving or denying.
+	remoteAskToolName = "milksu_ask"
 )
 
 // remoteTurnRecorder lazily creates the recorder for remotely driven turns.
@@ -149,18 +153,37 @@ func (a *App) trackRemoteViewEvent(event engine.Event) {
 		if requestID == "" {
 			return
 		}
-		a.approvalMu.Lock()
-		defer a.approvalMu.Unlock()
-		if a.pendingApprovals == nil {
-			a.pendingApprovals = make(map[string]remotecontrol.Approval)
-		}
-		a.pendingApprovals[requestID] = remotecontrol.Approval{
+		approval := remotecontrol.Approval{
 			RequestID:      requestID,
 			ConversationID: event.SessionID,
 			ToolName:       event.ToolName,
 			Input:          truncateRunes(event.Input, 400),
 			RequestedAt:    event.Timestamp,
+			Reason:         strings.TrimSpace(event.Reason),
+			Dangerous:      remoteToolIsDangerous(event.ToolName),
 		}
+		// The host offers "allow for this conversation" only when it is grantable, and never
+		// for a dangerous tool while the host switch keeps those local.
+		approval.GrantsConversation = event.Grantable && (!approval.Dangerous || a.dangerousToolsAllowed())
+		if strings.TrimSpace(event.ToolName) == remoteAskToolName {
+			approval.Kind = "ask"
+			approval.Question, approval.Options = parseAskCard(event.Input)
+		}
+		if event.Justification != nil {
+			approval.Justification = &remotecontrol.ApprovalJustification{
+				Purpose: strings.TrimSpace(event.Justification.Purpose),
+				Safety:  strings.TrimSpace(event.Justification.Safety),
+			}
+		}
+		a.approvalMu.Lock()
+		if a.pendingApprovals == nil {
+			a.pendingApprovals = make(map[string]remotecontrol.Approval)
+		}
+		a.pendingApprovals[requestID] = approval
+		a.approvalMu.Unlock()
+	case "session.queue_updated":
+		// The queue only exists as an event, so the remote page reads this cache.
+		a.rememberRemoteQueue(event.SessionID, event.Steering, event.FollowUp)
 	case "approval.resolved":
 		a.approvalMu.Lock()
 		defer a.approvalMu.Unlock()
@@ -235,6 +258,8 @@ func (a *App) remoteControlSnapshot(_ context.Context) (remotecontrol.Snapshot, 
 			ApprovalPolicy: conversation.ApprovalPolicy,
 			Messages:       recentMessages(conversation),
 		}
+		projection.NeedsDecision, projection.PendingRequestIDs = conversationDecision(conversation)
+		projection.Queue = a.remoteQueueFor(conversation.ID)
 		// The engine's Running flag is per kernel: using it here marked every conversation
 		// as running whenever any sidecar was alive. Use this conversation's own activity.
 		projection.Running = a.conversationActiveRecently(conversation.ID)
@@ -258,6 +283,98 @@ func (a *App) remoteControlSnapshot(_ context.Context) (remotecontrol.Snapshot, 
 	return snapshot, nil
 }
 
+// conversationDecision mirrors the host sidebar's needsDecision rule: a conversation is
+// waiting on the reader while some message is still pending and carries a request id.
+// Answered prompts (approved, denied, expired) never count.
+func conversationDecision(conversation conversation.StoredConversation) (bool, []string) {
+	ids := make([]string, 0, 2)
+	for _, message := range conversation.Messages {
+		if message.ApprovalRequestID == nil || message.ApprovalState == nil {
+			continue
+		}
+		if strings.TrimSpace(*message.ApprovalState) != "pending" {
+			continue
+		}
+		if requestID := strings.TrimSpace(*message.ApprovalRequestID); requestID != "" {
+			ids = append(ids, requestID)
+		}
+	}
+	return len(ids) > 0, ids
+}
+
+// parseAskCard reads the question and its choices out of a milksu_ask approval input, so the
+// phone shows the same options the desktop card does.
+func parseAskCard(input string) (string, []remotecontrol.ApprovalOption) {
+	var payload struct {
+		Question string `json:"question"`
+		Options  []struct {
+			ID     string `json:"id"`
+			Label  string `json:"label"`
+			Text   string `json:"text"`
+			Detail string `json:"detail"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &payload); err != nil {
+		return "", nil
+	}
+	options := make([]remotecontrol.ApprovalOption, 0, len(payload.Options))
+	for _, option := range payload.Options {
+		label := strings.TrimSpace(option.Label)
+		if label == "" {
+			label = strings.TrimSpace(option.Text)
+		}
+		if label == "" {
+			continue
+		}
+		options = append(options, remotecontrol.ApprovalOption{
+			ID:     strings.TrimSpace(option.ID),
+			Label:  truncateRunes(label, 80),
+			Detail: truncateRunes(strings.TrimSpace(option.Detail), 120),
+		})
+		if len(options) >= 6 {
+			break
+		}
+	}
+	return truncateRunes(strings.TrimSpace(payload.Question), 300), options
+}
+
+// rememberRemoteQueue stores the parked prompts of one conversation in order, so the page
+// can show the queue and withdraw one entry by position.
+func (a *App) rememberRemoteQueue(sessionID string, steering, followUp []string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	queue := make([]remotecontrol.QueuedMessage, 0, len(steering)+len(followUp))
+	for index, text := range steering {
+		queue = append(queue, remotecontrol.QueuedMessage{Queue: "steering", Index: index, Text: truncateRunes(text, 200)})
+	}
+	for index, text := range followUp {
+		queue = append(queue, remotecontrol.QueuedMessage{Queue: "followUp", Index: index, Text: truncateRunes(text, 200)})
+	}
+	a.remoteQueueMu.Lock()
+	defer a.remoteQueueMu.Unlock()
+	if a.remoteQueues == nil {
+		a.remoteQueues = make(map[string][]remotecontrol.QueuedMessage)
+	}
+	if len(queue) == 0 {
+		delete(a.remoteQueues, sessionID)
+		return
+	}
+	a.remoteQueues[sessionID] = queue
+}
+
+// remoteQueueFor returns a copy of the parked prompts of one conversation.
+func (a *App) remoteQueueFor(sessionID string) []remotecontrol.QueuedMessage {
+	a.remoteQueueMu.Lock()
+	defer a.remoteQueueMu.Unlock()
+	queue := a.remoteQueues[strings.TrimSpace(sessionID)]
+	if len(queue) == 0 {
+		return nil
+	}
+	return append([]remotecontrol.QueuedMessage(nil), queue...)
+}
+
 func recentMessages(conversation conversation.StoredConversation) []remotecontrol.Message {
 	if len(conversation.Messages) == 0 {
 		return nil
@@ -268,11 +385,26 @@ func recentMessages(conversation conversation.StoredConversation) []remotecontro
 	}
 	messages := make([]remotecontrol.Message, 0, len(conversation.Messages)-start)
 	for _, message := range conversation.Messages[start:] {
-		messages = append(messages, remotecontrol.Message{
+		projected := remotecontrol.Message{
 			Role: messageRole(message.Role),
 			Text: truncateRunes(strings.TrimSpace(message.Content), remoteMessageRunes),
 			At:   formatMessageTime(message.Timestamp),
-		})
+		}
+		if message.ApprovalRequestID != nil {
+			projected.ApprovalRequestID = strings.TrimSpace(*message.ApprovalRequestID)
+		}
+		if message.ApprovalState != nil {
+			projected.ApprovalState = strings.TrimSpace(*message.ApprovalState)
+		}
+		// Mark the message that is waiting on the reader, so the page can jump to it.
+		if projected.ApprovalRequestID != "" && projected.ApprovalState == "pending" {
+			if message.ToolName != nil && strings.TrimSpace(*message.ToolName) == remoteAskToolName {
+				projected.Kind = "ask"
+			} else {
+				projected.Kind = "tool"
+			}
+		}
+		messages = append(messages, projected)
 	}
 	return messages
 }

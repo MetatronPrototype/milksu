@@ -91,6 +91,10 @@ type App struct {
 	// page may show.
 	approvalMu       sync.Mutex
 	pendingApprovals map[string]remotecontrol.Approval
+	// remoteQueueMu guards the prompts parked behind each conversation's running turn, which
+	// the remote page shows and may withdraw.
+	remoteQueueMu sync.Mutex
+	remoteQueues  map[string][]remotecontrol.QueuedMessage
 	// turnActivity records when a conversation last produced an engine event, so the
 	// remote page can mark the conversations that are actually working. The engine's
 	// own status is per kernel, not per conversation.
