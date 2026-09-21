@@ -3941,9 +3941,14 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         // 用判定层决定说什么 ✓，再用现成通道把话说给读者 ✓ —— 文案在这里用 t() 成对拼 ✓（仓库硬约定 ✓）。
         // ⚠️ 必须两个名字都认：引擎在 `supervisor.go` 里把侧车名改写成 `runtime.background_tasks`
         // （与 subagent_tasks/dsh_jobs/compaction_* 同一张改名表 ✓），只认旧名字就会**静默收不到** ✗。
-        const tasks = Array.isArray((event.payload as unknown as { tasks?: unknown })?.tasks)
-          ? ((event.payload as unknown as { tasks: Array<{ name?: unknown; status?: unknown }> }).tasks)
-          : []
+        // ⚠️ 字段名要两个都读：侧车发 `{ tasks: … }`，引擎把它解进 `Event.BackgroundTasks`
+        // （json 标签是 `backgroundTasks`）再转给渲染层 ⇒ 只读 `tasks` 会永远得到空数组，
+        // 状态区那行与回合结束提示就会一起静默消失（真机读数：事件到了、count 恒为 0）。
+        const tasksPayload = (event.payload ?? {}) as { tasks?: unknown; backgroundTasks?: unknown }
+        const rawTasks = Array.isArray(tasksPayload.tasks)
+          ? tasksPayload.tasks
+          : (Array.isArray(tasksPayload.backgroundTasks) ? tasksPayload.backgroundTasks : [])
+        const tasks = rawTasks as Array<{ name?: unknown; status?: unknown }>
         const running = tasks.filter(task => String(task?.status ?? '') === 'running')
         const notice = backgroundTaskNotice({
           // 回合是否已结束：这一轮没在跑 ⇒ 读者看到的"结束"更需要说明 ✓。

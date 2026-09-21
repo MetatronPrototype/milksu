@@ -104,4 +104,20 @@ describe('background task survives the turn end', () => {
     expect(notice).toContain('后台仍在运行')
     expect(notice).toContain(TASK_NAME)
   })
+
+  // 真机形状：引擎把侧车的 `tasks` 解进 `Event.BackgroundTasks`（json 标签 `backgroundTasks`）
+  // 再改名转给渲染层。只读 `tasks` 时真机读数是「事件到了、count 恒为 0」。
+  it('reads the task list under the name the engine forwards', async () => {
+    const conversations = await loadRuntime()
+    conversations.store.setState({ runningIds: new Set(['conversation-1']), engineNotice: '' })
+    emitEngineEvent({ sessionId: 'conversation-1', type: 'runtime.background_tasks', backgroundTasks: [
+      { id: 't1', name: TASK_NAME, kind: 'process', status: 'running', startedAt: 1 },
+    ] })
+    expect(conversations.store.getState().backgroundTasks['conversation-1']).toHaveLength(1)
+    conversations.store.setState({ engineNotice: '' })
+    conversations.settleRunsForRuntimeRecovery()
+    const notice = conversations.store.getState().engineNotice
+    expect(notice).toContain('后台仍在运行')
+    expect(notice).toContain(TASK_NAME)
+  })
 })
