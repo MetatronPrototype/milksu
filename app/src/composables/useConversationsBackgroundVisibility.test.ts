@@ -86,4 +86,22 @@ describe('background task survives the turn end', () => {
     expect(notice).toContain('Still running in the background')
     expect(notice).toContain('2 ·')
   })
+
+  // 跨层名字：侧车发 `background_tasks`，但引擎在 `internal/engine/supervisor.go` 的改名表里
+  // 把它改写成 `runtime.background_tasks` 再交给渲染层（subagent_tasks/dsh_jobs/compaction_*
+  // 都是同一张表）。只认侧车名字 ⇒ 真机上**静默收不到** ⇒ 状态区那行与回合结束提示一起消失。
+  it('hears the event under the name the engine actually forwards', async () => {
+    const conversations = await loadRuntime()
+    conversations.store.setState({ runningIds: new Set(['conversation-1']), engineNotice: '' })
+    emitEngineEvent({ sessionId: 'conversation-1', type: 'runtime.background_tasks', tasks: [
+      { id: 't1', name: TASK_NAME, kind: 'process', status: 'running', startedAt: 1 },
+    ] })
+    expect(conversations.store.getState().backgroundTasks['conversation-1']).toHaveLength(1)
+    conversations.store.setState({ engineNotice: '' })
+    conversations.settleRunsForRuntimeRecovery()
+    expect(conversations.store.getState().runningIds.has('conversation-1')).toBe(false)
+    const notice = conversations.store.getState().engineNotice
+    expect(notice).toContain('后台仍在运行')
+    expect(notice).toContain(TASK_NAME)
+  })
 })

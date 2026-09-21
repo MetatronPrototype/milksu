@@ -3935,10 +3935,12 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         if (chinese || english) pushEngineNotice(t(chinese || english, english || chinese))
         return
       }
-      if (type === 'background_tasks') {
+      if (type === 'background_tasks' || type === 'runtime.background_tasks') {
         // 后台任务（打包/verify 那类）**不在** runningIds/turnStatus 里 ⇒ 回合结束时界面会像"完事了" ✗。
         // 这里订阅侧车已有的 `background_tasks` 事件 ✓（`bridge.js` 的 emitBackgroundTasks ✓），
         // 用判定层决定说什么 ✓，再用现成通道把话说给读者 ✓ —— 文案在这里用 t() 成对拼 ✓（仓库硬约定 ✓）。
+        // ⚠️ 必须两个名字都认：引擎在 `supervisor.go` 里把侧车名改写成 `runtime.background_tasks`
+        // （与 subagent_tasks/dsh_jobs/compaction_* 同一张改名表 ✓），只认旧名字就会**静默收不到** ✗。
         const tasks = Array.isArray((event.payload as unknown as { tasks?: unknown })?.tasks)
           ? ((event.payload as unknown as { tasks: Array<{ name?: unknown; status?: unknown }> }).tasks)
           : []
