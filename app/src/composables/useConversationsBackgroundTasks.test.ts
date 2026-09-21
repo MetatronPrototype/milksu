@@ -9,7 +9,10 @@ vi.mock('@/desktop', () => ({
   invokeCommand: vi.fn(async (command: string) => {
     commandCalls.push(command)
     // 与其它夹具一致：`load()` 需要 list_conversations 给数组 ✓（返回 null 会让它当场崩 ✗）。
-    if (command === 'list_conversations') return []
+    // 真实环境里列表是非空的 ✓ —— 后台任务的一次性拉取要拿它取会话 id 与工作区。
+    if (command === 'list_conversations') {
+      return [{ id: 'conversation-1', title: '探针', createdAt: 1, workspacePath: '/tmp/ws' }]
+    }
     if (command === 'get_coding_project_memory') return { recents: [], lastWorkspacePath: '' }
     return null
   }),

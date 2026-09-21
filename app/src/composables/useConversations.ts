@@ -1301,7 +1301,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   // 并回发同一个事件 ✓，那行就会自己消失 ✓。
   const BACKGROUND_TASK_REFRESH_MS = 15000
   let backgroundTaskRefreshTimer: ReturnType<typeof setInterval> | undefined
-  function scheduleBackgroundTaskRefresh(hasRunning: boolean) {
+  function scheduleBackgroundTaskRefresh(hasRunning: boolean, sessionId: string) {
     if (!hasRunning) {
       if (backgroundTaskRefreshTimer !== undefined) {
         clearInterval(backgroundTaskRefreshTimer)
@@ -1311,7 +1311,28 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     }
     if (backgroundTaskRefreshTimer !== undefined) return
     backgroundTaskRefreshTimer = setInterval(() => {
-      void invokeCommand('refresh_coding_background_tasks').catch(() => undefined)
+      // ⚠️ 这个命令**必须带会话**：引擎侧 `RefreshBackgroundTasks` 在 sessionID 为空时直接返回
+      // `session id is required` ✗。之前两次调用都没传参 ⇒ 每次都失败、又被静默吞掉 ⇒ 状态区那行
+      // 就永远停在“仍在运行”（真机：任务结束后仍显示 ✓）。参数照 `:2118` 的先例给 ✓。
+      const conversation = store.getState().conversations.find(item => item.id === sessionId)
+      invokeCommand<{ backgroundTasks?: Array<{ id?: string; name?: string; status?: string }> }>(
+        'refresh_coding_background_tasks',
+        { conversationId: sessionId, workspacePath: conversation?.workspacePath ?? '' },
+      ).then(status => {
+        const running = (status?.backgroundTasks ?? [])
+          .filter(task => String(task?.status ?? '') === 'running')
+          .map(task => ({
+            id: String(task?.id ?? ''),
+            name: String(task?.name ?? ''),
+            status: String(task?.status ?? ''),
+          }))
+        // 直接拿**返回值**更新事实层：不依赖侧车回发事件 ⇒ 侧车没起或刚被回收时也能清零 ✓。
+        store.setState(state => ({
+          ...state,
+          backgroundTasks: { ...state.backgroundTasks, [sessionId]: running },
+        }))
+        if (running.length === 0) scheduleBackgroundTaskRefresh(false, sessionId)
+      }).catch(() => undefined)
     }, BACKGROUND_TASK_REFRESH_MS)
   }
   function currentRunEpoch(id: string) {
@@ -1935,6 +1956,18 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     }
     s.turnStatusById = next
     await applyRememberedHomeProjectIfIdle()
+    // 后台任务：推送事件只在**变化时**来 ⇒ 重启后若已有任务在跑，在它下次变化前不会有事件 ✗，
+    // 那一刻"回合结束"就漏报 ✗。所以**列表就绪后主动拉一次**（**只一次，不轮询** ✗）。
+    // ⚠️ 必须带会话参数（引擎侧 sessionID 为空会直接报 `session id is required` ✗）。
+    // 失败静默 ✓（拉不到就不提示，别打扰读者 ✗）。
+    const pullSessionId = s.activeId || s.conversations[0]?.id || ''
+    if (pullSessionId) {
+      const pull = s.conversations.find(item => item.id === pullSessionId)
+      void invokeCommand('refresh_coding_background_tasks', {
+        conversationId: pullSessionId,
+        workspacePath: pull?.workspacePath ?? '',
+      }).catch(() => undefined)
+    }
   }
 
   function currentWorkspaceHome(): WorkspaceHome {
@@ -3969,7 +4002,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           : (Array.isArray(tasksPayload.backgroundTasks) ? tasksPayload.backgroundTasks : [])
         const tasks = rawTasks as Array<{ name?: unknown; status?: unknown }>
         // 有任务在跑 ⇒ 开轮询；全清 ⇒ 停（任务自己结束时不会再有工具调用事件 ✗）。
-        scheduleBackgroundTaskRefresh(rawTasks.length > 0)
+        scheduleBackgroundTaskRefresh(rawTasks.length > 0, sessionId)
         const running = tasks.filter(task => String(task?.status ?? '') === 'running')
         const notice = backgroundTaskNotice({
           // 回合是否已结束：这一轮没在跑 ⇒ 读者看到的"结束"更需要说明 ✓。
@@ -4391,10 +4424,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     // **真正把消息送进目标对话是渲染层的活**（后端注释："它自己不启动回合；
     // 渲染层掌握调度，由它按目标的真实状态决定排队还是启动"）。
     // 不接这一处：投递永远不会落到目标对话，发信的工具也永远等不到回执。
-    // 后台任务：推送事件只在**变化时**来 ⇒ 重启后若已有任务在跑，在它下次变化前不会有事件 ✗，
-    // 那一刻"回合结束"就漏报 ✗。所以加载完成后**主动拉一次**现成命令 ✓（**只一次，不轮询** ✗）。
-    // 失败静默 ✓（拉不到就不提示，别打扰读者 ✗）。
-    void invokeCommand('refresh_coding_background_tasks').catch(() => undefined)
+    // 后台任务的一次性拉取已挪到 `load()`（列表就绪后 ✓）—— 这里不再重复。
 
     disposeDelivery = await listenEvent<AgentDeliveryEvent>('agent-delivery', event => {
       const payload = event.payload

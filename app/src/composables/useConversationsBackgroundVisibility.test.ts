@@ -127,8 +127,9 @@ describe('background task survives the turn end', () => {
     vi.useFakeTimers()
     try {
       const { invokeCommand } = await import('@/desktop')
-      const calls = () => (invokeCommand as unknown as { mock: { calls: unknown[][] } }).mock.calls
-        .filter(call => call[0] === 'refresh_coding_background_tasks').length
+      const refreshCalls = () => (invokeCommand as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .filter(call => call[0] === 'refresh_coding_background_tasks')
+      const calls = () => refreshCalls().length
       const conversations = await loadRuntime()
       emitEngineEvent({ sessionId: 'conversation-1', type: 'runtime.background_tasks', backgroundTasks: [
         { id: 't1', name: TASK_NAME, status: 'running' },
@@ -136,6 +137,11 @@ describe('background task survives the turn end', () => {
       const before = calls()
       await vi.advanceTimersByTimeAsync(15000)
       expect(calls()).toBeGreaterThan(before)
+      // 回归保护：引擎侧 sessionID 为空会直接报 `session id is required` ✗ ⇒ 漏参时命令永远失败
+      // （被静默吞掉）⇒ 状态区那行永远停在“仍在运行”。
+      for (const call of refreshCalls()) {
+        expect(String((call[1] as { conversationId?: string })?.conversationId ?? '')).toBe('conversation-1')
+      }
       const afterFirst = calls()
       emitEngineEvent({ sessionId: 'conversation-1', type: 'runtime.background_tasks', backgroundTasks: [] })
       await vi.advanceTimersByTimeAsync(15000 * 3)
