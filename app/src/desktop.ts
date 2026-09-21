@@ -625,20 +625,6 @@ export function desktopErrorMessage(reason: unknown) {
 
 export async function invokeCommand<T = unknown>(command: string, args?: CommandArgs): Promise<T> {
   recordRpcCall(command)
-  // TEMP DEBUG（临时打点，仅用于定性"真双发"：模型收到两遍、而 app 只写了一条 ⇒ 怀疑发了两条命令；
-  // 查清后必须删除，提交说明已标 TEMPORARY）：
-  // 记录每一次引擎命令 + 调用方栈帧（文件名:行号）⇒ 一次真机复现就能看出是哪两处各发了一条。
-  try {
-    const payload = args as unknown as { conversationId?: unknown; prompt?: unknown } | undefined
-    const holder = globalThis as unknown as { __milksuCmdLog?: unknown[] }
-    ;(holder.__milksuCmdLog ??= []).push({
-      at: Date.now(),
-      command: String(command ?? ''),
-      conversationId: String(payload?.conversationId ?? ''),
-      snippet: String(payload?.prompt ?? '').slice(0, 30),
-      caller: String(new Error().stack ?? '').split('\n')[2]?.trim() ?? '',
-    })
-  } catch { /* 打点绝不能影响发送 */ }
   const app = getDesktopApp()
   if (!app) {
     throw new Error(`MilkSU desktop runtime is unavailable for command: ${command}`)
