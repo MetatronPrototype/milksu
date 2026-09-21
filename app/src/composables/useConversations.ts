@@ -1211,8 +1211,19 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
             const now = conversation.messages?.length ?? 0
             if (now > was) {
               const added = conversation.messages?.[now - 1]
+              const entry = {
+                at: Date.now(),
+                was,
+                now,
+                newId: String(added?.id ?? ''),
+                snippet: String(added?.content ?? '').slice(0, 30),
+                caller,
+              }
               console.info('[milksu-conv]', conversation.id, `${was}→${now}`,
-                added?.id, String(added?.content ?? '').slice(0, 30), caller)
+                entry.newId, entry.snippet, caller)
+              // 同时落到全局数组：调试通道读不到控制台，只能从 globalThis 取（真机复现用）。
+              const holder = globalThis as unknown as { __milksuConvLog?: unknown[] }
+              ;(holder.__milksuConvLog ??= []).push({ ...entry, conversationId: conversation.id })
             }
           }
         } catch { /* 打点绝不能影响状态 */ }
