@@ -57,6 +57,11 @@ describe('explainTokenFluxError', () => {
       'not supported by any configured account',
     ],
     [
+      '403: {"message":"The current group does not support the requested model \\"gemini-3.8-flash\\"","type":"permission_error"}',
+      '不支持这个模型',
+      'does not support the requested model',
+    ],
+    [
       '503: {"message":"No available accounts"}',
       '没有可用账号',
       'No available accounts',
@@ -95,22 +100,18 @@ describe('explainTokenFluxError', () => {
 })
 
 describe('explainModelCallFailure', () => {
-  // The incident: the reader saw a generic sentence, the picker said deepseek-flash, and the
-  // engine was really on the account source with a different model id.
-  it('names the source, provider, model and upstream status of the failure', () => {
-    const text = explainModelCallFailure('502 status code (no body)', {
+  // The incident: the reader saw a generic sentence, the picker said deepseek-flash, and the engine
+  // was really on the account source with a different model id. The final string is locked, so the
+  // route cannot silently lose the source or gain a second arrow.
+  it('names the source, provider, model and upstream status in one sentence', () => {
+    expect(explainModelCallFailure('502 status code (no body)', {
       provider: 'milksu-account',
       model: 'deepseek/deepseek-flash',
       source: 'account',
-    })
-    expect(text).toContain('模型调用失败')
-    expect(text).toContain('账号来源')
-    expect(text).toContain('milksu-account')
-    expect(text).toContain('deepseek/deepseek-flash')
-    expect(text).toContain('502')
-    // The account source is the TokenFlux relay, so its failure keeps the actionable copy
-    // instead of a generic "service unavailable".
-    expect(text).toContain('TokenFlux 上游暂时不可用')
+    })).toBe(
+      '模型调用失败：账号来源 / milksu-account / deepseek/deepseek-flash'
+        + '（502 status code (no body)） → TokenFlux 上游暂时不可用，请稍后重试或换一个模型。',
+    )
   })
 
   it('names the personal source when that is what ran', () => {
@@ -119,10 +120,24 @@ describe('explainModelCallFailure', () => {
       model: 'deepseek-flash',
       source: 'personal',
     })
-    expect(text).toContain('自有来源')
-    expect(text).toContain('custom-relay-deepseek / deepseek-flash')
+    expect(text).toBe(
+      '模型调用失败：自有来源 / custom-relay-deepseek / deepseek-flash'
+        + '（502 status code (no body)） → 模型服务暂时不可用，请稍后重试或换一个模型。',
+    )
     // A personal relay failure must not borrow the TokenFlux wording.
     expect(text).not.toContain('TokenFlux')
+  })
+
+  // Exactly one arrow: the route used to carry its own "→ status", which produced
+  // "route → HTTP 502 → explanation".
+  it('uses a single arrow', () => {
+    for (const context of [
+      { provider: 'milksu-account', model: 'deepseek/deepseek-flash', source: 'account' },
+      { provider: 'custom-relay-deepseek', model: 'deepseek-flash', source: 'personal' },
+    ]) {
+      const text = explainModelCallFailure('502 status code (no body)', context) ?? ''
+      expect(text.split('→')).toHaveLength(2)
+    }
   })
 
   it('stays unchanged when no context is available', () => {
@@ -130,17 +145,15 @@ describe('explainModelCallFailure', () => {
       .toBe(explainModelServiceError('502 status code (no body)'))
   })
 
-  it('uses TokenFlux copy only for TokenFlux provider or TokenFlux fingerprints', () => {
+  it('maps a broken tool history instead of blaming the model ID', () => {
     applyUiLocale('zh')
-    const bare = 'PI model verification failed: 403 status code (no body)'
-    expect(explainModelServiceError(bare)).toContain('模型服务拒绝了这次请求')
-    expect(explainModelServiceError(bare)).not.toContain('TokenFlux')
-    expect(explainModelServiceError(bare, { provider: 'custom-relay-deepseek' })).toContain('模型服务拒绝了这次请求')
-    expect(explainModelServiceError(bare, { provider: 'custom-relay-deepseek' })).not.toContain('TokenFlux')
-    expect(explainModelServiceError(bare, { provider: 'tokenflux' })).toContain('TokenFlux')
-    expect(explainModelServiceError(
-      '403: {"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}',
-    )).toContain('TokenFlux')
+    const text = explainModelServiceError(
+      "400: Messages with role 'tool' must be a response to a preceding message with 'tool_calls'",
+      { provider: 'tokenflux', model: 'google/gemini-3.8-flash-tiered' },
+    )
+    expect(text).toContain('没法继续了')
+    expect(text).not.toContain('模型 ID')
+    expect(text).not.toContain('tool_calls')
   })
 })
 

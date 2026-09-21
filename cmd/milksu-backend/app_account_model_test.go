@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/MilkSU-Official/milksu/internal/config"
 	"github.com/MilkSU-Official/milksu/internal/modelcatalog"
 )
 
@@ -38,6 +39,57 @@ func TestAccountCatalogModelAlignsCompositeAndBareIDs(t *testing.T) {
 	bare := []modelcatalog.Model{{ID: "claude-sonnet-4.6"}, {ID: "gpt-4.1"}}
 	if got := accountCatalogModel("Claude/claude-sonnet-4.6", bare); got != "claude-sonnet-4.6" {
 		t.Fatalf("accountCatalogModel(prefixed->bare) = %q, want claude-sonnet-4.6", got)
+	}
+}
+
+func TestAccountCatalogModelUsesCatalogThinkingSuffix(t *testing.T) {
+	models := []modelcatalog.Model{
+		{ID: "deepseek/deepseek-flash"},
+		{ID: "google/gemini-3.1-pro-high"},
+		{ID: "google/gemini-3.8-flash-tiered"},
+	}
+	if got := accountCatalogModel("google/gemini-3.8-flash", models); got != "google/gemini-3.8-flash-tiered" {
+		t.Fatalf("accountCatalogModel(flash->tiered) = %q, want google/gemini-3.8-flash-tiered", got)
+	}
+	if got := accountCatalogModel("gemini-3.8-flash", models); got != "google/gemini-3.8-flash-tiered" {
+		t.Fatalf("accountCatalogModel(bare flash->tiered) = %q, want google/gemini-3.8-flash-tiered", got)
+	}
+	if got := accountCatalogModel("google/gemini-3.8-flash-tiered", models); got != "google/gemini-3.8-flash-tiered" {
+		t.Fatalf("accountCatalogModel exact tiered = %q", got)
+	}
+}
+
+func TestAlignCompanionModelFollowsCatalogSuffix(t *testing.T) {
+	settings := config.DefaultSettings()
+	settings.CompanionProvider = "tokenflux"
+	settings.CompanionModel = "google/gemini-3.8-flash"
+	next := alignCompanionModel(settings, modelcatalog.Snapshot{
+		Models: []modelcatalog.Model{
+			{ID: "google/gemini-3.8-flash-tiered"},
+			{ID: "google/gemini-3.1-pro-high"},
+		},
+	})
+	if next.CompanionModel != "google/gemini-3.8-flash-tiered" {
+		t.Fatalf("companion model = %q, want google/gemini-3.8-flash-tiered", next.CompanionModel)
+	}
+}
+
+func TestAlignCompanionModelKeepsAccountDeepSeekDefault(t *testing.T) {
+	settings := config.DefaultSettings()
+	settings.CompanionProvider = config.DefaultCompanionProvider
+	settings.CompanionModel = config.DefaultCompanionModel
+	settings.CompanionSource = config.DefaultCompanionSource
+	next := alignCompanionModel(settings, modelcatalog.Snapshot{
+		Models: []modelcatalog.Model{
+			{ID: "deepseek/deepseek-flash"},
+			{ID: "google/gemini-3.8-flash-tiered"},
+		},
+	})
+	if next.CompanionProvider != "tokenflux" || next.CompanionModel != "deepseek/deepseek-flash" {
+		t.Fatalf("companion default = %s/%s, want tokenflux/deepseek/deepseek-flash", next.CompanionProvider, next.CompanionModel)
+	}
+	if next.CompanionSource != "account" {
+		t.Fatalf("companion source = %q, want account", next.CompanionSource)
 	}
 }
 

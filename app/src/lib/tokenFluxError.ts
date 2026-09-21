@@ -77,7 +77,12 @@ function has(parsed: ParsedTokenFluxFailure, pattern: RegExp): boolean {
   return pattern.test(parsed.haystack) || pattern.test(parsed.code) || pattern.test(parsed.reason)
 }
 
-const TOKENFLUX_FINGERPRINT = /tokenflux|API_KEY_|INSUFFICIENT_BALANCE|GROUP_|TEAM_|SUBSCRIPTION_|QUOTA_EXHAUSTED|DAILY_LIMIT_EXCEEDED|WEEKLY_LIMIT_EXCEEDED|MONTHLY_LIMIT_EXCEEDED|COMPOSITE_KEY_MODEL_PREFIX|Claude Code|composite api key model|not supported by any configured account|No available accounts|All available accounts exhausted|Billing service temporarily unavailable|内容审计命中风险规则|restricted to Claude Code|only allows Claude Code|\/v1\/messages only|does not allow (?:Anthropic|OpenAI|Gemini)|not assigned to any group|rate limited|Concurrency limit|Too many pending requests|Upstream rate limit|model group rate/i
+function explainBrokenToolHistory(parsed: ParsedTokenFluxFailure): string | null {
+  if (!has(parsed, /role ['"]tool['"].*tool_calls/i)) return null
+  return t('这段对话没法继续了。', 'This chat can\'t continue.')
+}
+
+const TOKENFLUX_FINGERPRINT = /tokenflux|API_KEY_|INSUFFICIENT_BALANCE|GROUP_|TEAM_|SUBSCRIPTION_|QUOTA_EXHAUSTED|DAILY_LIMIT_EXCEEDED|WEEKLY_LIMIT_EXCEEDED|MONTHLY_LIMIT_EXCEEDED|COMPOSITE_KEY_MODEL_PREFIX|Claude Code|composite api key model|not supported by any configured account|does not support the requested model|No available accounts|All available accounts exhausted|Billing service temporarily unavailable|内容审计命中风险规则|restricted to Claude Code|only allows Claude Code|\/v1\/messages only|does not allow (?:Anthropic|OpenAI|Gemini)|not assigned to any group|rate limited|Concurrency limit|Too many pending requests|Upstream rate limit|model group rate/i
 
 function looksLikeTokenFluxFingerprint(parsed: ParsedTokenFluxFailure): boolean {
   return TOKENFLUX_FINGERPRINT.test(parsed.haystack)
@@ -206,10 +211,10 @@ export function explainTokenFluxError(value: unknown): string | null {
   if (parsed.status === 403 || has(parsed, /status code \(no body\)/i)) {
     return t('TokenFlux 拒绝了这次请求。常见原因是余额不足、订阅过期或分组不可用，请到 TokenFlux 查看额度与 Key 状态。', 'TokenFlux rejected this request. Typical causes are insufficient balance, an expired subscription, or an unavailable group. Check quota and key status on TokenFlux.')
   }
-  if (parsed.status === 400) {
-    return t('TokenFlux 认为这次请求无效，请检查模型 ID 后重试。', 'TokenFlux rejected this request as invalid. Check the model ID, then try again.')
-  }
-  return null
+  return explainBrokenToolHistory(parsed)
+    || (parsed.status === 400
+      ? t('TokenFlux 认为这次请求无效，请检查模型 ID 后重试。', 'TokenFlux rejected this request as invalid. Check the model ID, then try again.')
+      : null)
 }
 
 function explainTokenFluxStatusFallback(parsed: ParsedTokenFluxFailure): string | null {
@@ -228,10 +233,10 @@ function explainTokenFluxStatusFallback(parsed: ParsedTokenFluxFailure): string 
   if (parsed.status === 403 || has(parsed, /status code \(no body\)/i)) {
     return t('TokenFlux 拒绝了这次请求。常见原因是余额不足、订阅过期或分组不可用，请到 TokenFlux 查看额度与 Key 状态。', 'TokenFlux rejected this request. Typical causes are insufficient balance, an expired subscription, or an unavailable group. Check quota and key status on TokenFlux.')
   }
-  if (parsed.status === 400) {
-    return t('TokenFlux 认为这次请求无效，请检查模型 ID 后重试。', 'TokenFlux rejected this request as invalid. Check the model ID, then try again.')
-  }
-  return null
+  return explainBrokenToolHistory(parsed)
+    || (parsed.status === 400
+      ? t('TokenFlux 认为这次请求无效，请检查模型 ID 后重试。', 'TokenFlux rejected this request as invalid. Check the model ID, then try again.')
+      : null)
 }
 
 function explainNeutralModelHttp(parsed: ParsedTokenFluxFailure): string | null {
@@ -250,10 +255,10 @@ function explainNeutralModelHttp(parsed: ParsedTokenFluxFailure): string | null 
   if (parsed.status === 403 || has(parsed, /status code \(no body\)/i)) {
     return t('模型服务拒绝了这次请求。请检查 Key、额度与模型 ID。', 'The model service rejected this request. Check the key, quota, and model ID.')
   }
-  if (parsed.status === 400) {
-    return t('这次请求无效，请检查模型 ID 后重试。', 'The model service rejected this request as invalid. Check the model ID, then try again.')
-  }
-  return null
+  return explainBrokenToolHistory(parsed)
+    || (parsed.status === 400
+      ? t('这次请求无效，请检查模型 ID 后重试。', 'The model service rejected this request as invalid. Check the model ID, then try again.')
+      : null)
 }
 
 export type ModelServiceErrorContext = {
@@ -269,7 +274,11 @@ export type ModelServiceErrorContext = {
  * engine was really calling the account source with a different model id - the reader had no way
  * to tell a chosen relay apart from the account fallback.
  */
-function modelFailureRoute(context: ModelServiceErrorContext | undefined, parsed: ParsedTokenFluxFailure) {
+function modelFailureRoute(
+  context: ModelServiceErrorContext | undefined,
+  parsed: ParsedTokenFluxFailure,
+  raw: unknown,
+) {
   const provider = String(context?.provider ?? '').trim()
   if (!provider) return ''
   const model = String(context?.model ?? '').trim()
@@ -280,10 +289,15 @@ function modelFailureRoute(context: ModelServiceErrorContext | undefined, parsed
       ? t('自有来源', 'personal source')
       : ''
   const route = [sourceLabel, provider, model].filter(Boolean).join(' / ')
-  const upstream = compactErrorText(parsed.message || parsed.reason || parsed.code).slice(0, 120)
-  const status = parsed.status === null ? '' : `HTTP ${parsed.status}`
-  const detail = [status, upstream].filter(Boolean).join(' ')
-  return detail ? `${route} → ${detail}` : route
+  // Keep the provider's own words; fall back to the raw error when it never carried a message field.
+  const upstream = compactErrorText(parsed.message || parsed.reason || raw).slice(0, 120)
+  // The status stays inside the parentheses: the route is not allowed to carry its own arrow, or the
+  // sentence ends up with two of them ("route → HTTP 502 → explanation").
+  const status = parsed.status === null || upstream.includes(String(parsed.status))
+    ? ''
+    : `HTTP ${parsed.status}`
+  const detail = [status, upstream].filter(Boolean).join(' · ')
+  return detail ? `${route}（${detail}）` : route
 }
 
 export function explainModelServiceError(
@@ -315,7 +329,7 @@ export function explainModelCallFailure(
 ): string | null {
   const explanation = explainModelServiceError(value, context)
   if (!explanation) return null
-  const route = modelFailureRoute(context, parseTokenFluxFailure(value))
+  const route = modelFailureRoute(context, parseTokenFluxFailure(value), value)
   if (!route) return explanation
   return t(`模型调用失败：${route} → ${explanation}`, `Model call failed: ${route} → ${explanation}`)
 }

@@ -15,7 +15,7 @@ export type StoredComposerDraft = {
  * 它原来只存在这个模块级 Map 里（纯内存）：切对话时靠"保存上一份"那一步兜，
  * 而走的是比较基准的时序——一旦基准已经变成新会话，那一格就再也写不进去，
  * 用户切回去就发现白打了一大段（用户已经因此损失两次输入）。
- * 现在 Map 仍是读缓存，但写入会落盘（localStorage），启动时自动恢复。
+ * 现在 Map 仍是读缓存，但每次写入都落盘（localStorage），启动时自动恢复。
  */
 const drafts = new Map<string, StoredComposerDraft>()
 // 写入次序：时间戳可能相同（同一毫秒内连续写），单靠时间戳淘汰顺序不确定。
@@ -28,16 +28,6 @@ const STORAGE_KEY = 'milksu.composer-drafts.v1'
 // 保留正在用的。体积上限同时兜住"某个会话里粘了超长文本"的情况。
 const MAX_DRAFT_ENTRIES = 50
 const MAX_DRAFT_BYTES = 256 * 1024
-
-// 每次按键都同步落盘会让输入卡顿：一次写入要序列化整张表并写一次 localStorage，agent
-// 流式输出时界面频繁重绘、主线程被占，更明显（真机实测：十几个字打了 980 次写盘）。
-// 所以内存**立刻**更新（见 write/clear），而落盘按下面这个窗口合并；切换会话/失焦/
-// 卸载/发送/页面隐藏时必须立刻落盘（flushComposerDraftsNow）。
-const FLUSH_DEBOUNCE_MS = 200
-// 一直打字也不能永远不落盘：超过这个时间必须写一次。
-const FLUSH_MAX_WAIT_MS = 1000
-let flushTimer: ReturnType<typeof setTimeout> | null = null
-let flushDeadline = 0
 
 function storage(): Storage | null {
   try {
@@ -102,29 +92,7 @@ function prune() {
   for (const [key, value] of kept) drafts.set(key, value)
 }
 
-/** 立刻落盘：给"不能等"的时机用（切换、失焦、卸载、发送、pagehide/visibilitychange）。 */
-export function flushComposerDraftsNow() {
-  if (flushTimer !== null) {
-    clearTimeout(flushTimer)
-    flushTimer = null
-  }
-  flushDeadline = 0
-  persist()
-}
-
-function scheduleFlush() {
-  const now = Date.now()
-  if (flushDeadline === 0) flushDeadline = now + FLUSH_MAX_WAIT_MS
-  if (flushTimer !== null) clearTimeout(flushTimer)
-  const wait = Math.max(0, Math.min(FLUSH_DEBOUNCE_MS, flushDeadline - now))
-  flushTimer = setTimeout(() => {
-    flushTimer = null
-    flushDeadline = 0
-    persist()
-  }, wait)
-}
-
-function persist() {
+function flush() {
   const store = storage()
   if (!store) return
   try {
@@ -162,25 +130,6 @@ export function readComposerDraft(key: string): StoredComposerDraft | undefined 
 }
 
 /**
- * 内容签名：只认"内容"本身，不认对象引用。
- *
- * 组件那条 effect 会在每次重绘时跑（依赖里有每次新建的值），真机实测草稿表被打点写了
- * 980 次（用户只打了十几个字）。所以写入前比较签名：内容没变就既不写内存、也不排落盘。
- */
-function draftSignature(draft: {
-  html: string
-  text: string
-  attachments: readonly { id?: string; name?: string }[]
-}) {
-  const attachments = draft.attachments
-    .map(entry => `${String(entry?.id ?? '')}:${String(entry?.name ?? '')}`)
-    .join(',')
-  return `${draft.text}\u0000${draft.html}\u0000${attachments}`
-}
-
-const lastSignature = new Map<string, string>()
-
-/**
  * 编辑器里只剩空行（<br>、空 div、空白、&nbsp;）时，读者看到的是空输入框，
  * 因此必须按"空"处理：既不能让"清空输入框"留下一格空壳，也不能把空壳当成内容。
  */
@@ -188,27 +137,16 @@ export function isBlankComposerMarkup(html: string): boolean {
   return !String(html ?? '').replace(/<br\s*\/?>|<div>\s*<\/div>|&nbsp;|\s/gi, '').trim()
 }
 
-export function writeComposerDraft(
-  key: string,
-  draft: StoredComposerDraft,
-  options?: { explicitClear?: boolean },
-) {
+export function writeComposerDraft(key: string, draft: StoredComposerDraft) {
   const normalized = String(key ?? '').trim()
   if (!normalized) return
   let html = String(draft.html ?? '')
   let text = String(draft.text ?? '')
   const attachments = [...(draft.attachments ?? [])]
   if (isBlankComposerMarkup(html) && !text.trim() && !attachments.length) {
-    // 空写有两种意图，必须分开：
-    // ① 意外空写（切换对话/卸载/水合前的空状态）⇒ 不写、也不删 ✓
-    //    否则读者的草稿会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
-    // ② 用户主动删除（移掉最后一个附件、清空输入框）⇒ 必须落盘，包括把这一格删掉 ✓
-    //    否则存储里留着旧值，重启后 store 重新 hydrate，删掉的东西又回来了
-    //    （真机 beta.50：昨天的引用/附件在重启后复活）。
-    if (!options?.explicitClear) return
-    drafts.delete(normalized)
-    lastSignature.delete(normalized)
-    scheduleFlush()
+    // 空写不再删除草稿：切换对话等路径会顺手写一次空内容，若沿用"空即删除"
+    // 的旧规则，读者的草稿就会在切走的一瞬间被抹掉（已真机复现并抓到调用栈）。
+    // 真正要清空时请显式调用 clearComposerDraft。
     return
   }
   const stored = drafts.get(normalized)
@@ -225,15 +163,9 @@ export function writeComposerDraft(
       if (isBlankComposerMarkup(html)) html = String(stored.html ?? '')
     }
   }
-  const signature = draftSignature({ html, text, attachments })
-  if (lastSignature.get(normalized) === signature) {
-    // 内容一模一样：这一次是界面重绘，不是编辑。不写内存、不排落盘。
-    return
-  }
-  lastSignature.set(normalized, signature)
   drafts.set(normalized, { html, text, attachments, at: Date.now() })
   draftOrder.set(normalized, ++draftSeq)
-  scheduleFlush()
+  flush()
 }
 
 export function clearComposerDraft(key: string) {
@@ -241,12 +173,10 @@ export function clearComposerDraft(key: string) {
   if (!normalized) return
   drafts.delete(normalized)
   draftOrder.delete(normalized)
-  lastSignature.delete(normalized)
-  scheduleFlush()
+  flush()
 }
 
 export function resetComposerDrafts() {
   drafts.clear()
-  lastSignature.clear()
-  flushComposerDraftsNow()
+  flush()
 }

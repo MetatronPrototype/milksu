@@ -22,6 +22,7 @@ export default function AppSidebar({
   onNew,
   onNavigate,
   onSettings,
+  onCompanion,
   settingsCategory,
   onSelectSettingsCategory,
   onCloseSettings,
@@ -60,6 +61,7 @@ export default function AppSidebar({
   onNew?: () => void
   onNavigate?: (value: WorkspaceSection) => void
   onSettings?: () => void
+  onCompanion?: () => void
   settingsCategory?: NormalizedSettingsCategory
   onSelectSettingsCategory?: (value: NormalizedSettingsCategory) => void
   onCloseSettings?: () => void
@@ -129,6 +131,7 @@ export default function AppSidebar({
         onNavigate={onNavigate}
         onProfile={onProfile}
         onSettings={onSettings}
+        onCompanion={onCompanion}
         onAccountLogin={onAccountLogin}
         onAccountLogout={onAccountLogout}
         onToggleTheme={onToggleTheme}

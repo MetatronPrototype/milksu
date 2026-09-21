@@ -28,6 +28,7 @@ import {
   stopPiBackgroundTask,
 } from "./reviewed-ts/extensions.js";
 import { dropSendAfterAbort } from "./bridge-abort.js";
+import { enqueueConversationPrompt } from "./bridge-conversation-prompt.js";
 import {
   createToolRepeatGuard,
   toolBudgetPrompt,
@@ -172,7 +173,9 @@ import {
   projectSubagentToolResult,
 } from "./bridge-subagent-yield.js";
 import {
+  followUpSession,
   projectSteeringQueue,
+  relaySession,
   removeQueuedMessage,
   steerSession,
 } from "./bridge-steering.js";
@@ -599,7 +602,7 @@ function createMilkSUWorkflowExtension(sessionRole, getPolicy, getSession, conve
     pi.registerTool({
       name: "request_destructive_delete",
       label: "MilkSU destructive delete",
-      description: "Ask the user before deleting something recursively. Fill in purpose (why this deletion is needed) and safety (what it is and whether it can be restored). A recursive delete that does not go through this tool is refused, so use it whenever you need to remove a tree.",
+      description: "Ask the user before deleting something recursively. Fill in purpose (why this deletion is needed) and safety (what it is and whether it can be restored). A recursive delete from bash also pauses for the same confirmation; use this tool when you already know the path and the reason.",
       parameters: Type.Object({
         path: Type.String({ minLength: 1, maxLength: 4096 }),
         purpose: Type.String({ minLength: 1, maxLength: 2000 }),
@@ -622,11 +625,20 @@ function createMilkSUWorkflowExtension(sessionRole, getPolicy, getSession, conve
           emit(conversationId, "destructive.blocked", { notice: decision.reason });
           throw new Error(decision.reason);
         }
+        // The card judges a *delete*, so the approval always carries the delete in the shape
+        // the guard uses (see destructiveDeleteApproval). Unmeasurable cases also arrive
+        // as approval. If a later switch uses refuseUnmeasuredDelete, that block reason
+        // is thrown here so the model can change the command.
+        const approval = destructiveDeleteApproval({
+          target,
+          decision,
+          chinese: policy?.uiLocale !== "en",
+        });
         const approved = await approvalBroker.request({
           conversationId,
           toolName: "destructive-delete",
-          content: decision?.content ?? target,
-          input: truncate(decision?.input ?? target, 16000),
+          content: approval.content,
+          input: truncate(approval.input, 16000),
           justification: { purpose, safety },
         });
         if (!approved) {
@@ -883,8 +895,6 @@ function createCodingPermissionExtension(
         policy,
       });
       if (deleteDecision?.action === "block") {
-        // A blocked deletion is a decision the reader must be able to see: the guard never
-        // asks, so without this notice the command simply appears to do nothing.
         emit(conversationId, "destructive.blocked", { notice: deleteDecision.reason });
         return {
           block: true,
@@ -892,21 +902,22 @@ function createCodingPermissionExtension(
         };
       }
       if (deleteDecision?.action === "approval") {
-        // A recursive delete must carry the requester's own purpose and safety note;
-        // without it the card would only ever say "not provided". A background task
-        // cannot show a card at all, so both cases fail closed.
-        const justification = destructiveJustification(event.input);
-        if (event.toolName === "bg_task" || !justification.ok) {
-          const blockReason = event.toolName === "bg_task"
-            ? "MilkSU refused this deletion: a background task cannot be approved "
-              + "interactively. Run it in the foreground so it can be reviewed."
-            : justification.reason;
+        const chinese = policy?.uiLocale !== "en";
+        // A background task cannot show a card. Risky and unmeasurable deletes still
+        // ask in the foreground. If a later switch uses refuseUnmeasuredDelete, the
+        // block reason above is what the model sees.
+        if (event.toolName === "bg_task") {
+          const blockReason = chinese
+            ? "后台任务无法弹出确认。请在前台执行这条删除，以便确认。"
+            : "MilkSU refused this deletion: a background task cannot be approved "
+              + "interactively. Run it in the foreground so it can be reviewed.";
           emit(conversationId, "destructive.blocked", { notice: blockReason });
           return {
             block: true,
             reason: blockReason,
           };
         }
+        const justification = destructiveJustification(event.input);
         const approved = await approvalBroker.request({
           conversationId,
           toolName: "destructive-delete",
@@ -914,10 +925,18 @@ function createCodingPermissionExtension(
             ? `${externalApprovalNotice()}${deleteDecision.content}`
             : deleteDecision.content,
           input: truncate(deleteDecision.input, 16000),
-          justification: {
-            purpose: justification.purpose,
-            safety: justification.safety,
-          },
+          justification: justification.ok
+            ? {
+                purpose: justification.purpose,
+                safety: justification.safety,
+              }
+            : {
+                purpose: chinese ? "删除需要确认" : "Deletion requires confirmation",
+                safety: deleteDecision.reason
+                  || (chinese
+                    ? "运行前无法完整核验影响范围，由你确认后才会执行。"
+                    : "Impact could not be fully checked before running. Confirm to run it."),
+              },
         });
         if (!approved) {
           return {
@@ -1098,16 +1117,18 @@ function createCodingPermissionExtension(
     });
 
     pi.on("before_agent_start", async (event) => {
-      const turnGuidance = codingTurnContractGuidance(getTurnContract());
+      const uiLocale = getPolicy()?.uiLocale;
+      const turnGuidance = codingTurnContractGuidance(getTurnContract(), uiLocale);
       if (!turnGuidance) return undefined;
+      const heading = uiLocale === "en" ? "MilkSU per-turn contract" : "MilkSU 本回合合同";
       const result = {
         systemPrompt: `${event.systemPrompt}`
-          + `\n\nMilkSU per-turn contract:\n${turnGuidance}`,
+          + `\n\n${heading}:\n${turnGuidance}`,
       };
       if (turnGuidance) {
         result.message = {
           customType: codingTurnContractMessageType,
-          content: codingTurnContractContext(getTurnContract()),
+          content: codingTurnContractContext(getTurnContract(), uiLocale),
           display: false,
           details: {
             scope: "current-turn",
@@ -1379,13 +1400,19 @@ function configureRuntimeModel(
     customRelay,
   });
   if (selection.failure) {
+    const english = String(locale ?? "").toLowerCase().startsWith("en");
     const detail = account.unavailable && requestedOrder.includes("account")
-      ? `账户分配模型不支持 ${account.id}`
+      ? (english
+        ? `The account allocation does not cover ${account.id}.`
+        : `账户分配模型不支持 ${account.id}。`)
       : "";
     const message = modelSourceFailureMessage({
       provider,
       model,
       requestedOrder,
+      // The source this turn was meant to use, so an account failure is never reported as personal
+      // just because both appear in the order.
+      source: selection.failure.intendedSource,
       locale,
       detail,
     });
@@ -1708,10 +1735,14 @@ async function createSessionManager(cwd, agentDir, conversationId) {
   return SessionManager.create(cwd, sessionDir, { id: conversationId });
 }
 
-async function loadProjectInstructions(cwd) {
+async function loadProjectInstructions(cwd, uiLocale) {
   try {
     const content = await readFile(join(cwd, "AGENTS.md"), "utf8");
-    return `Project instructions from ${join(cwd, "AGENTS.md")}:\n\n${truncate(content, 64000)}`;
+    const path = join(cwd, "AGENTS.md");
+    const prefix = uiLocale === "en"
+      ? `Project instructions from ${path}:`
+      : `来自 ${path} 的项目说明：`;
+    return `${prefix}\n\n${truncate(content, 64000)}`;
   } catch (error) {
     if (error?.code === "ENOENT") return undefined;
     throw error;
@@ -1759,6 +1790,7 @@ function createMilkSUResourceLoader(
         }
         reasoningOnlyPreviousTools.delete(conversationId);
       },
+      getUiLocale: () => sessionPolicies.get(conversationId)?.uiLocale,
     }),
   ];
   if (sessionRole) {
@@ -2029,7 +2061,10 @@ async function createSession(command) {
 
   const cwd = process.cwd();
   const agentDir = process.env.MILKSU_PI_AGENT_DIR || join(cwd, ".milksu", "pi");
-  const projectInstructions = await loadProjectInstructions(cwd);
+  const projectInstructions = await loadProjectInstructions(
+    cwd,
+    command.locale === "en" ? "en" : "zh",
+  );
   const {
     policy: sessionPolicy,
     effectiveSessionRole,
@@ -2155,8 +2190,9 @@ async function sendMessage(command) {
   const conversationId = command.conversationId;
   if (!conversationId) throw new Error("conversationId is required");
   applyWorkerModelOverride(command.workerModel);
-  // abort_session is handled immediately, while send_message is queued.
-  // A stop click right after Send can therefore arrive before createSession.
+  // abort_session is handled immediately. send_message setup stays on the
+  // stdin command queue; the prompt itself is per-conversation so another
+  // session in this workspace can start without waiting for this turn.
   if (dropSendAfterAbort(abortedSessions, sessions, conversationId)) {
     emit(conversationId, "turn_settled");
     return;
@@ -2283,8 +2319,7 @@ async function sendMessage(command) {
     emitContextComposition(conversationId);
   }
 
-  const previous = promptQueues.get(conversationId) ?? Promise.resolve();
-  const next = previous.then(async () => {
+  enqueueConversationPrompt(promptQueues, conversationId, async () => {
     if (abortedSessions.delete(conversationId)) {
       try {
         await session.abort();
@@ -2311,6 +2346,7 @@ async function sendMessage(command) {
     const prepared = await preparePromptAttachments(
       command.attachments,
       attachmentRoot,
+      { uiLocale: command.locale === "en" ? "en" : "zh" },
     );
     // 被扣下的图（例如超过服务端尺寸上限）必须**当面**告诉读者，而不是只让模型知道：
     // 读者看不到原因就只能反复重试上传。held 为空时 **绝不发事件**（不刷屏）。
@@ -2356,14 +2392,10 @@ async function sendMessage(command) {
       sessionExternalTurns.delete(conversationId);
     }
     await compactIfContextNearLimit(conversationId, session);
-  });
-  promptQueues.set(conversationId, next.catch(() => undefined));
-  try {
-    await next;
-  } catch (error) {
+  }, (error) => {
     if (abortedSessions.delete(conversationId)) return;
-    throw error;
-  }
+    emit(conversationId, "error", { error: describeError(error) });
+  });
 }
 
 // Drop every pending steering message Pi still holds for a conversation. A queue that
@@ -2889,6 +2921,12 @@ async function handleCommand(command) {
       break;
     case "steer_message":
       await steerSession(sessions, command);
+      break;
+    case "followup_message":
+      await followUpSession(sessions, command);
+      break;
+    case "relay_message":
+      await relaySession(sessions, command);
       break;
     case "remove_queued_message":
       await removeQueuedMessageCommand(command);

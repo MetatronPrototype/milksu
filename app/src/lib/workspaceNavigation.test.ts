@@ -46,6 +46,7 @@ describe('workspace navigation', () => {
     expect(settingsReturnSection('lab')).toBe('lab')
     expect(settingsReturnSection('chat')).toBe('chat')
     expect(settingsReturnSection('profile')).toBe('profile')
+    expect(settingsReturnSection('companion')).toBe('companion')
     expect(settingsReturnSection('settings', 'vuln')).toBe('vuln')
   })
 })

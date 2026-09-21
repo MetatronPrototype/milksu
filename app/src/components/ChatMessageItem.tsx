@@ -39,17 +39,6 @@ const COLLAPSED_BODY_LINES = 15
 import { useT } from '@/hooks/useUiLocale'
 import type { CodingAttachment, CodingAttachmentPreview, Message } from '@/types'
 
-const THINKING_COLLAPSE_CHARS = 300
-const THINKING_COLLAPSE_ROWS = 3
-
-function countThinkingRows(text: string) {
-  let rows = 0
-  for (const line of text.split('\n')) {
-    if (line.trim()) rows += 1
-  }
-  return rows
-}
-
 export default function ChatMessageItem({
   message,
   recoverable,
@@ -58,6 +47,8 @@ export default function ChatMessageItem({
   rewindDisabled,
   kernel,
   thinkingTotal,
+  thinkingDefaultOpen = false,
+  thinkingFoldKey = '',
   onRespondApproval,
   onRetry,
   onEditUser,
@@ -71,6 +62,8 @@ export default function ChatMessageItem({
   rewindDisabled?: boolean
   kernel?: 'pi' | 'dsh'
   thinkingTotal?: boolean
+  thinkingDefaultOpen?: boolean
+  thinkingFoldKey?: string
   onRespondApproval?: (requestId: string, approved: boolean, scope?: 'once' | 'conversation', choice?: string) => void
   onRetry?: () => void
   onEditUser?: (messageId: string, content: string) => void
@@ -356,26 +349,22 @@ export default function ChatMessageItem({
 
   const thinkingRunning = message.thinkingStatus === 'running'
   const quietSeconds = Math.max(0, Math.round((thinkingNow - lastOutputAt) / 1000))
-  const conclusionStarted = Boolean(message.content?.trim())
   const thinkingRows = String(message.thinking ?? '')
     .split(/\n+/)
     .map(line => line.trim())
     .filter(Boolean)
-  const thinkingCollapsible = (() => {
-    const text = String(message.thinking ?? '')
-    if (text.length >= THINKING_COLLAPSE_CHARS) return true
-    return countThinkingRows(text) >= THINKING_COLLAPSE_ROWS
-  })()
 
   useEffect(() => {
     if (thinkingRunning) setThinkManual(null)
   }, [thinkingRunning])
 
-  const thinkOpen = thinkManual !== null
-    ? thinkManual
-    : thinkingCollapsible
-      ? false
-      : thinkingRunning && !conclusionStarted
+  useEffect(() => {
+    if (!thinkingDefaultOpen) setThinkManual(false)
+  }, [thinkingFoldKey, thinkingDefaultOpen])
+
+  // Latest finished thinking stays open. A newer finished result folds this one.
+  // A click can still open or close it until that next result arrives.
+  const thinkOpen = thinkManual !== null ? thinkManual : thinkingDefaultOpen
 
   function toggleThink() {
     setThinkManual(!thinkOpen)
@@ -426,7 +415,7 @@ export default function ChatMessageItem({
     || /\bxargs\b/.test(`${approvalCommand}\n${message.approvalInput ?? ''}`)
     || approvalVerification.targets.some(target => target.kind !== 'unknown')
   )
-  const approvalBlocked = approvalIsDestructive && !approvalVerification.canAllow
+  const approvalUnverified = approvalIsDestructive && !approvalVerification.canAllow
   const approvalMeasurement = measuredFacts.find(fact => (
     typeof fact.fileCount === 'number' || typeof fact.inGitRepository === 'boolean'
   )) ?? {}
@@ -668,9 +657,9 @@ export default function ChatMessageItem({
               ) : null}
               {message.approvalState === 'pending' && message.approvalRequestId ? (
                 <div className="agent-approve__actions">
-                  {approvalBlocked ? (
+                  {approvalUnverified ? (
                     <p className="w-full text-caption font-medium text-destructive" data-testid="approval-gate">
-                      {t('核验为高风险或目标无法确定：本卡不提供「允许」。请让发起者补上用途与安全性，或改用更小的目标。', 'Verification failed (high risk or unknown scope): this card offers no allow. Ask the requester for a purpose and safety note, or narrow the target.')}
+                      {t('目标或影响范围无法完全核验。允许这一次将按原始命令执行。', 'The target or impact could not be fully verified. Allow once runs the original command.')}
                     </p>
                   ) : null}
                   <Button
@@ -681,16 +670,14 @@ export default function ChatMessageItem({
                   >
                     {t('拒绝', 'Deny')}
                   </Button>
-                  {!approvalBlocked ? (
-                    <Button
-                      type="button"
-                      variant={message.approvalGrantable ? 'outline' : 'default'}
-                      size="sm"
-                      onClick={() => onRespondApproval?.(message.approvalRequestId as string, true, 'once')}
-                    >
-                      {t('允许这一次', 'Allow once')}
-                    </Button>
-                  ) : null}
+                  <Button
+                    type="button"
+                    variant={message.approvalGrantable ? 'outline' : 'default'}
+                    size="sm"
+                    onClick={() => onRespondApproval?.(message.approvalRequestId as string, true, 'once')}
+                  >
+                    {t('允许这一次', 'Allow once')}
+                  </Button>
                 </div>
               ) : message.approvalReason ? (
                 <p className="mt-2 text-caption text-muted-foreground">

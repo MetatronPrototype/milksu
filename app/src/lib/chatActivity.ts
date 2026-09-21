@@ -370,16 +370,52 @@ export function hasEmptyVisibleReply(messages: Message[], running: boolean) {
   ))
 }
 
-function isLiveThinking(message: Message) {
-  return isThinkingOnlyAssistant(message) && message.thinkingStatus === 'running'
+function isFoldableTurnBlock(block: ChatTurnBlock) {
+  // Finished tool groups fold into 过程. Thinking stays in the open thread,
+  // including after it completes, so each burst between tools remains visible.
+  if (block.kind === 'activity') return !block.running
+  return false
 }
 
-function isFoldableTurnBlock(block: ChatTurnBlock) {
-  if (block.kind === 'activity') return !block.running
-  if (isApproval(block.message)) return false
-  if (block.message.role === 'assistant' && String(block.message.content ?? '').trim()) return false
-  if (isLiveThinking(block.message)) return false
-  return isThinkingOnlyAssistant(block.message)
+function messageHasThinking(message: Message) {
+  return message.role === 'assistant' && (
+    Boolean(String(message.thinking ?? '').trim())
+    || message.thinkingStatus === 'running'
+  )
+}
+
+// Only the latest finished thinking stays open. A live burst stays open too.
+// When the next burst finishes, the previous one collapses.
+export function thinkingStaysOpen(messageId: string, blocks: readonly ChatTranscriptBlock[]) {
+  const thoughts: Message[] = []
+  for (const block of blocks) {
+    if (block.kind === 'message' && messageHasThinking(block.message)) {
+      thoughts.push(block.message)
+    }
+  }
+  const index = thoughts.findIndex(item => item.id === messageId)
+  if (index < 0) return false
+  const message = thoughts[index]!
+  if (message.thinkingStatus === 'running') return true
+  return !thoughts.slice(index + 1).some(item => (
+    item.thinkingStatus === 'done' && Boolean(String(item.thinking ?? '').trim())
+  ))
+}
+
+export function latestFinishedThinkingId(blocks: readonly ChatTranscriptBlock[]) {
+  let id = ''
+  for (const block of blocks) {
+    if (block.kind !== 'message') continue
+    const message = block.message
+    if (
+      message.role === 'assistant'
+      && message.thinkingStatus === 'done'
+      && Boolean(String(message.thinking ?? '').trim())
+    ) {
+      id = message.id
+    }
+  }
+  return id
 }
 
 export function mergeProcessThinking(blocks: readonly ChatTurnBlock[]): Message | null {
@@ -441,9 +477,9 @@ function flushFoldableTurn(
   if (merged) output.push(messageBlock(merged))
 }
 
-// Completed thinking and finished tool groups go into 过程. Assistant text
-// with content stays in the open thread (staged results). Only the live
-// thinking row or a still-running tool group remains visible as work-in-progress.
+// Finished tool groups go into 过程. Assistant text and thinking stay in the
+// open thread, so intermediate reasoning remains visible between tool groups.
+// A still-running tool group stays outside the fold as work-in-progress.
 function foldTurnProcess(turn: ChatTurnBlock[]): ChatTranscriptBlock[] {
   const output: ChatTranscriptBlock[] = []
   let foldables: ChatTurnBlock[] = []

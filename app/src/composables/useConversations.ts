@@ -43,6 +43,7 @@ import {
   parseSessionHandoffResult,
 } from '@/lib/conversationActions'
 import { t } from '@/lib/uiLocale'
+import { toast } from '@/lib/appToast'
 import {
   conversationKernelLocked,
   FACTORY_DEFAULT_BUSY_SEND,
@@ -297,6 +298,13 @@ interface AgentEvent {
   engine?: string
   type: string
   text?: string
+  /**
+   * Which source, provider and model actually ran. A model-source failure reports them, and they
+   * are closer to the truth than the conversation the renderer happens to be showing.
+   */
+  provider?: string
+  model?: string
+  message?: string
   toolName?: string
   toolCallId?: string
   durationMs?: number
@@ -840,8 +848,19 @@ export function agentRuntimeErrorMessage(
 
 export function agentEngineErrorBubble(
   error: unknown,
-  context?: { provider?: string; model?: string; source?: string },
+  context?: { provider?: string; model?: string; source?: string; message?: string },
 ) {
+  // The engine's own sentence is the closer source of truth than anything the UI happens to be
+  // showing, and it already names the source, provider and model. Using it verbatim also avoids
+  // stacking two prefixes ("Agent failed: model call failed: ...").
+  const fromEngine = String(context?.message ?? '').trim()
+  if (fromEngine) {
+    return {
+      content: fromEngine,
+      approvalReason: t('Agent 运行失败，本次审批已失效', 'Agent failed, so this approval is no longer valid'),
+      stopped: false,
+    }
+  }
   const detail = agentRuntimeErrorMessage(error, context)
   const stopped = t('本轮已停止。', 'This turn was stopped.')
   if (detail === stopped) {
@@ -1794,6 +1813,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   const titleGenerationAttemptedIds = new Set<string>()
   let disposeEvents: (() => void) | undefined
   let disposeDelivery: (() => void) | undefined
+  let disposeConversationList: (() => void) | undefined
+  let unknownSessionReloadAt = 0
 
   function persist(conversation: Conversation) {
     return invokeCommand('save_conversation', { conversation }).catch(console.error)
@@ -2163,8 +2184,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.messageQueues = next
   }
 
-  // The sidebar confirmation dialog renders this and stays open on failure, the
-  // same way the archived-chat settings panel reports its own errors.
+  // Delete still uses the sidebar confirmation dialog and stays open on failure.
+  // Archive is immediate; a short-lived failure goes to a toast.
 
   // 会话被归档/删除时，顺手清掉它在本地存储里的草稿与引用：
   // 否则这些格子再也没机会被打开，会长期占着存储（读者提出过这个担心）。
@@ -2179,6 +2200,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     discardComposerMemory(id)
     await abortChildSessions(id)
     await runConversationAction(t('归档', 'Archive'), 'archive_conversation', id)
+    if (s.conversationActionError) toast(s.conversationActionError, { tone: 'destructive' })
   }
 
   async function remove(id: string) {
@@ -3583,6 +3605,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   }
 
   async function listen() {
+    disposeConversationList?.()
+    disposeEvents?.()
+    disposeConversationList = await listenEvent('conversations-changed', () => {
+      void load()
+    })
     disposeEvents = await listenEvent<AgentEvent>('engine-event', event => {
       // 搬运自本地分支：被本地强制停掉的回合，不能被迟到的引擎事件复活。
       // 只守那一个回合：epoch 一变（用户又发了一轮）立刻失效。
@@ -3625,6 +3652,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         steering,
         followUp,
         modelSource,
+        provider,
+        model,
+        message,
         usage,
         compaction,
         contextComposition,
@@ -3769,6 +3799,13 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         return
       }
       if (!sessionId) return
+      if (!s.conversations.some(item => item.id === sessionId)) {
+        const now = Date.now()
+        if (now - unknownSessionReloadAt > 400) {
+          unknownSessionReloadAt = now
+          void load()
+        }
+      }
       const sessionKernel = normalizeAgentKernel(
         s.conversations.find(item => item.id === sessionId)?.kernel,
       )
@@ -3859,8 +3896,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         return
       }
       if (type === 'destructive.blocked') {
-        // The guard refused a deletion without asking. The reader must see that the command
-        // did nothing and why - as a status line, never as a message in the transcript.
+        // The command did not run. The reader and the model both need the reason so
+        // the next attempt can change; do not summarise it away.
         const reason = String(
           (event.payload as unknown as { reason?: string; notice?: string })?.reason
           ?? (event.payload as unknown as { notice?: string })?.notice
@@ -4252,10 +4289,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
             messages.splice(0, messages.length, ...cleaned)
           }
           const erroredConversation = s.conversations.find(item => item.id === sessionId)
+          const failedSource = String(modelSource ?? '').trim()
+            || String(erroredConversation?.modelSource ?? '').trim()
           const bubble = agentEngineErrorBubble(error, {
-            provider: erroredConversation?.modelProvider,
-            model: erroredConversation?.modelId,
-            source: erroredConversation?.modelSource,
+            // The payload knows which source, provider and model actually ran; the conversation is
+            // only a fallback for older engines that do not report them.
+            provider: String(provider ?? '').trim() || erroredConversation?.modelProvider,
+            model: String(model ?? '').trim() || erroredConversation?.modelId,
+            source: failedSource,
+            message: String(message ?? '').trim(),
           })
           for (let index = 0; index < messages.length; index++) {
             if (messages[index].approvalState === 'pending') {
@@ -4401,6 +4443,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     disposeEvents = undefined
     disposeDelivery?.()
     disposeDelivery = undefined
+    disposeConversationList?.()
+    disposeConversationList = undefined
     activeTurnPolicies.clear()
     for (const timer of saveTimers.values()) window.clearTimeout(timer)
     saveTimers.clear()

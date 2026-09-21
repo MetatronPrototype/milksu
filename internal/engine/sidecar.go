@@ -195,6 +195,19 @@ func dshDeepSeekConnection(settings config.AppSettings) (dshProviderConnection, 
 			break
 		}
 	}
+	if key == "" {
+		if relay := settings.Relay; relay != nil && relay.Enabled && strings.TrimSpace(relay.Key) != "" {
+			baseURL := strings.TrimSpace(relay.URL)
+			if baseURL == "" {
+				baseURL = tokenfluxChatCompletionsURL
+			}
+			return dshProviderConnection{
+				Key:      strings.TrimSpace(relay.Key),
+				BaseURL:  baseURL,
+				Protocol: "chat-completions",
+			}, true
+		}
+	}
 	if !exists || key == "" {
 		return dshProviderConnection{}, false
 	}

@@ -11,6 +11,11 @@ import { promisify } from 'node:util'
 import { writeReleaseUploadMetadata } from './lib/release-upload-metadata.mjs'
 import { ensureOwnerWritable } from './lib/bundle-owner-writable.mjs'
 import { assertShipItCanClearQuarantine } from './lib/shipit-quarantine-ready.mjs'
+import {
+  DMG_WINDOW_HEIGHT,
+  DMG_WINDOW_WIDTH,
+  rasterizeDmgBackground,
+} from './lib/dmg-background.mjs'
 
 const execFileAsync = promisify(execFile)
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -112,6 +117,23 @@ async function assertOtaZipShipItReady(targetZipPath) {
   }
 }
 
+async function assertDmgVolumeBackground(mountPoint) {
+  const candidates = [
+    join(mountPoint, '.background.tiff'),
+    join(mountPoint, '.background.tif'),
+    join(mountPoint, '.background.png'),
+  ]
+  for (const path of candidates) {
+    try {
+      await stat(path)
+      return path
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+  }
+  throw new Error('DMG is missing the Finder background (.background.tiff from the @2x pair)')
+}
+
 async function verifyDmgInstallLayout(targetDmgPath) {
   const mountPoint = await mkdtemp(join(tmpdir(), 'milksu-dmg-layout-'))
   let attached = false
@@ -130,7 +152,7 @@ async function verifyDmgInstallLayout(targetDmgPath) {
       throw new Error(`DMG Applications shortcut points to ${applicationsTarget}`)
     }
     await stat(join(mountPoint, '.DS_Store'))
-    await stat(join(mountPoint, '.background.png'))
+    await assertDmgVolumeBackground(mountPoint)
   } finally {
     if (attached) await run('/usr/bin/hdiutil', ['detach', mountPoint])
     await rm(mountPoint, { recursive: true, force: true })
@@ -186,11 +208,10 @@ await assertShipItCanClearQuarantine(appPath, {
 await run('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath])
 await assertOtaZipShipItReady(zipPath)
 
-await run('/usr/bin/sips', [
-  '-s', 'format', 'png',
-  dmgBackgroundSourcePath,
-  '--out', dmgBackgroundPath,
-])
+await rasterizeDmgBackground({
+  sourceSvgPath: dmgBackgroundSourcePath,
+  outputPngPath: dmgBackgroundPath,
+})
 await writeFile(dmgBuilderConfigPath, `${JSON.stringify({
   appId: 'com.milksu.app',
   productName: 'MilkSU',
@@ -209,7 +230,7 @@ await writeFile(dmgBuilderConfigPath, `${JSON.stringify({
     filesystem: 'APFS',
     sign: false,
     writeUpdateInfo: false,
-    window: { width: 660, height: 440 },
+    window: { width: DMG_WINDOW_WIDTH, height: DMG_WINDOW_HEIGHT },
     contents: [
       { x: 170, y: 250, type: 'file', path: appPath, name: 'MilkSU.app' },
       { x: 490, y: 250, type: 'link', path: '/Applications' },

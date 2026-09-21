@@ -206,8 +206,9 @@ const COMPOSER_STYLES = `
   line-height: 20px;
   font-weight: 500;
   color: var(--muted-foreground);
-  transition: background-color 100ms ease, color 100ms ease;
+  transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-out);
 }
+.chat-composer__chip:active:not(:disabled) { transform: scale(0.97); }
 .chat-composer__chip:hover:not(:disabled),
 .chat-composer__chip[aria-expanded='true'] { background: var(--btn-ghost-hover); }
 .chat-composer__chip:disabled { opacity: 0.55; }
@@ -673,14 +674,20 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     key = owner
     const snapshot = captureComposerDraft()
     if (snapshot.html || snapshot.text.trim() || snapshot.attachments.length) {
-      writeComposerDraft(key, snapshot, { explicitClear: explicitClearRef.current })
+      writeComposerDraft(key, snapshot)
     } else if (explicitClearRef.current) {
-      // 内容为空但这是用户删出来的（例如删掉最后一个附件）⇒ 也要落盘，把这一格删掉。
-      writeComposerDraft(key, snapshot, { explicitClear: true })
+      // 内容为空、但这是用户删出来的（例如删掉最后一个附件）⇒ 显式清格。
+      // 上游的 writeComposerDraft 对空写是 no-op，不显式清就会留着旧草稿、重启复活。
+      clearComposerDraft(key)
     }
     // 引用和草稿属于同一格，必须一起保存：否则切换会话后引用会丢
     // （读者已复现：输入内容还在、引用却没了）。
-    writeComposerQuotes(key, quotesRef.current, { explicitClear: explicitClearRef.current })
+    if (quotesRef.current.length) {
+      writeComposerQuotes(key, quotesRef.current)
+    } else if (explicitClearRef.current) {
+      // 同上：删掉最后一条引用也算显式清格，否则旧引用复活（真机 beta.50 复现）。
+      clearComposerQuotes(key)
+    }
     explicitClearRef.current = false
   }, [draft, pendingAttachments, quotes])
 
@@ -1709,7 +1716,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
             <ComposerQuoteList
               quotes={quotes}
               onRemove={id => {
-                // 用户主动移除引用：同上，删掉最后一条时也要落盘。
+                // 用户主动移除引用：删掉最后一条时置显式清格，否则旧引用复活。
                 explicitClearRef.current = true
                 applyQuotes(quotesRef.current.filter(quote => quote.id !== id))
               }}

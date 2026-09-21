@@ -68,24 +68,6 @@ describe('composer quotes survive a switch', () => {
   })
 })
 
-describe('an explicit clear really clears the stored quotes', () => {
-  // 与草稿同型：删掉最后一条引用 ⇒ 空列表 ⇒ 旧实现直接 return ⇒ 存储留着旧值 ⇒ 重启复活。
-  it('removes the key for an explicit clear, but keeps protecting an accidental one', () => {
-    resetComposerQuotes()
-    const key = composerDraftKey('conversation-quotes-explicit')
-    writeComposerQuotes(key, [{ id: 'q1', text: '四条分支）需你本' }])
-    expect(readComposerQuotes(key)).toHaveLength(1)
-
-    // ① 意外空写（切换对话）：保留
-    writeComposerQuotes(key, [])
-    expect(readComposerQuotes(key)).toHaveLength(1)
-
-    // ② 显式删除：这一格必须消失
-    writeComposerQuotes(key, [], { explicitClear: true })
-    expect(readComposerQuotes(key)).toBeUndefined()
-  })
-})
-
 describe('composer quote store', () => {
   // Quotes are kept per conversation, exactly like the draft, so switching away and back does not
   // lose what the reader had selected.

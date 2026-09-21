@@ -85,6 +85,8 @@ export default function ComposerAgentMenu({
         )}
         aria-expanded={active}
         onMouseEnter={() => openPane(id)}
+        onPointerEnter={() => openPane(id)}
+        onClick={() => openPane(id)}
       >
         <span className="min-w-0 flex-1 truncate">{label}</span>
         <span className="max-w-[7rem] shrink-0 truncate text-caption text-muted-foreground">{value}</span>
@@ -132,8 +134,9 @@ export default function ComposerAgentMenu({
           {pane ? (
             <div
               className={cn(
-                'absolute inset-y-0 z-50 flex',
-                flyoutRight ? 'left-full -ml-1 pl-2.5' : 'right-full -mr-1 pr-2.5',
+                'absolute inset-y-0 z-50 flex transition-[opacity,scale] duration-[180ms] ease-[var(--ease-out)]',
+                'starting:scale-[0.96] starting:opacity-0 scale-100 opacity-100',
+                flyoutRight ? 'left-full -ml-1 origin-left pl-2.5' : 'right-full -mr-1 origin-right pr-2.5',
                 flyoutAlignBottom ? 'items-end' : 'items-start',
               )}
             >

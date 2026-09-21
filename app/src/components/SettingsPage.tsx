@@ -76,6 +76,7 @@ import SettingsMCPPanel from '@/components/SettingsMCPPanel'
 import { DeliveryLoopLevelSelect } from '@/components/DeliveryLoopLevelSelect'
 import EvalSettingsPanel from '@/components/EvalSettingsPanel'
 import LabSettingsPanel from '@/components/LabSettingsPanel'
+import CompanionSettingsPanel from '@/components/CompanionSettingsPanel'
 import PluginSettingsPanel from '@/components/PluginSettingsPanel'
 import ModelVendorIcon from '@/components/ModelVendorIcon'
 import ArchivedConversationsSettings from '@/components/ArchivedConversationsSettings'
@@ -115,7 +116,7 @@ import {
   normalizeUiFontSize,
   UI_FONT_PRESET_IDS,
   UI_FONT_SIZE_IDS,
-  type UiFontPreset,
+  uiFontPresetLabel,
 } from '@/lib/uiFonts'
 import {
   builtInModelThinking,
@@ -134,33 +135,6 @@ import {
   type NormalizedSettingsCategory,
   type SettingsCategory,
 } from '@/lib/settingsNavigation'
-
-function uiFontPresetLabel(id: UiFontPreset) {
-  switch (id) {
-    case 'inter':
-      return t('Inter', 'Inter')
-    case 'noto-sc':
-      return t('Noto Sans SC（思源黑体）', 'Noto Sans SC')
-    case 'ibm-plex':
-      return t('IBM Plex Sans', 'IBM Plex Sans')
-    case 'source-sans':
-      return t('Source Sans 3', 'Source Sans 3')
-    case 'geist':
-      return t('Geist', 'Geist')
-    case 'nunito-sans':
-      return t('Nunito Sans', 'Nunito Sans')
-    case 'noto-serif-sc':
-      return t('Noto Serif SC（思源宋体）', 'Noto Serif SC')
-    case 'zcool-xiaowei':
-      return t('站酷小薇', 'ZCOOL XiaoWei')
-    case 'zcool-qingke':
-      return t('站酷庆科黄油体', 'ZCOOL QingKe HuangYou')
-    case 'system':
-      return t('操作系统界面（苹方 / 微软雅黑）', 'OS interface (PingFang / YaHei / system UI)')
-    default:
-      return t('Inter + Noto Sans SC（产品默认）', 'Inter + Noto Sans SC (product default)')
-  }
-}
 
 function uiEmphasisPresetLabel(id: UiEmphasisPreset) {
   switch (id) {
@@ -1773,6 +1747,12 @@ export default function SettingsPage({
               </>
             ) : working && category === 'lab' ? (
               <LabSettingsPanel settings={working} onPersist={() => void store.save()} />
+            ) : working && category === 'companion' ? (
+              <CompanionSettingsPanel
+                settings={working}
+                groups={searchablePickerGroups}
+                onPersist={() => void store.save()}
+              />
             ) : category === 'plugins' ? (
               <PluginSettingsPanel theme={resolvedTheme} />
             ) : category === 'cve' && dashboard ? (

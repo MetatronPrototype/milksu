@@ -2,7 +2,7 @@
 
 > 文档状态：Current / Canonical target contract
 >
-> 最后收口：2026-09-17
+> 最后收口：2026-09-20
 >
 > 本页只回答“当前处于什么阶段、下一条完成线是什么”。实现以当前代码、测试、Git 历史和原生 App 为准。
 > 可下载安装包只写在 README，本页不写「当前最新版是」版本号或 hash。
@@ -25,60 +25,56 @@
 | --- | --- |
 | 阶段 | 内测迭代 / Agent Runtime 与跨平台发行收敛。不再按 M3/M4 组织。 |
 | 历史基线 | M3 product-loop 已在 `108e0e3`（2026-08-05）合并，仅供追溯。 |
-| 当前开发 | 新对话可选 Pi 或 DeepSeek Harness；设置 → 模型「默认运行时」只改新对话 kernel，不改写旧会话。出厂默认官方 DeepSeek Flash、默认运行时 Pi。工作树 DSH 钉 `0.1.6-alpha.1`（内核，不是 UI 参考；原厂 GUI 是 `dsh web`）。Pi 子 Agent 默认主工作区、父回合阻塞；DSH 可在 Multitask 下用 ACP `session/new` 开子会话并继续主对话。Working 短胶囊对 Pi / DSH 同一套信息架构。Computer Use 由模型列窗 / 认窗 / 锁定。产品回归入口 `npm run test:product-loop`。产品 UI 语言和工作树 renderer 是 React + shadcn，见 `AGENTS.md`。`v26.916.2` 安装包已是 React + shadcn。未做：新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。宽作业用 `recon-authorized-target` Skill，不造 typed sweep。 |
-| 平台边界 | macOS DMG 签名公证；Windows 安装器未代码签名，打入 CUA Driver `0.27.0`；Linux 发共用 DEB 与 tarball，GNOME Portal 已进包，无 Secret Service / 本地 OCR；Hyprland/Xorg Computer Use 不可用。Windows/Linux 窗口铬尚未真机验收。安装包见 README。 |
+| 当前开发 | 新对话可选 Pi 或 DeepSeek Harness；设置 → 模型「默认运行时」只改新对话 kernel，不改写旧会话。出厂默认官方 DeepSeek Flash、默认运行时 Pi。工作树 DSH 钉 `0.1.6-alpha.1`（内核，不是 UI 参考；原厂 GUI 是 `dsh web`）。Pi 子 Agent 默认主工作区、父回合阻塞；DSH 可在 Multitask 下用 ACP `session/new` 开子会话并继续主对话。Working 短胶囊对 Pi / DSH 同一套信息架构。Computer Use 由模型列窗 / 认窗 / 锁定。桌宠独立 sidecar 打包时把 provider runtime 打进 `companion-bridge.cjs`，不再运行时去要 `../pi/`。桌宠悬浮窗用出厂默认皮肤，出厂角色叫 Milk，只有两种互斥形态：桌面上的角色本体，和点开后单独出现的圆角手机对话（顶部是头像和名字，不是旁边再挂一只宠物）。点角色或侧栏页脚（日夜模式和设置之间）打开手机并收起角色；关掉对话角色再出现。不是主窗口整页，也不是左上角工作区菜单。主窗口 / 设置可以和其中一种形态同时开着。角色窗就是精灵那个方框（160 × 160），没有透明边压住下面的按钮，也不穿透；拖角色由壳跟着系统光标走，松手后夹回屏幕。右键菜单只有 Preload 一个入口，渲染器不再另弹一个。叠层不盖系统输入法；右键菜单夹在当前显示器工作区内。右键、macOS 菜单栏、macOS Dock、Windows 通知区和 Linux 托盘是同一组动作（对话 / 隐藏 / 打开主窗口 / 桌宠设置 / 退出），应用菜单不再放桌宠。桌宠开着时菜单栏 / 托盘就有图标，不必先关掉主窗口。窗口标题是「桌宠」，与主窗口 MilkSU 分开。设置 → 桌宠可以导入文件夹或选用已启用的 `app.pet` 插件皮肤；运动和必交帧见 [桌宠皮肤设计合同](companion-skin.md)。关掉主窗口后 macOS Dock / Windows 任务栏仍显示 MilkSU，用来唤醒桌宠，Linux 用托盘；Wayland 仍不能自己贴坐标。Cmd+Q / Ctrl+Q / 菜单退出结束进程，不把桌宠留在后台。产品回归覆盖桌宠手机对话、右键菜单、隐藏 / 显示、出厂与第三方换装、关主窗留桌面栏。产品回归入口 `npm run test:product-loop`；`--gui` 测完会删掉本机 fixture 会话，并写出带每项截图的正式报告（截图在拆 fixture 之前拍，只挂该用例当时的窗）。侧栏归档立即执行，只有永久删除二次确认。产品 UI 语言和工作树 renderer 是 React + shadcn，见 `AGENTS.md`。未做：新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。宽作业用 `recon-authorized-target` Skill，不造 typed sweep。 |
+| 平台边界 | macOS DMG 签名公证，安装引导图为 1x + @2x HiDPI TIFF；Windows 安装器未代码签名，打入 CUA Driver `0.27.0`；Linux 发共用 DEB 与 tarball，GNOME Portal 已进包，无 Secret Service / 本地 OCR；Hyprland/Xorg Computer Use 不可用。Windows/Linux 窗口铬尚未真机验收。安装包见 README。 |
 | 发行流水 | 干净已推送的 `main` 上跑一次 canonical 验证；三端走 GitHub-hosted。`macos-release` 仅限 `main`，dispatch 后立即签名。正式包装 OTA 到私有 R2 并发布 current pointer；GitHub Release 不上 updater ZIP。 |
 
 ## 已发行
 
 更早的 tag 见 [GitHub Releases](https://github.com/MilkSU-Official/milksu/releases)，本页不复述。
 
-最近一次正式包装源 `8e44b319`（`26.916.2`）：产品 UI 改为 React + shadcn；设置可选界面/对话字族与 11–18px 字号；默认运行时 DSH；Working / Multitask；主题 light/dark 不再跟系统反转。Windows 安装器仍未代码签名。
+最近一次正式包装源 `d3ee32bd`（`26.917.3`）：侧栏「更新」打开进度框下载，下完后用户点安装并重启；macOS DMG 安装引导图为 Retina @2x。一并打进：整理上下文 / 接到新会话短会话不再失败；DSH 打 TokenFlux 保留厂商前缀；出厂默认运行时 Pi。Windows 安装器仍未代码签名。`26.917.2` 没有 GitHub Release。
 
-发行页：<https://github.com/MilkSU-Official/milksu/releases/tag/v26.916.2>
+发行页：<https://github.com/MilkSU-Official/milksu/releases/tag/v26.917.3>
 
 | 平台 | Workflow | 安装包 | 大小 | SHA-256 |
 | --- | --- | --- | ---: | --- |
-| macOS ARM64 | `35119063866` | `MilkSU-macOS-arm64-26.916.2.dmg` | 329,078,946 B | `826e3093a844a4bbf928f7289d6002d479456fe2422277a27e25a33646d9f25b` |
-| Windows x64 | `35119069646` | `MilkSU-Windows-x64-26.916.2-Setup.exe` | 263,083,136 B | `c89556da71015e40149f23f8bc88475bd4584cd2e51819203b13c70b236f4817` |
-| Linux x64 DEB | `35121459391` | `MilkSU-Linux-x64-26.916.2.deb` | 236,953,320 B | `ea72ec77388e3b850ffb2081db1328730d3d9e169ea598037c0661c4bb1f3157` |
-| Linux x64 tarball | `35121459391` | `MilkSU-Linux-x64-26.916.2.tar.gz` | 290,163,067 B | `5927ea2ab7ef0ebe628eee91b2d2d3eff3c4aff2f878e7b72b1c9748a381ac73` |
+| macOS ARM64 | `35205819724` | `MilkSU-macOS-arm64-26.917.3.dmg` | 329,693,780 B | `fc24f9bf907bfdbddccda796072c84cf013b5f1683df9ae6f0055af0c26ae792` |
+| Windows x64 | `35205823589` | `MilkSU-Windows-x64-26.917.3-Setup.exe` | 263,093,940 B | `7db65b8dd7dbaa8638a3bbfee54253039e3531720aa3db58fa59ac7325fb1104` |
+| Linux x64 DEB | `35205827853` | `MilkSU-Linux-x64-26.917.3.deb` | 236,968,756 B | `67e539cdee66fe798ebb05fae4eb75efb5d311d4f3f525a2adfdb6d89df66fcf` |
+| Linux x64 tarball | `35205827853` | `MilkSU-Linux-x64-26.917.3.tar.gz` | 290,175,038 B | `c2ae0a3ea47b9ece37fe0da7a0475afec0dbd55a3546f573199ffa8bc793da73` |
 
 ## 未打进 GitHub 安装包
 
+- 凭据轮换不再切在飞回合、会话带自己的中转站与模型、删除守卫改判命令自写的脚本、切换对话不丢草稿、对话选中文字「加入对话」：已在 `main`（#120 / #119 / #106 / #122 / #123），未打进安装包。删除守卫不再把 `rm -rf X && mkdir X` 或命令里自赋的 `REPRO=…; rm -rf "$REPRO"` 当成「先创建再删除」。有风险（主目录 / 工作区根 / 超大目录）和量不到目标仍弹确认卡；后台任务仍不能弹卡。原先静默拦截的预制策略已改成：若将来切到拦截，必须把原因给用户和大模型，让模型改方案；当前未启用。产品回归按上手顺序走独立实例：登录 / 中转站密码框 → 主页 Pi/DSH → 桌宠 → CTF/CVE/Lab → 桌面执行面 → 资料/更新 → 设置其余项。开测前和每条用例前只留一扇测试窗，关掉日常 MilkSU 和残留 Electron，GitHub 回调不进日常窗口。测完打印从大模块到小模块的报告。
 - 新对话继承项目 `milksu`；Windows Computer Use 整段崩溃尚未真机验收。
 - Computer Use 选窗器仍是可选人工面。宽作业走 `recon-authorized-target` Skill，不造 typed sweep。
 - DSH `bash` 没有 MilkSU 侧超时上界（工具在 harness 进程内，不要在客户端复刻第二套循环）。
 - 不要把 `test:dsh-complete-loop` 当主入口。产品回归走 `npm run test:product-loop`。
-- 整理上下文 / 接到新会话：Pi 短会话不再把「Nothing to compact」当成失败；DSH 整理失败不再开空会话，并把整理后的表面上下文种进新会话。新会话 GUI 显示上一会话原文，或 Pi/DSH 已产出的整理摘要，不再只留一句罐头。`composer-runtime` 已覆盖。未进安装包。
-- DSH 打 TokenFlux（`https://tokenflux.dev/v1`）时保留产品侧 `prefix/model`（例如 `deepseek/deepseek-flash`），不再把复合 Key 收成无前缀 ACP 叶名。官方 DeepSeek 直连仍用叶名。出厂默认运行时是 Pi；已落盘的 DSH 选择和旧会话不改写。未进安装包。
 - Agent Harness：DSH 没有 Cursor 那种 `run_in_background` Task。ACP `session/prompt` 要等到 `whenIdle`（含子代理）才结算，所以主对话继续发走 host `Agent.followup`。作曲栏停止键只在父回合还在生成、压缩或中止时出现。加号 Multitask 才是另开 ACP 子会话。Pi 的 `subagent` 仍阻塞父工具。不要升 Pi 来假装能并行。
 - 不要复刻原厂 `dsh web` 皮肤、Queue dock、Jobs 顶栏、slash 目录或 Agent preset 切换器。未复刻 child transcript、preset、插件清单、归档、Schedule。
-- 设置 → 通用「强调色」：出厂默认墨色；可选蓝 / 紫 / 青 / 琥珀 / 玫红。彩色预设同时改写 `--emphasis` 与 `--primary`，发送/主按钮、选中滤片、Switch / Checkbox、进度条、侧栏选中细条和 `text-primary` 勾选跟色；侧栏「更新」仍用固定 `--update` 蓝。即时落盘。未进安装包。
-- 准备 writer 时按停止，有时同时出现「本轮已停止。」和「Agent 运行失败」。合同只留前者。
-- reasoning-only 终局：上游只有思考没有正文时，Pi 用一次禁工具 follow-up 补短答复，DSH 在同一回合再 prompt 一次；失败后对话显示「这一轮没有可见正文」和继续。不把 thinking 复制进正文，也不再阻断正常工具调用。未进安装包。
-- Windows 上 DSH 操作内置浏览器时，`milksu_workspace` 走 product IPC named pipe；客户端断开曾把未处理的 `error` 抛成 sidecar 退出，UI 只剩「这个项目的 Agent 进程已停止」。Pi 的 workspace 在桥进程内，所以同一场景 Pi 能点。打包 Sidecar 还漏了 `playwright-lazy-mcp.cjs`（Pi 有 `playwright-session-bridge.cjs`），安装包里的 DSH 挂不上隔离浏览器点击。工作树已修。未进安装包。
 
 ## 当前产品事实
 
-- Coding / CTF / CVE / 实验室共用 Pi 文件、Shell、自动压缩（80% 空闲与 `/compact` 同一路径）和完整工作循环。工具结果进模型前走 Pi `tool_result` 截断。不扫描用户句子做意图路由。
-- MilkSU 只持会话目录、凭据隔离、桌面授权、领域事实/Judge，以及危险大目录删除二次确认。
-- 账户 TokenFlux 与本机 Provider 共用可调用目录；附件原图进当前回合。网页查证复用 Pi `web_search` / `web_fetch`。
-- 桌面壳是 Electron/Chromium。产品 UI 是 React + shadcn。隔离浏览器、Browser Use、Computer Use 是三个表面；面板折叠不停止 Session。产物在各 OS 文档目录 `MilkSU/{Coding,CTF,CVE,Lab}`。
+- Coding / CTF / CVE / 实验室共用 Pi 文件、Shell、自动压缩（80% 空闲与 `/compact` 同一路径）和完整工作循环。工具结果进模型前走 Pi `tool_result` 截断。不扫描用户句子做意图路由。同一工作区的多条 Pi 对话可以同时跑回合（按会话排队 prompt）；同一条会话里的 Pi 子代理仍阻塞父工具。对话里每段思考结束后正文仍留在时间线上，不收进「过程」；下一段思考出结果后，上一段默认折叠。已结束的工具组仍折叠进「过程」。个人资料 Coding 用量按钉死的 models.dev 价目显示「约 $…」估算（不是账单）；发版前要连窗口 / 思考档位一起刷新。
+- 桌宠会话使用完整 Pi 工具循环（read / bash / grep / find / ls / edit / write），并保留 companion_board / companion_dispatch / companion_memory / companion_app。编排粒度：调研/摸底优先 dispatch 到对话并用 subagent 进 Working，落盘/长执行优先开或 steer 对话，桌宠本体只编排、确认、短回复；用户要桌宠自己做、没有合适对话、或要操作 MilkSU 本体时才本地工具或 companion_app。手机对话流式正文，进行中展示思考/工具，回合结束后可折叠过程；只有真正空且无过程才报「这一轮没有回复」。companion_app 可打开主窗口、聚焦会话、读取会话摘录和不含凭据的设置；改这些设置、退出和重启要宿主确认。speak_many 一次最多 8 个会话，steer 与 stop 仍要确认。运行状态仍只由看板读取，不能改写，也不能读写 API Key。出厂默认账户官方 DeepSeek Flash（`deepseek/deepseek-flash`，`companion_source=account`）；已保存的桌宠模型不因出厂默认变更而改写。附件与 Coding 同一条 preparePromptAttachments + 原图进回合路径；图片 MIME 按文件内容，不跟错误后缀。空助手回合不再从转录里消失，也不再把只有 tool call 的回合删掉；孤儿 toolResult 不会再送进下一轮。工具记录断了时手机里直接「开新对话」，当前记录归档，不必去设置里找归档。宿主 IPC 与主对话同一套：默认有限超时（读会话 / 看板 / 记忆 / queue 投递），只有确认驻留（patch_settings / quit / relaunch、steer / stop）才 `timeoutMs:0`；中止会清掉挂起的 host 请求。桌宠 session 挂同一份 Pi hang-guard（bash 默认超时）和 tool_result 上界，不另造防挂死。Connection error / Request timed out / host timeout 在手机里显示成「连不上模型服务」。
+- MilkSU 只持会话目录、凭据隔离、桌面授权、领域事实/Judge，以及危险或量不到的递归删除二次确认。给模型看的 MilkSU 正文跟界面语言走（默认中文）：运行时上下文、桌宠默认提示、空回复抢救、无工具合同、DSH 读图回退、附件前言、AGENTS.md 包装句、CTF ROLE_STATE。工具 schema 和 Pi 自带英文 coding harness 仍是原文。
+- 账户 TokenFlux 与本机 Provider 共用可调用目录；保存的模型 id 跟目录真实后缀走（例如目录只有 `gemini-3.8-flash-tiered` 时不再请求无后缀的 `gemini-3.8-flash`）。附件原图进当前回合。网页查证复用 Pi `web_search` / `web_fetch`。
+- 桌面壳是 Electron/Chromium。产品 UI 是 React + shadcn。桌宠作曲栏加号走现有本机附件 RPC：图片缩略图按原比例，文件进当前回合；发出去的气泡立刻出现。桌宠气泡按 gifted-chat 分组圆角收口，不再画遮字尖角；助手与用户正文复用 Coding 的 `MarkdownContent`（错误串仍纯文本）。设置 → 桌宠「外观」可调对话字体 / 字号，与设置 → 通用、主窗口对话共用同一组 `conversation_font` / `conversation_font_size`，改完经 BroadcastChannel / localStorage 同步到桌宠窗。桌宠手机窗按 iPhone 镜像 `build/iphone17-compare/iphone17-mirror.png` 做成 288 × 604。屏幕圆角仍按 402×874 pt 上 `_displayCornerRadius` 62 pt 缩放到 41.64 px，机身再加 3 px 边；不用 Chromium `corner-shape:squircle`。抬头用 MIT `react-progressive-blur` 多层 `backdrop-filter`：记录滚进 Milk 胶囊带才被磨砂，没有实心白遮罩；磨砂层不加 `clip-path`。手机抬头头像白底带细边框，点头像在同一手机窗内叠一层桌宠设置页（复用 `CompanionSettingsPanel`；companion preload / shell 放行 `GetSettings` / `SaveSettingsCmd` / `GetModelCatalog` 与皮肤导入移除，字体 / 悬浮窗 / 皮肤可在手机内改完即存）；返回玻璃 chevron 回到对话，不关手机。托盘 / 菜单「桌宠设置」仍打开主窗口设置 → 桌宠。对话时间按系统日期格式。夜间模式跟主窗口同一套存储并同步到桌宠窗。Cmd+Q / Ctrl+Q / 菜单退出结束进程；关主窗仍留桌宠。隔离浏览器、Browser Use、Computer Use 是三个表面；面板折叠不停止 Session。产物在各 OS 文档目录 `MilkSU/{Coding,CTF,CVE,Lab}`。
 - 产品 UI 只写在 `AGENTS.md`。
 
 ## 当前完成线
 
 1. 功能改动后按 [产品回归循环](product-regression-loop.md) 跑 `npm run test:product-loop`；失败回 P0。安装包上的 Pi / 实验室靶机仍由用户真机看。
-2. 用户要求发下一版时：升版本号 → 干净已推送的 `main` 跑 `release:verify` → 新的三端回执。不挪已发出的 tag。
+2. 用户要求发下一版时：先对照 models.dev 刷新窗口 / 思考档位 / 用量价目（[发版流程](release-process.md) §1.5）→ 升版本号 → 干净已推送的 `main` 跑 `release:verify` → 新的三端回执。不挪已发出的 tag。
 
 | 优先级 | 事项 | 完成标准 |
 | --- | --- | --- |
-| P0 | 产品回归 | 改对话 / 引擎 / DSH / 隔离浏览器后跑 `npm run test:product-loop`。见 [产品回归循环](product-regression-loop.md)。Settings「评测」不替代这条。C9 / C15 / C16 / C20 已确认；DSH A/B/C 已复验。 |
-| P0 | React + shadcn | 工作树 renderer 已是 React + shadcn（`main.tsx`）。新页和重构只走这条。不再跟 DSH web GUI，不再加 Felinic / Vue SFC。Desktop RPC 与 Go 不动。细节优化看下面「迁移残留」。 |
+| P0 | 产品回归 | 改对话 / 引擎 / DSH / 隔离浏览器后跑 `npm run test:product-loop`。见 [产品回归循环](product-regression-loop.md)。Settings「评测」不替代这条。 |
+| P0 | React + shadcn | 工作树 renderer 已是 React + shadcn（`main.tsx`）。新页和重构只走这条。不再跟 DSH web GUI，不再加 Felinic / Vue SFC。Desktop RPC 与 Go 不动。设计语言和已收口的交互细节见 `AGENTS.md`；剩余不一致按 bug 单独记。 |
 | P0 | Pi Runtime 用户验收 | 跨目录读写、CTF/CVE 交接、长输出续跑、重启恢复；无 MilkSU 自建 workspace 策略或旧 session ID。 |
 | P1 | 下一版三端回执 | 新版本号、同一 source commit、三端产物、SHA-256 与平台验收。安装包见 README。 |
-| P1 | OTA / current pointer | 侧栏蓝色「更新」一点即下载并重启；有任务在跑时先确认退出并落盘后续跑；安装失败可见；CI 上传后发布 current pointer。 |
+| P1 | OTA / current pointer | 侧栏「更新」打开进度框下载；下完后用户点安装并重启；有任务在跑时先确认退出并落盘后续跑；安装失败可见；CI 上传后发布 current pointer。 |
 | P1 | Wide lab recon | `bg_status` 熔断与最多 4 条子 Agent lane 已进包。宽作业用 `recon-authorized-target` Skill，不另造 typed sweep。 |
 | P1 | 安全工具真实任务 | IDA / capa 已有设置与健康检查；用受控样本留回执。不把 HexStrike 做成默认 MCP。 |
 | P1 | Obelisk 学习记录 | 先定义可归因事实，再独立页面；不恢复已删的单会话图谱。 |
@@ -87,21 +83,6 @@
 | 未接线 | 实验室红队模式 | 另开学习面，不是对外红队。尚未设计准入。 |
 
 CVE：点进档案复现，Agent 改 `report.md`。实验室：独立入口，练习包起本机 Docker / AVD 或用户给地址，活报告 + 对话小窗。环境契约见 [靶机、环境经纪与活靶面](/architecture/target-environments)。
-
-### React 迁移残留（行为 / 风格，留给细节优化）
-
-行为可能和旧 Vue + Felinic 不一致：
-
-- Settings / Profile / Eval / Vuln / Lab 本地状态走 `createStore` + `useStore` / `useStoreRuntime`，页面订阅读稳定 snapshot。
-- Dialog / Select / Dropdown / Switch 从 Felinic `v-model` 换成 Radix `open` + `onOpenChange`。点遮罩关闭、Esc、焦点陷阱、Select 受控值可能和旧的不一样。
-- 已访问的 CTF / CVE / Lab 会留在树上用 `display:none` 藏起来（相当于旧 KeepAlive）。对话右栏是 `ContextRail`。`CodingComposerControls` 不再补 `[data-button]::before`。侧栏搜索和 Cmd/Ctrl+K 打开居中命令面板（齐平搜索、全部/会话/设置/命令、最近会话加点/工作区/相对时间）；对话行右侧显示相对活跃时间，悬停钉选/归档、右键菜单，没有三点按钮；钉选分组用图钉，项目文件夹开合换图标。作曲栏模型芯片先出一级菜单（模型 / 推理强度 / 上下文 / 运行时），点开不展开二级，悬停才出二级，二级按窗口限高滚动；Git 芯片是可搜索、限高滚动、可从查询创建分支的 popover；设置页默认/subagent 仍是单个可搜索 popover；图片附件用缩略图，`@` 走现有选文件 RPC；短时失败用 toast，审批/凭据/表单错误仍用 Alert。
-- Vite / 浏览器 demo 没有 `window.milksu`。设置页不再把 `desktop runtime is unavailable` 当成产品错误；完整设置和插件列表要 Electron。
-
-风格（C：shadcn 结构 + Cursor Light / Cursor Dark，彩蛋后加）：
-
-- `index.css` 夜间是页面 `#181818` / 侧栏 `#141414`，浅色是页面 `#fcfcfc` / 侧栏 `#f3f3f3`，页底和侧栏用 70–90% 透明度透出一丝桌面。macOS `under-window` vibrancy，Windows acrylic，Linux 仍不透明。菜单/对话框保持不透明。不要再用 zinc-950 `#09090b` 或纯白 `#ffffff` 当页底。`ak-ui.css` / `beautiful-chrome.css` 已从树上删掉，不要当现行语言加回来。
-- 设置页跟 Cursor：设置分类占用原来那一列侧栏，不要再叠第二列导航。内容是一组 `SettingsSection` / `SettingsRow`，右侧控件与行标签同一字号、同一高度。改完即存，不要页脚「保存并验证」。不要再套第二层卡片或评测 workbench。LIVE/AUTH 彩蛋未加回。
-- 产品入口是 `main.tsx`；`@felinic/ui` / Vue 已从 `app/` 生产依赖拿掉。Felinic submodule `packages/ui` 已卸载，不进 renderer。
 
 ## 不要重复打开
 

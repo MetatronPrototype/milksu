@@ -40,6 +40,7 @@ import {
   GitFork,
   Globe2,
   House,
+  PawPrint,
   LogOut,
   SquarePen,
   Moon,
@@ -85,7 +86,7 @@ import {
   readSidebarWidth,
   writeSidebarWidth,
 } from '@/lib/sidebarWidth'
-import { useT } from '@/hooks/useUiLocale'
+import { useT, useUiLocale } from '@/hooks/useUiLocale'
 import { updateControlVisible } from '@/lib/updateRestart'
 import { updateStatusMessage } from '@/lib/updateStatus'
 import type { AccountStatus, BuildTracking, Conversation, UpdateStatus } from '@/types'
@@ -126,6 +127,7 @@ const settingsNavIcons = {
   browser: Globe2,
   eval: Gauge,
   network: Wifi,
+  companion: PawPrint,
   plugins: Puzzle,
 } as const
 
@@ -159,6 +161,7 @@ export default function ContextSidebar({
   onNavigate,
   onProfile,
   onSettings,
+  onCompanion,
   onSelectSettingsCategory,
   onCloseSettings,
   onAccountLogin,
@@ -204,6 +207,7 @@ export default function ContextSidebar({
   onNavigate?: (value: WorkspaceSection) => void
   onProfile?: () => void
   onSettings?: () => void
+  onCompanion?: () => void
   onSelectSettingsCategory?: (value: NormalizedSettingsCategory) => void
   onCloseSettings?: () => void
   onAccountLogin?: () => void
@@ -213,12 +217,13 @@ export default function ContextSidebar({
   onOpenCommandPanel?: () => void
 }) {
   const t = useT()
+  const locale = useUiLocale()
   const [unreadConversationIds, setUnreadConversationIds] = useState(() => new Set<string>())
   const [pinnedDragId, setPinnedDragId] = useState('')
   const [pinnedDropTarget, setPinnedDropTarget] = useState('')
   const observedRunningIds = useRef<Set<string> | undefined>(undefined)
   const conversationList = useRef<HTMLDivElement | null>(null)
-  const [pendingAction, setPendingAction] = useState<{ conversation: Conversation, action: 'archive' | 'delete' } | null>(null)
+  const [pendingAction, setPendingAction] = useState<{ conversation: Conversation } | null>(null)
   const [pendingActionRunning, setPendingActionRunning] = useState(false)
   const [editingConversationId, setEditingConversationId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
@@ -348,10 +353,8 @@ export default function ContextSidebar({
 
   function confirmConversationAction() {
     if (!pendingAction || pendingActionRunning) return
-    const { conversation, action } = pendingAction
     setPendingActionRunning(true)
-    if (action === 'archive') onDeleteConversation?.(conversation.id)
-    else onDeleteConversationPermanently?.(conversation.id)
+    onDeleteConversationPermanently?.(pendingAction.conversation.id)
   }
 
   function closeConversationAction() {
@@ -717,7 +720,7 @@ export default function ContextSidebar({
             })}
             {conversationActionButton(conversation, pinned, {
               label: t('归档', 'Archive'),
-              onClick: () => setPendingAction({ conversation, action: 'archive' }),
+              onClick: () => onDeleteConversation?.(conversation.id),
               children: <Archive className="size-3.5" />,
             })}
           </div>
@@ -989,7 +992,6 @@ export default function ContextSidebar({
               type="button"
               className="agent-sidebar__update app-no-drag"
               data-testid="sidebar-apply-update"
-              disabled={updateDownloading}
               aria-label={updateButtonLabel}
               title={updateButtonTitle}
               onClick={() => onApplyUpdate?.()}
@@ -1005,6 +1007,25 @@ export default function ContextSidebar({
             onClick={onToggleTheme}
           >
             <ThemeToggleIcon className="size-4" />
+          </button>
+          <button
+            type="button"
+            className="agent-sidebar__theme app-no-drag"
+            data-testid="sidebar-open-companion"
+            aria-label={t('桌宠', 'Companion')}
+            title={t('桌宠', 'Companion')}
+            onClick={onCompanion}
+            onContextMenu={event => {
+              event.preventDefault()
+              event.stopPropagation()
+              void invokeCommand('popup_companion_menu', {
+                screenX: event.screenX,
+                screenY: event.screenY,
+                locale,
+              })
+            }}
+          >
+            <PawPrint className="size-4" />
           </button>
           <button
             type="button"
@@ -1061,12 +1082,12 @@ export default function ContextSidebar({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {pendingAction?.action === 'delete' ? t('永久删除聊天？', 'Permanently delete this chat?') : t('归档聊天？', 'Archive this chat?')}
+              {t('永久删除聊天？', 'Permanently delete this chat?')}
             </DialogTitle>
             <DialogDescription>
-              {pendingAction?.action === 'delete'
+              {pendingAction
                 ? t(`“${pendingAction.conversation.title}”的聊天记录将被永久删除，此操作无法撤销。项目文件不会被删除。`, `The chat history for “${pendingAction.conversation.title}” will be permanently deleted. This cannot be undone. Project files will not be deleted.`)
-                : t(`“${pendingAction?.conversation.title}”将从会话列表移到“设置 → 归档聊天”。之后可以恢复或永久删除。`, `“${pendingAction?.conversation.title}” will move from the chat list to Settings → Archived chats. You can restore or permanently delete it later.`)}
+                : null}
               {pendingAction && runningConversationIds.has(pendingAction.conversation.id)
                 ? t('该会话正在运行，本次操作会先中断当前回合。', 'This chat is running. This action will stop the current turn first.')
                 : null}
@@ -1076,11 +1097,11 @@ export default function ContextSidebar({
           <DialogFooter>
             <Button variant="ghost" onClick={closeConversationAction}>{t('取消', 'Cancel')}</Button>
             <Button
-              variant={pendingAction?.action === 'delete' ? 'destructive' : 'default'}
+              variant="destructive"
               disabled={pendingActionRunning}
               onClick={confirmConversationAction}
             >
-              {pendingAction?.action === 'delete' ? t('确认永久删除', 'Permanently delete') : t('确认归档', 'Archive')}
+              {t('确认永久删除', 'Permanently delete')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1226,14 +1247,14 @@ export default function ContextSidebar({
             <button
               type="button"
               className={`${menuItemClass} conversation-row-menu__item`}
-              onClick={() => runConversationMenuAction(() => setPendingAction({ conversation: conversationMenu.conversation, action: 'archive' }))}
+              onClick={() => runConversationMenuAction(() => onDeleteConversation?.(conversationMenu.conversation.id))}
             >
               <Archive className="size-4" />{t('归档', 'Archive')}
             </button>
             <button
               type="button"
               className={`${menuItemClass} conversation-row-menu__item text-destructive focus:text-destructive`}
-              onClick={() => runConversationMenuAction(() => setPendingAction({ conversation: conversationMenu.conversation, action: 'delete' }))}
+              onClick={() => runConversationMenuAction(() => setPendingAction({ conversation: conversationMenu.conversation }))}
             >
               <Trash2 className="size-4" />{t('删除', 'Delete')}
             </button>
@@ -1251,7 +1272,7 @@ const contextSidebarCss = `
 .agent-sidebar {
   background: var(--sidebar);
   color: var(--foreground);
-  transition: width 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width var(--motion-slow) var(--ease-drawer);
 }
 .agent-sidebar.is-resizing { transition: none; }
 .agent-sidebar__resize {
@@ -1276,6 +1297,29 @@ const contextSidebarCss = `
 .agent-sidebar-row:hover { background: var(--hover-2); }
 .agent-sidebar-row.is-current,
 .agent-sidebar-row[aria-current='page'] { background: var(--hover-2); }
+
+/*
+ * Hover and selection fills move at the shared fast step instead of snapping,
+ * and a press deepens the fill on pointer-down. These rows are full width, so
+ * the feedback is the fill rather than a scale.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .agent-sidebar__workspace,
+  .agent-sidebar__icon,
+  .agent-sidebar__expand,
+  .agent-sidebar-row,
+  .agent-sidebar-item {
+    transition: background-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+  }
+
+  .agent-sidebar__workspace:hover:active,
+  .agent-sidebar__icon:hover:active,
+  .agent-sidebar__expand:hover:active,
+  .agent-sidebar-row:hover:active,
+  .agent-sidebar .agent-sidebar-item:hover:active {
+    background: var(--pressed-row);
+  }
+}
 .agent-sidebar .agent-sidebar-item:hover,
 .agent-sidebar .agent-sidebar-item.is-current,
 .agent-sidebar .agent-sidebar-item[data-ui-selected] { background: var(--hover-2); }

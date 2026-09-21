@@ -1,5 +1,8 @@
 'use strict'
 
+const { installBrokenPipeGuards, safeConsoleInfo } = require('./safe-console.cjs')
+installBrokenPipeGuards()
+
 const { execFileSync, spawn } = require('node:child_process')
 const { randomUUID } = require('node:crypto')
 const { promises: fs } = require('node:fs')
@@ -11,12 +14,16 @@ const {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   nativeTheme,
   net,
+  powerMonitor,
   protocol,
+  screen,
   session,
   shell,
   systemPreferences,
+  Tray,
   WebContentsView,
 } = require('electron')
 const { autoUpdater } = require('electron-updater')
@@ -67,6 +74,8 @@ const {
   productApplicationMenuTemplate,
 } = require('./renderer-reload.cjs')
 const { BackendRuntime } = require('./backend-runtime.cjs')
+const { createCompanionShell } = require('./companion-shell.cjs')
+const { createCompanionSkinHost } = require('./companion-skin-host.cjs')
 
 const APP_ORIGIN = 'milksu://app'
 const EVENT_PATTERN = /^[a-z][a-z0-9._-]{0,100}$/u
@@ -100,7 +109,7 @@ const processBootMs = Date.now()
 function startupLog(label, detail = '') {
   const total = Date.now() - processBootMs
   const suffix = detail ? ` ${detail}` : ''
-  console.info(`[startup] +${total}ms ${label}${suffix}`)
+  safeConsoleInfo(`[startup] +${total}ms ${label}${suffix}`)
 }
 
 async function startupTime(label, work) {
@@ -628,7 +637,11 @@ class BrowserShell {
   }
 }
 
-function senderIsApp(event) {
+let companionShell = null
+let companionSkinHost = null
+
+function senderIsApp(event, method = '') {
+  if (companionShell) return companionShell.senderAllowed(event, method)
   return event.sender === mainWindow?.webContents
     && event.senderFrame === mainWindow?.webContents.mainFrame
     && event.senderFrame?.url?.startsWith(`${APP_ORIGIN}/`)
@@ -755,12 +768,21 @@ async function handleHostRequest(method, payload = {}) {
       setImmediate(() => app.quit())
       return true
     }
+    case 'app.quit': {
+      setImmediate(() => app.quit())
+      return true
+    }
     default: throw new Error(`unsupported desktop host method: ${method}`)
   }
 }
 
 function emitRendererEvent(event, value) {
-  if (!EVENT_PATTERN.test(String(event)) || !mainWindow || mainWindow.isDestroyed()) return
+  if (!EVENT_PATTERN.test(String(event))) return
+  if (companionShell) {
+    companionShell.emit(event, value)
+    return
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.webContents.send(`milksu:event:${event}`, value)
 }
 
@@ -845,8 +867,13 @@ function createWindow() {
 }
 
 ipcMain.handle('milksu:invoke', async (event, request) => {
-  if (!senderIsApp(event)) throw new Error('desktop invocation came from an untrusted renderer')
   const method = String(request?.method ?? '')
+  if (!senderIsApp(event, method)) throw new Error('desktop invocation came from an untrusted renderer')
+  const hostArgs = Array.isArray(request?.args) ? request.args[0] : request?.args
+  const companionResult = companionShell?.handleHostMethod(method, hostArgs)
+  if (companionResult !== undefined) return companionResult
+  const skinResult = companionSkinHost?.handleHostMethod(method, hostArgs)
+  if (skinResult !== undefined) return skinResult
   // Packaging provenance is owned by the desktop shell, not Go domain logic.
   if (method === 'GetBuildTracking') return loadBuildTracking()
   if (method === 'SetTitleBarOverlay') {
@@ -896,6 +923,13 @@ ipcMain.handle('milksu:invoke', async (event, request) => {
   if (method === 'DownloadUpdate') {
     return updateManager?.download() ?? null
   }
+  if (method === 'CancelUpdate') {
+    return updateManager?.cancel() ?? {
+      state: 'idle',
+      currentVersion: app.getVersion(),
+      enabled: false,
+    }
+  }
   if (method === 'InstallUpdate') {
     if (!updateManager || updateManager.view().state !== 'downloaded') return false
     if (browserShell) await browserShell.closeAll()
@@ -933,6 +967,7 @@ app.on('open-url', (event, url) => {
 })
 
 app.on('second-instance', (_event, argv = []) => {
+  if (companionShell) companionShell.revealFromTaskbar()
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
@@ -952,6 +987,9 @@ app.on('second-instance', (_event, argv = []) => {
 
 app.whenReady().then(async () => {
   startupLog('app.whenReady')
+  if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function') {
+    app.setAppUserModelId(desktopIdentity.appId)
+  }
   await startupTime('installRendererProtocol', () => installRendererProtocol())
   const protocolClient = desktopProtocolClientRegistration({
     channel: desktopChannel,
@@ -959,6 +997,7 @@ app.whenReady().then(async () => {
     defaultApp: Boolean(process.defaultApp),
     execPath: process.execPath,
     argv: process.argv,
+    instanceId: process.env.MILKSU_INSTANCE_ID,
   })
   if (protocolClient.register) {
     const registered = protocolClient.execPath
@@ -1014,7 +1053,51 @@ app.whenReady().then(async () => {
   }
   const upstreamEndpoint = await waitForDevTools()
   createWindow()
-  Menu.setApplicationMenu(Menu.buildFromTemplate(productApplicationMenuTemplate()))
+  companionShell = createCompanionShell({
+    app,
+    BrowserWindow,
+    Tray,
+    Menu,
+    nativeImage,
+    APP_ORIGIN,
+    resourcesPath: process.resourcesPath,
+    repositoryRoot: path.join(__dirname, '..'),
+    isPackaged: app.isPackaged,
+    getMainWindow: () => mainWindow,
+    setMainWindow: window => { mainWindow = window },
+    onQuitRequested: () => app.quit(),
+    screen,
+    net,
+    powerMonitor,
+  })
+  companionSkinHost = createCompanionSkinHost({
+    userDataPath: app.getPath('userData'),
+    openDirectory: payload => handleHostRequest('dialog.openDirectory', payload),
+    listPetPlugins: async () => {
+      if (!backend) return []
+      try {
+        const rows = await backend.invokeFromElectronHost('ListPetPluginPackages', [])
+        return Array.isArray(rows) ? rows : []
+      } catch {
+        return []
+      }
+    },
+    emit: (event, value) => companionShell?.emit(event, value),
+  })
+  companionShell.register('main', mainWindow, null)
+  companionShell.createTray()
+  companionShell.createFloat()
+  mainWindow.on('close', event => {
+    if (quitting) return
+    event.preventDefault()
+    companionShell.parkMainWindow()
+    companionShell.createTray()
+    companionShell.createFloat()
+  })
+  mainWindow.on('restore', () => {
+    companionShell.revealFromTaskbar()
+  })
+  companionShell.refreshMenus()
   startupLog('createWindow')
   browserShell = new BrowserShell(mainWindow, upstreamEndpoint)
   const backendSpawnStarted = Date.now()
@@ -1071,7 +1154,26 @@ app.whenReady().then(async () => {
   app.quit()
 })
 
-app.on('window-all-closed', () => app.quit())
+app.on('activate', () => {
+  if (companionShell) {
+    companionShell.revealFromTaskbar()
+    return
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+})
+
+app.on('window-all-closed', () => {
+  if (quitting) return
+  if (companionShell) {
+    companionShell.handleWindowAllClosed()
+    return
+  }
+  app.quit()
+})
 
 app.on('before-quit', () => {
   if (quitting) return
@@ -1086,9 +1188,12 @@ app.on('before-quit', () => {
     }
   }
   quitting = true
-  // Do not preventDefault or wait for Go/browser teardown. Cmd+Q used to
-  // intercept quit, hide the window, then sit ~3s on shutdown+SIGTERM.
-  // stdin EOF / this shutdown line is enough for Go to mark a clean exit.
+  // Cmd+Q / menu Quit must end the process. Do not recreate the pet or wait
+  // for Go/browser teardown. stdin EOF / this shutdown line is enough for Go
+  // to mark a clean exit.
+  try {
+    companionShell?.beginQuit()
+  } catch {}
   try {
     backend?.beginStop()
     backend?.send({ type: 'shutdown' }, { allowClosed: true })

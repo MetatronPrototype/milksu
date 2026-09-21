@@ -13,14 +13,33 @@ import App from './App'
 import { ConversationsProvider } from '@/stores/conversationsStore'
 import { LabJobsProvider } from '@/stores/labJobsStore'
 import { applyHostPlatform, syncWindowChrome } from '@/lib/hostPlatform'
-import { applyThemeMode, readThemeMode, resolveThemeMode } from '@/lib/themeMode'
+import { applyUiEmphasis } from '@/lib/uiEmphasis'
+import { applyUiFonts, subscribeUiFontsSync } from '@/lib/uiFonts'
+import { applyThemeMode, readThemeMode, resolveThemeMode, subscribeThemeSync } from '@/lib/themeMode'
 import './index.css'
 
 const initialThemeMode = readThemeMode()
 applyHostPlatform()
 applyThemeMode(initialThemeMode)
 syncWindowChrome(resolveThemeMode(initialThemeMode), globalThis, initialThemeMode)
+subscribeThemeSync((mode, resolved) => {
+  applyThemeMode(mode, document.documentElement, resolved === 'dark')
+  syncWindowChrome(resolved, globalThis, mode)
+  applyUiEmphasis({ theme: resolved })
+})
+subscribeUiFontsSync(fonts => {
+  applyUiFonts(fonts, { sync: false })
+})
 document.documentElement.dataset.colorScheme = 'memoh'
+try {
+  const surface = new URLSearchParams(window.location.search).get('surface') || ''
+  if (surface === 'companion' || surface === 'companion-chat') {
+    document.documentElement.classList.add('companion-surface')
+    document.body.classList.add('companion-surface')
+  }
+} catch {
+  // Surface query is only present in the desktop pet window.
+}
 
 class BootErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null; stack: string }> {
   state = { error: null as Error | null, stack: '' }

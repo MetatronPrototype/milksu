@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, 
 import AppSidebar from '@/components/AppSidebar'
 import CommandPanel from '@/components/CommandPanel'
 import UpdateInstallDialog from '@/components/UpdateInstallDialog'
+import UpdateProgressDialog, { UpdateReadyButton } from '@/components/UpdateProgressDialog'
 import { Toaster } from '@/components/ui'
 import CodingToolBudgetDialog from '@/components/CodingToolBudgetDialog'
 import { useConversations } from '@/stores/conversationsStore'
@@ -13,6 +14,7 @@ import { syncWindowChrome } from '@/lib/hostPlatform'
 import {
   applyThemeMode,
   nextThemeMode,
+  publishThemeSync,
   readThemeMode,
   resolveThemeMode,
   writeThemeMode,
@@ -85,9 +87,19 @@ const ProfilePage = lazy(() => import('@/components/ProfilePage'))
 const SettingsPage = lazy(() => import('@/components/SettingsPage'))
 const VulnPage = lazy(() => import('@/components/VulnPage'))
 const LabPage = lazy(() => import('@/components/LabPage'))
+const CompanionPetWindow = lazy(() => import('@/components/CompanionPetWindow'))
 
-type Section = 'chat' | 'ctf' | 'vuln' | 'lab' | 'profile' | 'settings'
+type Section = 'chat' | 'ctf' | 'vuln' | 'lab' | 'companion' | 'profile' | 'settings'
 type DomainHome = 'ctf' | 'vuln' | 'lab'
+
+function readRendererSurface() {
+  if (typeof window === 'undefined') return ''
+  try {
+    return String(new URLSearchParams(window.location.search).get('surface') || '')
+  } catch {
+    return ''
+  }
+}
 
 const localAccountModeKey = 'milksu.account.continue-local'
 const solidColors: Record<string, string> = {
@@ -97,7 +109,10 @@ const solidColors: Record<string, string> = {
 
 function readLocalAccountMode() {
   try {
-    return window.localStorage?.getItem(localAccountModeKey) === '1'
+    // 「暂不登录」只对这一次进程有效。关掉再开必须再看见登录页。
+    const skipped = window.sessionStorage?.getItem(localAccountModeKey) === '1'
+    window.localStorage?.removeItem(localAccountModeKey)
+    return skipped
   } catch {
     return false
   }
@@ -105,8 +120,9 @@ function readLocalAccountMode() {
 
 function writeLocalAccountMode(enabled: boolean) {
   try {
-    if (enabled) window.localStorage?.setItem(localAccountModeKey, '1')
-    else window.localStorage?.removeItem(localAccountModeKey)
+    if (enabled) window.sessionStorage?.setItem(localAccountModeKey, '1')
+    else window.sessionStorage?.removeItem(localAccountModeKey)
+    window.localStorage?.removeItem(localAccountModeKey)
   } catch {
     // Some embedded or test renderers intentionally expose no local storage.
   }
@@ -183,6 +199,7 @@ async function timedStartupStep<T>(label: string, work: () => Promise<T>): Promi
 
 export default function App() {
   const t = useT()
+  const rendererSurface = readRendererSurface()
   const restoredViewState = useRef(readWorkspaceViewState()).current
   const openPluginSettingsOnStartup = useRef(
     typeof location !== 'undefined'
@@ -220,6 +237,7 @@ export default function App() {
   const [accountLoginError, setAccountLoginError] = useState('')
   const [continueWithoutAccount, setContinueWithoutAccount] = useState(readLocalAccountMode)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false)
   const [installUpdatePromptOpen, setInstallUpdatePromptOpen] = useState(false)
   const [commandPanelOpen, setCommandPanelOpen] = useState(false)
   const [pendingUpdateResume, setPendingUpdateResume] = useState<UpdateResumeState | null>(null)
@@ -447,6 +465,9 @@ export default function App() {
     const resolved = resolveThemeMode(mode)
     syncWindowChrome(resolved, globalThis, mode)
     applyUiEmphasis({ theme: resolved })
+    if (rendererSurface !== 'companion' && rendererSurface !== 'companion-chat') {
+      publishThemeSync(mode)
+    }
   }
 
   function persistWorkspaceViewState() {
@@ -672,6 +693,11 @@ export default function App() {
       setSection(value)
       return
     }
+    if (value === 'companion') {
+      // Sidebar footer opens the phone. SHOW_PET would close it again.
+      void invokeCommand('show_companion_chat_window')
+      return
+    }
     setSection(value)
   }
 
@@ -739,6 +765,22 @@ export default function App() {
     setSection(home)
     setDomainChatDockOpen(true, home)
   }
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    let cancelled = false
+    void listenEvent<{ conversationId?: string }>('companion-focus', event => {
+      const id = String(event.payload?.conversationId ?? '').trim()
+      if (id) selectSidebarConversation(id)
+    }).then(stop => {
+      if (cancelled) stop()
+      else unlisten = stop
+    })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [conversations.conversations])
 
   async function chooseAgentWorkspace() {
     const workspacePath = await invokeCommand<string>('choose_agent_workspace')
@@ -1091,6 +1133,20 @@ export default function App() {
   }
 
   async function downloadUpdate() {
+    const current = updateStatusRef.current
+    const checking: UpdateStatus = {
+      state: 'downloading',
+      phase: 'checking',
+      currentVersion: current?.currentVersion || '',
+      enabled: current?.enabled !== false,
+      version: current?.version,
+      title: current?.title,
+      percent: 0,
+      transferred: 0,
+      total: current?.total || 0,
+    }
+    updateStatusRef.current = checking
+    setUpdateStatus(checking)
     try {
       const next = await invokeCommand<UpdateStatus>('download_update')
       updateStatusRef.current = next
@@ -1210,16 +1266,48 @@ export default function App() {
   }
 
   async function applyUpdate() {
-    if (applyingUpdate.current || installingUpdate.current) return
-    if (updateStatusRef.current?.state === 'downloading') return
-    applyingUpdate.current = true
+    setUpdateDialogOpen(true)
     updateRestartDeferred.current = false
+    if (updateStatusRef.current?.state === 'downloading') return
+    if (updateStatusRef.current?.state === 'downloaded') return
+    if (applyingUpdate.current || installingUpdate.current) return
+    applyingUpdate.current = true
     try {
-      if (updateStatusRef.current?.state !== 'downloaded') {
-        const downloaded = await downloadUpdate()
-        if (downloaded.state !== 'downloaded') return
+      await downloadUpdate()
+    } finally {
+      applyingUpdate.current = false
+    }
+  }
+
+  async function cancelUpdateDownload() {
+    try {
+      const next = await invokeCommand<UpdateStatus>('cancel_update')
+      if (next) {
+        updateStatusRef.current = next
+        setUpdateStatus(next)
       }
-      await requestInstallUpdate()
+    } catch (reason) {
+      console.error('Failed to cancel update download', reason)
+    }
+  }
+
+  async function retryUpdateDownload() {
+    setUpdateDialogOpen(true)
+    if (updateStatusRef.current?.state === 'downloading' || applyingUpdate.current) return
+    applyingUpdate.current = true
+    try {
+      if (updateStatusRef.current?.state !== 'available' && updateStatusRef.current?.state !== 'error') {
+        const checked = await invokeCommand<UpdateStatus>('check_for_updates')
+        if (checked) {
+          updateStatusRef.current = checked
+          setUpdateStatus(checked)
+        }
+        if (checked?.state !== 'available' && checked?.state !== 'error') {
+          setUpdateDialogOpen(false)
+          return
+        }
+      }
+      await downloadUpdate()
     } finally {
       applyingUpdate.current = false
     }
@@ -1294,6 +1382,18 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    let stop: (() => void) | undefined
+    void listenEvent<{ section?: string; category?: string }>('companion.navigate', event => {
+      if (event.payload?.section !== 'settings') return
+      setSettingsCategory(normalizeSettingsCategory((event.payload.category as SettingsCategory) || 'companion'))
+      setSection('settings')
+    }).then(unlisten => {
+      stop = unlisten
+    })
+    return () => stop?.()
+  }, [])
+
+  useEffect(() => {
     if (section !== 'ctf' && section !== 'vuln' && section !== 'lab') return
     setKeptWorkspacePages(prev => {
       if (prev.has(section)) return prev
@@ -1334,6 +1434,15 @@ export default function App() {
     let unlistenWorkspaceRecords: (() => void) | undefined
     let unlistenRuntime: (() => void) | undefined
     let unlistenPluginTheme: (() => void) | undefined
+
+    if (rendererSurface === 'companion' || rendererSurface === 'companion-chat') {
+      void loadSettings().catch(() => {})
+      return () => {
+        if (systemThemeMedia && systemThemeListener) {
+          systemThemeMedia.removeEventListener('change', systemThemeListener)
+        }
+      }
+    }
 
     void (async () => {
       unlistenAccount = await listenEvent<AccountStatus>('account.changed', event => {
@@ -1480,6 +1589,14 @@ export default function App() {
     onEditQueuedGuidance: conversations.editQueuedGuidance,
   }
 
+  if (rendererSurface === 'companion' || rendererSurface === 'companion-chat') {
+    return (
+      <Suspense fallback={null}>
+        <CompanionPetWindow />
+      </Suspense>
+    )
+  }
+
   if (!accountLoaded) {
     return (
       <div className="grid h-screen place-items-center bg-background text-xl font-semibold text-foreground">
@@ -1560,6 +1677,7 @@ export default function App() {
           onAccountLogin={startAccountLogin}
           onAccountLogout={logoutAccount}
           onSettings={() => openSettings('general')}
+          onCompanion={() => navigateSection('companion')}
           settingsCategory={settingsCategory}
           onSelectSettingsCategory={category => {
             setSettingsCategory(category)
@@ -1783,6 +1901,20 @@ export default function App() {
         onContinue={continueToolBudget}
         onStop={stopToolBudget}
       />
+      <UpdateProgressDialog
+        open={updateDialogOpen}
+        status={updateStatus}
+        onOpenChange={setUpdateDialogOpen}
+        onCancelDownload={() => void cancelUpdateDownload()}
+        onInstall={() => void requestInstallUpdate()}
+        onRetry={() => void retryUpdateDownload()}
+      />
+      {!updateDialogOpen ? (
+        <UpdateReadyButton
+          status={updateStatus}
+          onClick={() => setUpdateDialogOpen(true)}
+        />
+      ) : null}
       <UpdateInstallDialog
         open={installUpdatePromptOpen}
         onOpenChange={open => { if (!open) cancelInstallUpdate() }}

@@ -11,6 +11,19 @@
 `desktop/package.json` 的版本必须相同。任意已登录 `gh` 的机器都可以发这一轮，不要求本机有
 Developer ID 或 Apple 公证环境。
 
+## 1.5 必做：对照 models.dev 刷新钉死的模型事实
+
+**每次发版前**对照 <https://models.dev/api.json>（官方实验室：deepseek、openai、anthropic、
+xai、google、alibaba）把钉死的模型事实更新一遍。产品运行时不要去拉 models.dev。
+
+| 事实 | 改哪里 |
+| --- | --- |
+| 上下文窗口 / 输出上限 | `internal/modelcatalog/context_window.go`、`app/src/lib/knownContextWindow.ts`、`sidecar/pi/known-context-window.cjs`；`AGENTS.md`「模型事实」表 |
+| 思考档位 | `internal/config/model_thinking.go`、`app/src/lib/modelThinking.ts`；`AGENTS.md` 表 |
+| 用量美金估算价目（USD / 百万 token） | `app/src/lib/knownModelPricing.ts`（个人资料 Coding 页「约 $…」） |
+
+不一致就改齐再进 `release:verify`。资料页金额只是估算，不是账单；TokenFlux / 账户实价可能不同。
+
 ## 2. 全量验证一次
 
 ```bash
@@ -20,13 +33,16 @@ npm run release:verify
 该命令依次运行唯一 canonical suite：
 
 ```text
-go test ./...
+node scripts/test-go-product.mjs   # 产品 Go 包，排除 build/ 与 spikes/
 npm --prefix app test
 npm run test:sidecar
 npm --prefix app run lint
 npm --prefix app run build
 npm run docs:build
 ```
+
+步骤清单以 `scripts/lib/release-source-verification.mjs` 的 `RELEASE_VERIFICATION_STEPS` 为准，
+改脚本时一并改本节。
 
 成功后在被 Git 忽略的 `build/test-results/release-source-verification.json` 写入本地回执。回执绑定
 完整 commit、版本和以上六项检查。HEAD、版本、tracked 文件或 `origin/main` 任一发生变化，回执立即失效，
@@ -42,7 +58,7 @@ commit 分发给 **macOS / Windows / Linux** 三条 workflow。macOS 本机打�
 
 ```bash
 npm run release:dispatch -- \
-  --release-title "MilkSU 26.825.1" \
+  --release-title "MilkSU <version>" \
   --release-notes "本次发行说明"
 ```
 
@@ -77,7 +93,7 @@ npm run release:dispatch -- --dry-run
 ```bash
 npm run release:collect -- --wait
 npm run release:github -- \
-  --release-title "MilkSU 26.825.1" \
+  --release-title "MilkSU <version>" \
   --release-notes "本次发行说明"
 ```
 

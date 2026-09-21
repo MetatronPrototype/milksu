@@ -84,6 +84,19 @@ test('registers unpackaged protocol clients with the Electron executable and app
     execPath: 'C:\\electron\\electron.exe',
     argv: ['C:\\electron\\electron.exe'],
   }), { scheme: 'milksu', register: false })
+  assert.deepEqual(desktopProtocolClientRegistration({
+    channel: 'stable',
+    isPackaged: false,
+    defaultApp: false,
+    execPath: '/repo/node_modules/electron/dist/Electron',
+    argv: ['/repo/node_modules/electron/dist/Electron', '/repo/desktop'],
+    instanceId: 'plfu-1',
+  }), {
+    scheme: 'milksu',
+    register: true,
+    execPath: '/repo/node_modules/electron/dist/Electron',
+    args: [path.resolve('/repo/desktop')],
+  })
 })
 
 test('keeps Stable and Beta OAuth callbacks on separate protocol handlers', async () => {
@@ -134,6 +147,30 @@ test('uses system-browser PKCE and returns no credential material to the rendere
   assert.match(exchangeBody.codeVerifier, /^[A-Za-z0-9_-]{64}$/u)
   assert.doesNotMatch(JSON.stringify(status), /secret/)
   assert.equal(await session.activeAccessToken(), 'access-secret')
+})
+
+test('clears authorizing state when accounts redirects an OAuth error', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'milksu-account-oauth-error-'))
+  const opened = []
+  const config = await loadAccountConfig({ env: {
+    MILKSU_ACCOUNT_API_URL: 'https://account.example',
+  } })
+  const session = new AccountSession({
+    config,
+    userDataPath: root,
+    openExternal: async url => opened.push(url),
+    fetchImpl: async () => {
+      throw new Error('exchange must not run on oauth error callback')
+    },
+  })
+  await session.startLogin()
+  assert.equal((await session.status()).state, 'authorizing')
+  await assert.rejects(
+    () => session.handleCallback('milksu://auth/callback?error=github_oauth_bad_code'),
+    /授权码已失效/,
+  )
+  assert.equal((await session.status()).state, 'signed_out')
+  assert.equal(opened.length, 1)
 })
 
 test('defers GitHub avatar fetch so status() does not block startup', async () => {

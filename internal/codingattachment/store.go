@@ -205,6 +205,23 @@ func attachmentFromData(name, declaredMediaType string, data []byte) (Attachment
 	}
 	digest := sha256.Sum256(data)
 	digestHex := hex.EncodeToString(digest[:])
+	return Attachment{
+		ID:        digestHex,
+		Name:      name,
+		MediaType: resolveAttachmentMediaType(name, declaredMediaType, data),
+		Size:      int64(len(data)),
+		SHA256:    digestHex,
+	}, nil
+}
+
+func resolveAttachmentMediaType(name, declaredMediaType string, data []byte) string {
+	detected := strings.ToLower(strings.TrimSpace(http.DetectContentType(data)))
+	if separator := strings.IndexByte(detected, ';'); separator >= 0 {
+		detected = detected[:separator]
+	}
+	if strings.HasPrefix(detected, "image/") {
+		return detected
+	}
 	mediaType := strings.TrimSpace(strings.ToLower(declaredMediaType))
 	if parsed, _, err := mime.ParseMediaType(mediaType); err == nil {
 		mediaType = parsed
@@ -215,18 +232,12 @@ func attachmentFromData(name, declaredMediaType string, data []byte) (Attachment
 		mediaType = mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
 	}
 	if mediaType == "" {
-		mediaType = http.DetectContentType(data)
+		mediaType = detected
 	}
 	if separator := strings.IndexByte(mediaType, ';'); separator >= 0 {
 		mediaType = mediaType[:separator]
 	}
-	return Attachment{
-		ID:        digestHex,
-		Name:      name,
-		MediaType: mediaType,
-		Size:      int64(len(data)),
-		SHA256:    digestHex,
-	}, nil
+	return mediaType
 }
 
 func (s *Store) Preview(attachment Attachment) (Preview, error) {
@@ -234,18 +245,19 @@ func (s *Store) Preview(attachment Attachment) (Preview, error) {
 	if err != nil {
 		return Preview{}, err
 	}
+	mediaType := resolveAttachmentMediaType(attachment.Name, attachment.MediaType, data)
 	preview := Preview{
-		Name: attachment.Name, MediaType: attachment.MediaType,
-		Size: attachment.Size, Kind: "metadata",
+		Name: attachment.Name, MediaType: mediaType,
+		Size: int64(len(data)), Kind: "metadata",
 	}
-	if strings.HasPrefix(attachment.MediaType, "image/") && len(data) <= 12*1024*1024 {
+	if strings.HasPrefix(mediaType, "image/") && len(data) <= 12*1024*1024 {
 		preview.Kind = "image"
-		preview.DataURL = "data:" + attachment.MediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+		preview.DataURL = "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
 		return preview, nil
 	}
-	if (strings.HasPrefix(attachment.MediaType, "text/") ||
-		strings.Contains(attachment.MediaType, "json") ||
-		strings.Contains(attachment.MediaType, "xml")) && len(data) <= 1024*1024 && utf8.Valid(data) {
+	if (strings.HasPrefix(mediaType, "text/") ||
+		strings.Contains(mediaType, "json") ||
+		strings.Contains(mediaType, "xml")) && len(data) <= 1024*1024 && utf8.Valid(data) {
 		preview.Kind = "text"
 		preview.Text = string(data)
 	}
@@ -264,8 +276,10 @@ func (s *Store) read(attachment Attachment) ([]byte, error) {
 	}
 	path := filepath.Join(s.root, attachment.ID, attachment.Name)
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
-		info.Size() != attachment.Size {
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("附件 %q 不可用", attachment.Name)
+	}
+	if attachment.Size != 0 && info.Size() != attachment.Size {
 		return nil, fmt.Errorf("附件 %q 不可用", attachment.Name)
 	}
 	data, err := os.ReadFile(path)

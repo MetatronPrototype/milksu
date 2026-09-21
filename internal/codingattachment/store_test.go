@@ -75,6 +75,40 @@ func TestStoreImportsClipboardPayloadAndPreviewsImage(t *testing.T) {
 	if preview.Kind != "image" || !strings.HasPrefix(preview.DataURL, "data:image/png;base64,") {
 		t.Fatalf("unexpected image preview: %#v", preview)
 	}
+	lookup := attachments[0]
+	lookup.Size = 0
+	preview, err = store.Preview(lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Kind != "image" || preview.Size != int64(len(image)) {
+		t.Fatalf("size-less preview: %#v", preview)
+	}
+}
+
+func TestStoreSniffsGifBytesEvenWhenNamedJpeg(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "attachments"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gif := []byte("GIF89a\x01\x00\x01\x00\x00\x00\x00")
+	attachments, err := store.ImportPayloads([]ImportPayload{{
+		Name: "sticker.jpg", MediaType: "image/jpeg",
+		DataBase64: base64.StdEncoding.EncodeToString(gif),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 || attachments[0].MediaType != "image/gif" {
+		t.Fatalf("expected sniffed gif type, got %#v", attachments)
+	}
+	preview, err := store.Preview(attachments[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.MediaType != "image/gif" || !strings.HasPrefix(preview.DataURL, "data:image/gif;base64,") {
+		t.Fatalf("unexpected gif preview: %#v", preview)
+	}
 }
 
 func TestStoreClipboardPayloadRejectsInvalidData(t *testing.T) {

@@ -12,17 +12,19 @@ import test from "node:test";
 import {
   destructiveDeleteApproval,
   destructiveDeleteDecision,
+  refuseUnmeasuredDelete,
   destructiveJustification,
   expandDeleteTarget,
+  commandAssignments,
   commandForTool,
   consumeDestructiveDeleteCredential,
   consumeMatchingDestructiveDeleteCredential,
   issueDestructiveDeleteCredential,
   recursiveDeleteTargets,
-  stripFdOnlyRedirections,
-  writesPath,
   shellScriptArgument,
   resetDestructiveDeleteCredentials,
+  stripFdOnlyRedirections,
+  writesPath,
 } from "./bridge-destructive-delete.js";
 
 test("recursive deletion parser covers POSIX, PowerShell, Windows, find, and git clean", () => {
@@ -143,7 +145,7 @@ test("small recursive deletes remain automatic while large directories require c
   assert.match(decision.content, /大型目录/);
 });
 
-test("unresolved recursive delete targets are blocked instead of being approved ambiguously", async () => {
+test("unresolved recursive delete targets ask instead of being approved silently", async () => {
   const decision = await destructiveDeleteDecision({
     toolName: "bash",
     input: { command: 'rm -rf "$UNKNOWN_ROOT"' },
@@ -151,8 +153,27 @@ test("unresolved recursive delete targets are blocked instead of being approved 
     environment: {},
     homeDirectory: "/nonexistent-home",
   });
-  assert.equal(decision.action, "block");
-  assert.match(decision.reason, /明确的绝对路径/);
+  assert.equal(decision.action, "approval");
+  assert.match(decision.reason, /无法安全解析/);
+  assert.match(decision.content, /删除需要确认/);
+});
+
+test("intercept prefab blocks with a reason the model can use to change the command", () => {
+  const chinese = refuseUnmeasuredDelete({
+    chinese: true,
+    reason: "无法安全解析删除目标中的变量",
+  });
+  assert.equal(chinese.action, "block");
+  assert.match(chinese.reason, /无法安全解析删除目标中的变量/);
+  assert.match(chinese.reason, /改用可以事先看清删除目标的写法/);
+
+  const english = refuseUnmeasuredDelete({
+    chinese: false,
+    reason: "the target cannot be resolved",
+  });
+  assert.equal(english.action, "block");
+  assert.match(english.reason, /the target cannot be resolved/);
+  assert.match(english.reason, /Change the command/);
 });
 
 // A background task must be judged exactly like the foreground call; anything that
@@ -197,10 +218,10 @@ test("judges a background task like the foreground command", async () => {
 
 // A recursive delete must carry the requester's own reason; a bare rm -rf fails closed
 // so the card can never show "the requester did not provide a purpose".
-test("requires a purpose and a safety note for a recursive delete", () => {
+test("reads an optional purpose and safety note for the confirmation card", () => {
   const missing = destructiveJustification({ command: "rm -rf /x" });
   assert.equal(missing.ok, false);
-  assert.match(missing.reason, /request_destructive_delete/);
+  assert.equal(missing.reason, "");
 
   assert.equal(destructiveJustification({ justification: { purpose: " ", safety: "x" } }).ok, false);
   assert.equal(destructiveJustification({ justification: { purpose: "x", safety: "  " } }).ok, false);
@@ -226,6 +247,7 @@ test("the parser ignores quoted text, grep patterns and heredoc bodies", () => {
   assert.deepEqual(recursiveDeleteTargets("rm -rf /tmp/x"), ["/tmp/x"]);
   assert.deepEqual(recursiveDeleteTargets('rm -rf "/tmp/a b"'), ["/tmp/a b"]);
   assert.deepEqual(recursiveDeleteTargets('bash -c "rm -rf /tmp/y"'), ["/tmp/y"]);
+  assert.deepEqual(recursiveDeleteTargets('bash -lc "rm -rf /tmp/y"'), ["/tmp/y"]);
   assert.deepEqual(recursiveDeleteTargets("sh -c 'rm -rf /tmp/z'"), ["/tmp/z"]);
   assert.deepEqual(recursiveDeleteTargets("find /tmp/x -delete"), ["/tmp/x"]);
   // A pipe into xargs has no visible target, so the working directory is assumed.
@@ -332,10 +354,11 @@ test("a command that creates its own delete target is blocked", async (t) => {
       command: `rm -rf ${target}; mkdir -p ${target}; `
         + `for i in $(seq 1 1200); do : > "${target}/f$i"; done; rm -rf ${target}`,
     },
-    policy: { workspace },
+    policy: { workspace, uiLocale: "en" },
   });
-  assert.equal(decision?.action, "block");
+  assert.equal(decision?.action, "approval");
   assert.match(String(decision?.reason ?? ""), /creates the target first/i);
+  assert.match(String(decision?.content ?? ""), /Deletion requires confirmation/);
 
   // A delete of a directory the command does not create is judged normally.
   const plain = await destructiveDeleteDecision({
@@ -344,6 +367,46 @@ test("a command that creates its own delete target is blocked", async (t) => {
     policy: { workspace },
   });
   assert.notEqual(plain?.action, "block");
+});
+
+// `rm -rf X && mkdir X` clears a path that already exists, then recreates it. The
+// delete is of the current tree and can be measured; refusing it blocked ordinary
+// repro / preview harnesses (`REPRO=/tmp/x; rm -rf "$REPRO" && mkdir -p "$REPRO"`).
+test("guard-clean-slate: rm then mkdir of the same path is not a hidden create", async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), "milksu-clean-slate-"));
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const target = join(workspace, "repro");
+
+  const clean = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `rm -rf ${target} && mkdir -p ${target}` },
+    policy: { workspace, uiLocale: "zh" },
+  });
+  assert.equal(clean, null);
+
+  assert.deepEqual(commandAssignments(`REPRO=${target}\nrm -rf "$REPRO" && mkdir -p "$REPRO"`), {
+    REPRO: target,
+  });
+  const assigned = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: {
+      command: `set -e\nREPRO=${target}\nrm -rf "$REPRO" && mkdir -p "$REPRO"`,
+    },
+    policy: { workspace, uiLocale: "zh" },
+  });
+  assert.equal(assigned, null);
+
+  // mkdir before a later rm of the same path is still the hidden-create case.
+  const created = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `mkdir -p ${target}; rm -rf ${target}` },
+    policy: { workspace, uiLocale: "zh" },
+  });
+  assert.equal(created?.action, "approval");
+  assert.match(String(created?.reason ?? ""), /先创建目标/);
+  assert.match(String(created?.content ?? ""), /删除需要确认/);
 });
 
 // The three quoting forms of the same delete must reach the same decision on the sidecar
@@ -383,6 +446,7 @@ test("guard-script-ref: the named script is recognised", () => {
   assert.equal(shellScriptArgument(["source", "/tmp/x.sh"]), "/tmp/x.sh")
   assert.equal(shellScriptArgument([".", "/tmp/x.sh"]), "/tmp/x.sh")
   assert.equal(shellScriptArgument(["python3", "/tmp/x.py"]), "/tmp/x.py")
+  assert.equal(shellScriptArgument(["./wipe.sh"]), "./wipe.sh")
 
   // Ordinary commands are not script references.
   assert.equal(shellScriptArgument(["rm", "-rf", "/tmp/x"]), undefined)
@@ -511,19 +575,9 @@ test("guard-script-cycle: mutual references converge", async (t) => {
   assert.deepEqual(recursiveDeleteTargets(`bash ${a}`), []);
 });
 
-// The card reads the script out of a combined flag (`bash -lc "…"`). The guard has to read
-// the same thing, or a command the card refused becomes one the guard lets through.
-test("guard-inline-flag: the script inside a combined -c flag is judged", () => {
-  assert.deepEqual(recursiveDeleteTargets('bash -lc "rm -rf /tmp/x"'), ["/tmp/x"])
-  assert.deepEqual(recursiveDeleteTargets("sh -euc 'rm -rf /tmp/y'"), ["/tmp/y"])
-  assert.deepEqual(recursiveDeleteTargets('zsh -cx "rm -rf /tmp/z"'), ["/tmp/z"])
-  // A flag without `c` still names a file rather than carrying an inline script.
-  assert.equal(shellScriptArgument(["bash", "-e", "/tmp/x.sh"]), "/tmp/x.sh")
-  assert.equal(shellScriptArgument(["bash", "-lc", "rm -rf /tmp/x"]), undefined)
-})
-
-// `./wipe.sh` deletes exactly like `bash wipe.sh`; the file has to be read either way.
-test("guard-script-path: a script run by its own path is read", async (t) => {
+// `./wipe.sh` is read, but a script run by an absolute path (`/tmp/wipe.sh`) was still skipped:
+// it is the same delete, so the file has to be read either way.
+test("guard-script-path: a script run by an absolute path is read", async (t) => {
   const workspace = await mkdtemp("/tmp/milksu-script-path-");
   t.after(async () => {
     await rm(workspace, { recursive: true, force: true });
@@ -535,16 +589,17 @@ test("guard-script-path: a script run by its own path is read", async (t) => {
   await writeFile(script, `#!/bin/sh\nrm -rf "${target}"\n`);
 
   assert.equal(shellScriptArgument([script]), script);
-  assert.equal(shellScriptArgument(["./wipe.sh"]), "./wipe.sh");
   assert.deepEqual(recursiveDeleteTargets(`${script}`), [target]);
+  assert.deepEqual(recursiveDeleteTargets(`cd / && ${script}`), [target]);
 
-  // A bare binary path is not a script and is not read as one.
+  // A bare binary path is not a script and is not read as text.
   assert.equal(shellScriptArgument(["/usr/bin/rm"]), undefined);
 });
 
-// A script the command writes itself does not exist when the decision is made, so its
-// contents cannot be read. Reporting "no targets" would let the delete run unseen.
-test("guard-script-written: a script the command writes is refused", async (t) => {
+// A script the command writes itself does not exist when the decision is made, so disk cannot
+// answer for it. The command spells the text out, so that text is what gets judged - reporting
+// "no targets" would let the delete run unseen.
+test("guard-script-written: a delete inside a script the command writes is still seen", async (t) => {
   const workspace = await mkdtemp("/tmp/milksu-script-written-");
   t.after(async () => {
     await rm(workspace, { recursive: true, force: true });
@@ -553,20 +608,21 @@ test("guard-script-written: a script the command writes is refused", async (t) =
 
   const written = await destructiveDeleteDecision({
     toolName: "bash",
-    input: { command: `printf 'rm -rf /tmp/big' > ${script} && bash ${script}` },
+    input: { command: `printf 'rm -rf ${workspace}' > ${script} && bash ${script}` },
     policy: { workspace },
   });
-  assert.equal(written?.action, "block");
+  assert.equal(written?.action, "approval");
+  assert.match(String(written?.content ?? ""), new RegExp(workspace));
 
-  // A heredoc counts as writing it too.
+  // A heredoc carries the text the same way.
   const heredoc = await destructiveDeleteDecision({
     toolName: "bash",
-    input: { command: `cat > ${script} <<'EOF'\nrm -rf /tmp/big\nEOF\nbash ${script}` },
+    input: { command: `cat > ${script} <<'EOF'\nrm -rf ${workspace}\nEOF\nbash ${script}` },
     policy: { workspace },
   });
-  assert.equal(heredoc?.action, "block");
+  assert.equal(heredoc?.action, "approval");
 
-  // A script that is merely missing is not a refusal: the command that named it fails anyway.
+  // A script that is merely missing is not a refusal: the command naming it cannot run anyway.
   const missing = await destructiveDeleteDecision({
     toolName: "bash",
     input: { command: `bash ${join(workspace, "nope.sh")}` },
@@ -575,7 +631,7 @@ test("guard-script-written: a script the command writes is refused", async (t) =
   assert.notEqual(missing?.action, "block");
 });
 
-// The guard has to see `~` as the real home directory, not as a literal name.
+// The guard has to see `~` as the real home directory rather than as a literal name.
 test("guard-home: `~` is expanded before the target is judged", async () => {
   const decision = await destructiveDeleteDecision({
     toolName: "bash",
@@ -587,8 +643,8 @@ test("guard-home: `~` is expanded before the target is judged", async () => {
   assert.match(decision.content, /\/Users\/probe/);
 });
 
-// The card can only judge a delete if the approval carries the delete: a bare path arrives
-// as plain text, which is not recognisable as a deletion.
+// The card can only judge a delete if the approval carries the delete: a bare path arrives as
+// plain text, which is not recognisable as a deletion.
 test("guard-approval-input: request_destructive_delete always sends a structured delete", () => {
   const approval = destructiveDeleteApproval({ target: "/tmp/gate-probe", decision: null });
   const parsed = JSON.parse(approval.input);
@@ -605,20 +661,151 @@ test("guard-approval-input: request_destructive_delete always sends a structured
   assert.equal(withDecision.input, '{"command":"rm -rf \\"/x\\""}');
 });
 
-// `2>&1` merges stderr into the pipe; it writes no file. Treating it as a redirection made
-// the write-detection fire and then match whatever path the command happened to mention, so
+// `2>&1` merges stderr into the pipe; it writes no file. Treating it as a redirection made the
+// write-detection fire and then match whatever path the command happened to mention, so
 // `./node_modules/.bin/vitest run X 2>&1 | tail` was refused as "writes X".
 test("guard-fd: descriptor redirections are not file writes", () => {
-  const script = "/tmp/guard-fd-target.sh"
+  const script = "/tmp/guard-fd-target.sh";
   // No file redirection at all -> not a write, whatever the path looks like.
-  assert.equal(writesPath(`./node_modules/.bin/vitest run ${script} 2>&1 | tail`, script), false)
-  assert.equal(writesPath(`bash -c 'run ${script}' 2>&1`, script), false)
-  assert.equal(writesPath(`node ${script} 2>&1 >/dev/null`, script), false)
+  assert.equal(writesPath(`./node_modules/.bin/vitest run ${script} 2>&1 | tail`, script), false);
+  assert.equal(writesPath(`bash -c 'run ${script}' 2>&1`, script), false);
+  assert.equal(writesPath(`node ${script} 2>&1 >/dev/null`, script), false);
   // The fd forms themselves are stripped, not the path.
-  assert.equal(stripFdOnlyRedirections("cmd 2>&1 | tail").replace(/\s+/g, " ").trim(), "cmd | tail")
-  assert.equal(stripFdOnlyRedirections("cmd >/dev/null 2>&1").trim(), "cmd")
+  assert.equal(stripFdOnlyRedirections("cmd 2>&1 | tail").replace(/\s+/g, " ").trim(), "cmd | tail");
+  assert.equal(stripFdOnlyRedirections("cmd >/dev/null 2>&1").trim(), "cmd");
   // A real redirection that names the same path must still count.
-  assert.equal(writesPath(`printf 'rm -rf /tmp/x' > ${script} && bash ${script}`, script), true)
+  assert.equal(writesPath(`printf 'rm -rf /tmp/x' > ${script} && bash ${script}`, script), true);
   // A real redirection naming a different path must not.
-  assert.equal(writesPath(`printf 'x' > /tmp/other.sh && bash ${script}`, script), false)
-})
+  assert.equal(writesPath(`printf 'x' > /tmp/other.sh && bash ${script}`, script), false);
+});
+
+// The guard reads a bounded number of script levels. Reporting "no targets" past that bound let a
+// delete deep in a chain pass unseen, so a chain that really continues past what it read is
+// refused - but a chain that simply ends there is judged on what it says, not refused for being
+// long.
+test("guard-script-depth: a chain that outruns the guard asks first", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-depth-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const script = level => join(workspace, `level-${level}.sh`);
+  await writeFile(script(5), `#!/bin/sh\nrm -rf "${workspace}"\n`);
+  for (const level of [4, 3, 2, 1, 0]) {
+    await writeFile(script(level), `#!/bin/sh\nbash ${script(level + 1)}\n`);
+  }
+
+  // Within what the guard reads the delete is found and judged: depth 0 is the command, then one
+  // level per script it opens, so entering at level-2 still reaches level-5's delete.
+  const shallow = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `bash ${script(2)}` },
+    policy: { workspace },
+  });
+  assert.equal(shallow?.action, "approval");
+
+  // One level earlier the chain runs past what the guard opened, so it cannot see the delete; it
+  // asks rather than letting it through unseen.
+  const deep = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `bash ${script(0)}` },
+    policy: { workspace },
+  });
+  assert.equal(deep?.action, "approval");
+
+  // The depth reason is its own sentence: a chain that merely runs deep is NOT a script the
+  // command writes, and it must not be described as one.
+  assert.match(String(deep?.reason ?? ""), /脚本链路比守卫读得更深/);
+  assert.doesNotMatch(String(deep?.reason ?? ""), /命令自己写入的脚本/);
+  assert.match(String(deep?.content ?? ""), /删除需要确认/);
+
+  const english = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `bash ${script(0)}` },
+    policy: { workspace, uiLocale: "en" },
+  });
+  assert.equal(english?.action, "approval");
+  assert.match(String(english?.reason ?? ""), /runs deeper than the guard reads/);
+  // No Chinese fragment may be pasted into the English sentence.
+  assert.doesNotMatch(String(english?.reason ?? ""), /[\u4e00-\u9fff]/);
+});
+
+// A long chain that deletes nothing is not a reason to refuse anything: the guard reads what each
+// level says and only refuses when the chain keeps going past what it opened.
+test("guard-script-depth: a deep chain that deletes nothing is allowed", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-depth-ok-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const script = level => join(workspace, `step-${level}.sh`);
+  await writeFile(script(3), "#!/bin/sh\necho done\n");
+  for (const level of [2, 1, 0]) {
+    await writeFile(script(level), `#!/bin/sh\nbash ${script(level + 1)}\n`);
+  }
+
+  const decision = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `bash ${script(0)}` },
+    policy: { workspace },
+  });
+  assert.equal(decision, null);
+});
+
+// Writing a script and running it in the same command is how any test or build script is made.
+// The guard reads the text the command spells out instead of refusing a script it has not seen:
+// the delete in it is approved, and the one without a delete just runs.
+test("guard-script-written: the text the command writes is what gets judged", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-authored-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const big = join(workspace, "big");
+  await mkdir(big, { recursive: true });
+  for (let index = 0; index < 1200; index += 1) {
+    await writeFile(join(big, `f${index}`), "");
+  }
+
+  const harmless = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `cat > ${join(workspace, "t.sh")} <<'EOF'\npytest -q\nEOF\nbash ${join(workspace, "t.sh")}` },
+    policy: { workspace },
+  });
+  assert.equal(harmless, null);
+
+  const wipes = await destructiveDeleteDecision({
+    toolName: "bash",
+    input: { command: `printf 'rm -rf ${workspace}' > ${join(workspace, "w.sh")} && bash ${join(workspace, "w.sh")}` },
+    policy: { workspace },
+  });
+  assert.equal(wipes?.action, "approval");
+});
+
+// The other reason keeps its own wording, in both languages: the command writes a script from
+// something the guard cannot read - a download, a variable, a copy - so what it would delete is
+// not in the command either.
+test("a written-but-unreadable script asks with the write reason", async (t) => {
+  const workspace = await mkdtemp("/tmp/milksu-script-written-copy-");
+  t.after(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+  const script = join(workspace, "generated.sh");
+  const command = `curl -s https://example.com/install.sh > ${script} && bash ${script}`;
+
+  for (const [locale, expected, forbidden] of [
+    ["zh", /命令自己写入的脚本/, /比守卫读得更深/],
+    ["en", /it writes the script\(s\)/, /[\u4e00-\u9fff]/],
+  ]) {
+    const decision = await destructiveDeleteDecision({
+      toolName: "bash",
+      input: { command },
+      policy: { workspace, uiLocale: locale },
+    });
+    assert.equal(decision?.action, "approval");
+    assert.match(String(decision?.reason ?? ""), expected);
+    assert.match(String(decision?.content ?? ""), locale === "zh" ? /删除需要确认/ : /Deletion requires confirmation/);
+    assert.doesNotMatch(String(decision?.reason ?? ""), forbidden);
+    if (locale === "en") {
+      // The English sentence must not carry a Chinese fragment from the other copy.
+      assert.doesNotMatch(String(decision?.reason ?? ""), /[\u4e00-\u9fff]/);
+    }
+  }
+});

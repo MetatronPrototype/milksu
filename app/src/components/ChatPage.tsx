@@ -111,7 +111,7 @@ import {
   LOCAL_CODING_SHELL_ID,
   shouldRememberCodingProject,
 } from '@/lib/codingProjectMemory'
-import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, type ChatTranscriptBlock } from '@/lib/chatActivity'
+import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, type ChatTranscriptBlock, latestFinishedThinkingId, thinkingStaysOpen } from '@/lib/chatActivity'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
 import { latestCodingPlan } from '@/lib/codingPlan'
 import {
@@ -423,6 +423,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     targetKinds: approvalAssessed.targets.map(target => target.kind),
   }), [approvalAssessed.targets, pendingApprovalMessage?.approvalInput, pendingApprovalMessage?.content])
   const approvalCanAllow = approvalCanAllowFrom(approvalBarIsDestructive, approvalAssessed.canAllow)
+  // 上游新增：无法核准的破坏性删除要在卡片上说明（不是我们那条“空间实测”的口径）。
+  const approvalUnverified = approvalBarIsDestructive && !approvalAssessed.canAllow
   const [approvalSubmitting, setApprovalSubmitting] = useState(false)
   const [approvalError, setApprovalError] = useState('')
   const approvalSummary = String(pendingApprovalMessage?.toolName ?? pendingApprovalMessage?.content ?? '')
@@ -971,6 +973,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     }
     return chatTranscript.map(fingerprint).join('|')
   }, [chatTranscript])
+  const thinkingFoldKey = useMemo(() => latestFinishedThinkingId(chatTranscript), [chatTranscript])
   chatTranscriptLengthRef.current = chatTranscript.length
   const recoverableFailureId = useMemo(() => (
     recoverableAgentFailureId(conversation?.messages ?? [], running)
@@ -2706,19 +2709,17 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                   </span>
                 ) : approvalError ? (
                   <span className="shrink-0 text-caption text-destructive">{approvalError}</span>
-                ) : !approvalCanAllow ? (
+                ) : approvalUnverified ? (
                   <span className="shrink-0 text-caption font-medium text-destructive" data-testid="approval-bar-gate">
-                    {t('核验拒绝：本卡只提供「拒绝」', 'Verification refused: deny only')}
+                    {t('范围未核验，仍可确认', 'Unverified scope; you can still confirm')}
                   </span>
                 ) : null}
                 <Button type="button" variant="outline" size="sm" disabled={approvalSubmitting} data-testid="approval-bar-deny" onClick={() => submitApproval(false)}>
                   {t('拒绝', 'Deny')}
                 </Button>
-                {approvalCanAllow ? (
-                  <Button type="button" size="sm" disabled={approvalSubmitting} data-testid="approval-bar-allow" onClick={() => submitApproval(true)}>
-                    {t('允许这一次', 'Allow once')}
-                  </Button>
-                ) : null}
+                <Button type="button" size="sm" disabled={approvalSubmitting} data-testid="approval-bar-allow" onClick={() => submitApproval(true)}>
+                  {t('允许这一次', 'Allow once')}
+                </Button>
               </div>
             ) : null}
               <div
@@ -2779,6 +2780,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       rewindDisabled={rewindUnavailable}
                       kernel={agentKernel}
                       {...transcriptHandlers}
+                      thinkingDefaultOpen={thinkingStaysOpen(item.message.id, chatTranscript)}
+                      thinkingFoldKey={thinkingFoldKey}
                     />
                   )
                 ))}

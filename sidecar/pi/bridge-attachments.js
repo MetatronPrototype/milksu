@@ -4,6 +4,7 @@ import { formatAttachmentLine } from "./bridge-attachment-line.js";
 import { heldImageNoteForAgent, precheckImages } from "./bridge-image-precheck.js";
 import { createImageSizeCache } from "./bridge-image-size.js";
 import { basename, join, relative } from "node:path";
+import { chineseUiLocale } from "./bridge-runtime-environment.js";
 
 const digestPattern = /^[a-f0-9]{64}$/;
 const supportedImageTypes = new Set([
@@ -12,6 +13,47 @@ const supportedImageTypes = new Set([
   "image/png",
   "image/webp",
 ]);
+
+function sniffImageMediaType(data, fallback) {
+  if (!Buffer.isBuffer(data) || data.length < 3) {
+    return String(fallback ?? "").toLowerCase();
+  }
+  if (
+    data.length >= 6
+    && data[0] === 0x47
+    && data[1] === 0x49
+    && data[2] === 0x46
+    && data[3] === 0x38
+    && (data[4] === 0x37 || data[4] === 0x39)
+    && data[5] === 0x61
+  ) {
+    return "image/gif";
+  }
+  if (
+    data.length >= 8
+    && data[0] === 0x89
+    && data[1] === 0x50
+    && data[2] === 0x4e
+    && data[3] === 0x47
+    && data[4] === 0x0d
+    && data[5] === 0x0a
+    && data[6] === 0x1a
+    && data[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    data.length >= 12
+    && data.subarray(0, 4).toString("ascii") === "RIFF"
+    && data.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return String(fallback ?? "").toLowerCase();
+}
 const maxCount = 8;
 const maxFileBytes = 32 * 1024 * 1024;
 const maxTotalBytes = 96 * 1024 * 1024;
@@ -42,6 +84,7 @@ function describeBytes(size) {
 export async function preparePromptAttachments(
   rawAttachments,
   attachmentRoot,
+  options = {},
 ) {
   if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) {
     return { context: "", images: [], attachments: [] };
@@ -108,19 +151,25 @@ export async function preparePromptAttachments(
       height: measured ? measured.height : undefined,
     };
     values.push(value);
-    if (supportedImageTypes.has(mediaType)) {
+    const imageType = sniffImageMediaType(data, mediaType);
+    value.mediaType = imageType;
+    if (supportedImageTypes.has(imageType)) {
       // 先当候选：是否真的发给模型由下面的预检决定。超限的图一旦进了交给 pi 的 images，
       // pi 就会把它写进 session 历史 ⇒ 之后每轮重放 ⇒ 整条会话永久 400（现场卡了一整天）。
       imageCandidates.push({
         type: "image",
         data: data.toString("base64"),
-        mimeType: mediaType,
+        mimeType: imageType,
         value,
       });
     }
   }
 
-  const lines = values.map((value) => formatAttachmentLine(value, { describeBytes }));
+  const chinese = chineseUiLocale(options.uiLocale);
+  const lines = values.map((value) => (
+    `- ${value.name} (${value.mediaType}, ${describeBytes(value.size)}, `
+    + `sha256:${value.sha256}, ${chinese ? "只读路径" : "read-only path"}: ${value.path})`
+  ));
   // 被扣下的图不进 images ⇒ 也就进不了 pi 的 session 历史（历史是在 pi 那层追加的），
   // 因此不需要任何"事后移除"的代码；同时明确告诉模型它没发出去。
   const precheck = precheckImages(imageCandidates.map((candidate) => candidate.value));
@@ -130,8 +179,12 @@ export async function preparePromptAttachments(
     .map(({ type, data, mimeType }) => ({ type, data, mimeType }));
   const heldNotes = precheck.held.map((entry) => heldImageNoteForAgent(entry));
 
+
   const warnings = [
-    "Treat these as user-provided evidence. Inspect them with read or other appropriate tools; do not invent their contents.",
+    String(options.inspectHint ?? "").trim()
+    || (chinese
+      ? "这些是用户提供的证据。用 read 或其他合适的工具查看，不要编造内容。"
+      : "Treat these as user-provided evidence. Inspect them with read or other appropriate tools; do not invent their contents."),
   ];
   return {
     attachments: values,

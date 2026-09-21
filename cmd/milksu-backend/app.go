@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/MilkSU-Official/milksu/internal/codingterminal"
 	"github.com/MilkSU-Official/milksu/internal/codingtools"
 	"github.com/MilkSU-Official/milksu/internal/codingworkspace"
+	"github.com/MilkSU-Official/milksu/internal/companion"
 	"github.com/MilkSU-Official/milksu/internal/computercap"
 	"github.com/MilkSU-Official/milksu/internal/config"
 	"github.com/MilkSU-Official/milksu/internal/conversation"
@@ -80,6 +82,7 @@ type App struct {
 	ctfMemory         *ctf.MemoryStore
 	vulnJobs          *vuln.Service
 	sessionIndex      *sessionindex.Store
+	companion         *companion.Runtime
 	evalSuite         *evalsuite.Service
 	lifespanStart     appdata.LifespanStart
 	lifespanHandle    appdata.LifespanHandle
@@ -299,7 +302,11 @@ func newAppWithDesktopHost(host desktopHost) (*App, error) {
 		application.nssctfCatalog.Close()
 		return nil, fmt.Errorf("create security job runtime: %w", err)
 	}
-	application.ctfJobs, err = ctf.NewService(application.jobs, ctf.ServiceOptions{})
+	application.ctfJobs, err = ctf.NewService(application.jobs, ctf.ServiceOptions{
+		UILocale: func() string {
+			return config.ResolvedUserInterfaceLocale(application.settings.Get())
+		},
+	})
 	if err != nil {
 		_ = application.jobs.Close()
 		application.browserBridge.Close()
@@ -350,6 +357,19 @@ func newAppWithDesktopHost(host desktopHost) (*App, error) {
 		application.nssctfCatalog.Close()
 		return nil, fmt.Errorf("create session index: %w", err)
 	}
+	application.companion = companion.NewRuntime(companion.RuntimeOptions{
+		AgentDir:  filepath.Join(dataDirectory, "agent-home", "companion"),
+		StatePath: filepath.Join(dataDirectory, "companion", "state.json"),
+		Settings:  application.settings.GetResolved,
+		Catalog:   &conversationCatalog{store: application.conversations},
+		Speaker: &storeSpeaker{
+			store:   application.conversations,
+			engines: application.engines,
+		},
+		Control: &supervisorControl{engines: application.engines},
+		App:     &companionAppControl{app: application},
+		Emit:    application.emitCompanionEvent,
+	})
 	application.modelUsage, err = modelusage.NewStore(
 		filepath.Join(dataDirectory, "usage", "model-usage.sqlite3"),
 	)
@@ -470,6 +490,9 @@ func (a *App) Shutdown(_ context.Context) {
 	if a.remoteControls != nil {
 		_ = a.remoteControls.Close()
 	}
+	if a.companion != nil {
+		_ = a.companion.Stop()
+	}
 	_ = a.vulnJobs.Close()
 	_ = a.ctfMemory.Close()
 	_ = a.ctfJobs.Close()
@@ -536,29 +559,17 @@ func (a *App) SetAccountModelCredential(baseURL, credential string) error {
 
 func (a *App) alignAccountModelSelection(catalog modelcatalog.Snapshot) (bool, error) {
 	settings := a.settings.Get()
-	if settings.ActiveProvider != modelcatalog.ProviderTokenFlux {
-		clearedWorker := alignWorkerModel(settings, catalog)
-		if !workerModelChanged(settings, clearedWorker) {
-			return false, nil
+	previous := settings
+	if settings.ActiveProvider == modelcatalog.ProviderTokenFlux {
+		if model := accountCatalogModel(settings.ActiveModel, catalog.Models); model != "" {
+			settings.ActiveModel = model
 		}
-		if err := a.settings.Save(clearedWorker); err != nil {
-			return false, fmt.Errorf("align worker model selection: %w", err)
-		}
-		return true, nil
 	}
-	model := accountCatalogModel(settings.ActiveModel, catalog.Models)
-	if model == "" || model == settings.ActiveModel {
-		clearedWorker := alignWorkerModel(settings, catalog)
-		if !workerModelChanged(settings, clearedWorker) {
-			return false, nil
-		}
-		if err := a.settings.Save(clearedWorker); err != nil {
-			return false, fmt.Errorf("align worker model selection: %w", err)
-		}
-		return true, nil
-	}
-	settings.ActiveModel = model
 	settings = alignWorkerModel(settings, catalog)
+	settings = alignCompanionModel(settings, catalog)
+	if !workerModelChanged(previous, settings) && !companionModelChanged(previous, settings) && previous.ActiveModel == settings.ActiveModel {
+		return false, nil
+	}
 	if err := a.settings.Save(settings); err != nil {
 		return false, fmt.Errorf("align account model selection: %w", err)
 	}
@@ -601,6 +612,25 @@ func workerModelChanged(previous, next config.AppSettings) bool {
 	return previous.WorkerProvider != next.WorkerProvider ||
 		previous.WorkerModel != next.WorkerModel ||
 		previous.WorkerSource != next.WorkerSource
+}
+
+func alignCompanionModel(settings config.AppSettings, catalog modelcatalog.Snapshot) config.AppSettings {
+	selection := config.ResolveCompanionModel(settings)
+	if selection.Provider != modelcatalog.ProviderTokenFlux || len(catalog.Models) == 0 {
+		return settings
+	}
+	model := accountCatalogModel(selection.Model, catalog.Models)
+	if model == "" {
+		return settings
+	}
+	settings.CompanionModel = model
+	return settings
+}
+
+func companionModelChanged(previous, next config.AppSettings) bool {
+	return previous.CompanionProvider != next.CompanionProvider ||
+		previous.CompanionModel != next.CompanionModel ||
+		previous.CompanionSource != next.CompanionSource
 }
 
 func accountCatalogModel(active string, models []modelcatalog.Model) string {
@@ -657,16 +687,32 @@ func tokenfluxCatalogModelAliases(active string, models []modelcatalog.Model) []
 	}
 	add(active)
 	activeBare := tokenfluxBareModelID(active)
+	activeStem := tokenfluxModelStem(active)
 	if activeBare != active {
 		add(activeBare)
 	}
+	type rankedAlias struct {
+		id   string
+		rank int
+	}
+	extras := make([]rankedAlias, 0, len(models))
 	for _, model := range models {
 		id := strings.TrimSpace(model.ID)
-		if id == "" {
+		if id == "" || id == active {
 			continue
 		}
-		if tokenfluxBareModelID(id) == activeBare || tokenfluxBareModelID(id) == active {
-			add(id)
+		bare := tokenfluxBareModelID(id)
+		if bare == activeBare || bare == active || tokenfluxModelStem(id) == activeStem {
+			extras = append(extras, rankedAlias{id: id, rank: tokenfluxAliasRank(id)})
+		}
+	}
+	sort.SliceStable(extras, func(i, j int) bool {
+		return extras[i].rank > extras[j].rank
+	})
+	for _, item := range extras {
+		add(item.id)
+		if bare := tokenfluxBareModelID(item.id); bare != item.id {
+			add(bare)
 		}
 	}
 	return result
@@ -690,6 +736,26 @@ func tokenfluxBareModelID(id string) string {
 		}
 	}
 	return id[slash+1:]
+}
+
+var tokenfluxThinkingSuffixes = []string{"-tiered", "-xhigh", "-medium", "-high", "-low", "-max"}
+
+func tokenfluxModelStem(id string) string {
+	bare := tokenfluxBareModelID(id)
+	lower := strings.ToLower(bare)
+	for _, suffix := range tokenfluxThinkingSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return bare[:len(bare)-len(suffix)]
+		}
+	}
+	return bare
+}
+
+func tokenfluxAliasRank(id string) int {
+	if strings.HasSuffix(strings.ToLower(tokenfluxBareModelID(id)), "-tiered") {
+		return 2
+	}
+	return 1
 }
 
 func (a *App) ClearAccountModelCredential() error {
@@ -733,12 +799,12 @@ func (a *App) rotateEngineCredentials(reason string) {
 	if marked == 0 {
 		return
 	}
-	log.Printf("[credentials] %d sidecar(s) restart with the new credentials (%s)", marked, reason)
+	log.Printf("[credentials] %d sidecar(s) marked for replacement; the next dispatch starts them with the new credentials (%s)", marked, reason)
 	if a.diagnostics != nil {
 		a.diagnostics.Record(
 			"coding-engine",
 			"info",
-			fmt.Sprintf("%d sidecar(s) restart with the new credentials (%s)", marked, reason),
+			fmt.Sprintf("%d sidecar(s) marked for replacement; the next dispatch starts them with the new credentials (%s)", marked, reason),
 		)
 	}
 }
@@ -896,6 +962,9 @@ func (a *App) SaveSettingsCmd(settings config.AppSettings) error {
 	if engine.SidecarConfigFingerprint(a.settings.GetResolved()) != beforeSidecarConfig {
 		a.rotateEngineCredentials("settings saved")
 	}
+	if a.companion != nil {
+		a.companion.Invalidate()
+	}
 	// A withdrawn credential is not a replacement and gets no lazy grace, so this stays
 	// unconditional and outside the fingerprint gate above.
 	if credentialWithdrawn(previous, a.settings.Get()) {
@@ -996,10 +1065,24 @@ func (a *App) SaveConversation(value conversation.StoredConversation) error {
 		a.remoteTurns.release(value.ID)
 	}
 	value.Kernel = conversation.NormalizeKernel(value.Kernel)
-	if existing, err := a.conversations.Get(value.ID); err == nil && conversation.HasStarted(existing) {
+	existing, existedErr := a.conversations.Get(value.ID)
+	if existedErr == nil && conversation.HasStarted(existing) {
 		value.Kernel = conversation.NormalizeKernel(existing.Kernel)
 	}
-	return a.conversations.Save(value)
+	if err := a.conversations.Save(value); err != nil {
+		return err
+	}
+	if existedErr != nil {
+		a.notifyConversationsChanged()
+	}
+	return nil
+}
+
+func (a *App) notifyConversationsChanged() {
+	if a == nil || a.ctx == nil {
+		return
+	}
+	a.emitDesktopEvent("conversations-changed", struct{}{})
 }
 
 func (a *App) ListArchivedConversations() ([]conversation.StoredConversation, error) {
@@ -1049,11 +1132,13 @@ func (a *App) DeleteConversation(id string) error {
 }
 
 func (a *App) refreshConversationIndex() error {
-	if a.sessionIndex == nil {
-		return nil
+	if a.sessionIndex != nil {
+		if _, err := a.refreshSessionIndex(); err != nil {
+			return err
+		}
 	}
-	_, err := a.refreshSessionIndex()
-	return err
+	a.notifyConversationsChanged()
+	return nil
 }
 
 func (a *App) stopConversationResources(id string) error {
@@ -2270,6 +2355,9 @@ func (a *App) emitEngineEvent(event engine.Event) {
 		_ = appdata.AppendEventLog(a.dataDirectory, appdata.PersistedSidecarStopped)
 	case "engine.protocol_error":
 		_ = appdata.AppendEventLog(a.dataDirectory, appdata.PersistedSidecarProtocolError)
+	}
+	if a.companion != nil {
+		a.companion.ObserveEngineEvent(event)
 	}
 	if a.evalSuite != nil {
 		a.evalSuite.Observe(event)

@@ -35,9 +35,7 @@ const (
 	// parked sidecar that has no turn in flight is stopped. A sidecar that is still
 	// running a turn is kept even when that leaves the set over the limit: stopping
 	// it is exactly the loss parking exists to prevent.
-	//
-	// 6 而非 3：搬运自本地分支（本地一直用 6）。硬上限会随之放大到 12。
-	maxParkedSidecars = 6
+	maxParkedSidecars = 3
 	// maxParkedSidecarsHardLimit bounds the set even when every parked sidecar still
 	// looks busy, so a turn that never reports completion cannot leak processes.
 	maxParkedSidecarsHardLimit = 2 * maxParkedSidecars
@@ -67,6 +65,17 @@ const (
 	// .StopStaleSidecars stops those sidecars immediately, mid-turn or not.
 	staleSidecarGraceTimeout = 75 * time.Minute
 )
+
+// staleSidecarBusyCeiling bounds how long a sidecar that is carrying a turn may keep serving after a
+// rotation. It is only a backstop: if the busy record is ever wrong - a turn that never reports its
+// end, a session that was never forgotten - this bounds the damage instead of pinning the process
+// for the lifetime of the app.
+//
+// It is defined in terms of the grace window on purpose, and must stay above it: a ceiling below
+// staleSidecarGraceTimeout would silently *tighten* the longest turn a rotation is allowed to let
+// finish, which is the behaviour this change exists to protect. The turn ending is what ends the
+// wait in every normal case; this constant only decides when to stop believing the turn exists.
+const staleSidecarBusyCeiling = 4 * staleSidecarGraceTimeout
 
 // engineSidecarStoppedEvent records that one Sidecar process ended. It is a process
 // lifecycle receipt for the persisted log, not a session outcome: unlike
@@ -105,63 +114,49 @@ type ApprovalJustification struct {
 	Safety  string `json:"safety,omitempty"`
 }
 
-// DeliveryOrigin identifies the conversation (and agent) that handed a message over.
-type DeliveryOrigin struct {
-	ConversationID    string `json:"conversationId,omitempty"`
-	ConversationTitle string `json:"conversationTitle,omitempty"`
-	Agent             string `json:"agent,omitempty"`
-}
-
 type Event struct {
-	SchemaVersion  int                      `json:"schemaVersion"`
-	Engine         string                   `json:"engine"`
-	SessionID      string                   `json:"sessionId,omitempty"`
-	Type           string                   `json:"type"`
-	Timestamp      string                   `json:"timestamp"`
-	Text           string                   `json:"text,omitempty"`
-	ToolName       string                   `json:"toolName,omitempty"`
-	ToolCallID     string                   `json:"toolCallId,omitempty"`
-	DurationMS     int64                    `json:"durationMs,omitempty"`
-	Error          string                   `json:"error,omitempty"`
-	Done           bool                     `json:"done,omitempty"`
-	Tools          []string                 `json:"tools,omitempty"`
-	Extensions     []string                 `json:"extensions,omitempty"`
-	Skills         []string                 `json:"skills,omitempty"`
-	ExecutionMode  string                   `json:"executionMode,omitempty"`
-	ApprovalPolicy string                   `json:"approvalPolicy,omitempty"`
-	Capabilities   []CodingCapabilityStatus `json:"capabilities,omitempty"`
-	RequestID      string                   `json:"requestId,omitempty"`
-	Input          string                   `json:"input,omitempty"`
-	Reason         string                   `json:"reason,omitempty"`
-	Approved       *bool                    `json:"approved,omitempty"`
-	Grantable      bool                     `json:"grantable,omitempty"`
-	Justification  *ApprovalJustification   `json:"justification,omitempty"`
-	Notice         string                   `json:"notice,omitempty"`
-	// A cross-conversation delivery announced by a pi tool. Without these fields the
-	// renderer receives an event it cannot act on, so the message vanished silently.
-	TargetConversationID string          `json:"targetConversationId,omitempty"`
-	DeliveryOrigin       *DeliveryOrigin `json:"deliveryOrigin,omitempty"`
-	// 投递形态（request / result）。少了它，渲染层会把“结果回复”归一成普通请求，
-	// 后端就不会去查“已授予结果回复”那条授权，回信被拒为 not-allowlisted。
-	Kind               string                 `json:"kind,omitempty"`
-	Choice             string                 `json:"choice,omitempty"`
-	BackgroundTasks    []BackgroundTask       `json:"backgroundTasks,omitempty"`
-	SubagentTasks      []SubagentTask         `json:"subagentTasks,omitempty"`
-	Jobs               []DshJob               `json:"jobs,omitempty"`
-	Commands           []DshCommandDescriptor `json:"commands,omitempty"`
-	PlanMode           *DshPlanMode           `json:"planMode,omitempty"`
-	Command            *DshCommandResult      `json:"command,omitempty"`
-	Goal               *CodingGoalState       `json:"goal,omitempty"`
-	Resumed            bool                   `json:"resumed,omitempty"`
-	Aborted            bool                   `json:"aborted,omitempty"`
-	Compaction         *CompactionResult      `json:"compaction,omitempty"`
-	Steering           []string               `json:"steering,omitempty"`
-	FollowUp           []string               `json:"followUp,omitempty"`
-	ModelSource        string                 `json:"modelSource,omitempty"`
-	Module             string                 `json:"module,omitempty"`
-	Usage              *ModelUsage            `json:"usage,omitempty"`
-	ContextComposition *ContextComposition    `json:"contextComposition,omitempty"`
-	ForkedSessionID    string                 `json:"forkedSessionId,omitempty"`
+	SchemaVersion      int                      `json:"schemaVersion"`
+	Engine             string                   `json:"engine"`
+	SessionID          string                   `json:"sessionId,omitempty"`
+	Type               string                   `json:"type"`
+	Timestamp          string                   `json:"timestamp"`
+	Text               string                   `json:"text,omitempty"`
+	ToolName           string                   `json:"toolName,omitempty"`
+	ToolCallID         string                   `json:"toolCallId,omitempty"`
+	DurationMS         int64                    `json:"durationMs,omitempty"`
+	Error              string                   `json:"error,omitempty"`
+	Done               bool                     `json:"done,omitempty"`
+	Tools              []string                 `json:"tools,omitempty"`
+	Extensions         []string                 `json:"extensions,omitempty"`
+	Skills             []string                 `json:"skills,omitempty"`
+	ExecutionMode      string                   `json:"executionMode,omitempty"`
+	ApprovalPolicy     string                   `json:"approvalPolicy,omitempty"`
+	Capabilities       []CodingCapabilityStatus `json:"capabilities,omitempty"`
+	RequestID          string                   `json:"requestId,omitempty"`
+	Input              string                   `json:"input,omitempty"`
+	Reason             string                   `json:"reason,omitempty"`
+	Approved           *bool                    `json:"approved,omitempty"`
+	Grantable          bool                     `json:"grantable,omitempty"`
+	Justification      *ApprovalJustification   `json:"justification,omitempty"`
+	Notice             string                   `json:"notice,omitempty"`
+	Choice             string                   `json:"choice,omitempty"`
+	BackgroundTasks    []BackgroundTask         `json:"backgroundTasks,omitempty"`
+	SubagentTasks      []SubagentTask           `json:"subagentTasks,omitempty"`
+	Jobs               []DshJob                 `json:"jobs,omitempty"`
+	Commands           []DshCommandDescriptor   `json:"commands,omitempty"`
+	PlanMode           *DshPlanMode             `json:"planMode,omitempty"`
+	Command            *DshCommandResult        `json:"command,omitempty"`
+	Goal               *CodingGoalState         `json:"goal,omitempty"`
+	Resumed            bool                     `json:"resumed,omitempty"`
+	Aborted            bool                     `json:"aborted,omitempty"`
+	Compaction         *CompactionResult        `json:"compaction,omitempty"`
+	Steering           []string                 `json:"steering,omitempty"`
+	FollowUp           []string                 `json:"followUp,omitempty"`
+	ModelSource        string                   `json:"modelSource,omitempty"`
+	Module             string                   `json:"module,omitempty"`
+	Usage              *ModelUsage              `json:"usage,omitempty"`
+	ContextComposition *ContextComposition      `json:"contextComposition,omitempty"`
+	ForkedSessionID    string                   `json:"forkedSessionId,omitempty"`
 }
 
 // ModelUsage is the bounded, credential-free projection emitted by Pi after
@@ -376,55 +371,49 @@ type CodingCollaborationWorktree struct {
 }
 
 type bridgeEvent struct {
-	Type           string                   `json:"type"`
-	ID             string                   `json:"id"`
-	Delta          string                   `json:"delta"`
-	Content        string                   `json:"content"`
-	Error          string                   `json:"error"`
-	ToolName       string                   `json:"toolName"`
-	ToolCallID     string                   `json:"toolCallId"`
-	DurationMS     int64                    `json:"durationMs"`
-	IsError        bool                     `json:"isError"`
-	Tools          []string                 `json:"tools"`
-	Extensions     []string                 `json:"extensions"`
-	Skills         []string                 `json:"skills"`
-	ExecutionMode  string                   `json:"executionMode"`
-	ApprovalPolicy string                   `json:"approvalPolicy"`
-	Capabilities   []CodingCapabilityStatus `json:"capabilities"`
-	RequestID      string                   `json:"requestId"`
-	Action         string                   `json:"action"`
-	Input          string                   `json:"input"`
-	Reason         string                   `json:"reason"`
-	Approved       *bool                    `json:"approved"`
-	Grantable      bool                     `json:"grantable"`
-	Notice         string                   `json:"notice"`
-	// Some sidecar payloads carry their body in a top-level text field (deliveries,
-	// status notices). Without this field the body was dropped during Unmarshal.
-	Text                 string                 `json:"text"`
-	TargetConversationID string                 `json:"targetConversationId"`
-	DeliveryOrigin       *DeliveryOrigin        `json:"deliveryOrigin"`
-	Kind                 string                 `json:"kind"`
-	Justification        *ApprovalJustification `json:"justification"`
-	Choice               string                 `json:"choice"`
-	Tasks                []BackgroundTask       `json:"tasks"`
-	SubagentTasks        []SubagentTask         `json:"subagentTasks"`
-	Jobs                 []DshJob               `json:"jobs"`
-	Commands             []DshCommandDescriptor `json:"commands"`
-	PlanMode             *DshPlanMode           `json:"planMode"`
-	Command              *DshCommandResult      `json:"command"`
-	Goal                 *CodingGoalState       `json:"goal"`
-	Resumed              bool                   `json:"resumed"`
-	Aborted              bool                   `json:"aborted"`
-	Compaction           *CompactionResult      `json:"compaction"`
-	Steering             []string               `json:"steering"`
-	FollowUp             []string               `json:"followUp"`
-	Source               string                 `json:"source"`
-	From                 string                 `json:"from"`
-	To                   string                 `json:"to"`
-	Module               string                 `json:"module"`
-	Usage                *ModelUsage            `json:"usage"`
-	ContextComposition   *ContextComposition    `json:"contextComposition"`
-	ForkedSessionID      string                 `json:"forkedSessionId"`
+	Type               string                   `json:"type"`
+	ID                 string                   `json:"id"`
+	Delta              string                   `json:"delta"`
+	Content            string                   `json:"content"`
+	Error              string                   `json:"error"`
+	ToolName           string                   `json:"toolName"`
+	ToolCallID         string                   `json:"toolCallId"`
+	DurationMS         int64                    `json:"durationMs"`
+	IsError            bool                     `json:"isError"`
+	Tools              []string                 `json:"tools"`
+	Extensions         []string                 `json:"extensions"`
+	Skills             []string                 `json:"skills"`
+	ExecutionMode      string                   `json:"executionMode"`
+	ApprovalPolicy     string                   `json:"approvalPolicy"`
+	Capabilities       []CodingCapabilityStatus `json:"capabilities"`
+	RequestID          string                   `json:"requestId"`
+	Action             string                   `json:"action"`
+	Input              string                   `json:"input"`
+	Reason             string                   `json:"reason"`
+	Approved           *bool                    `json:"approved"`
+	Grantable          bool                     `json:"grantable"`
+	Notice             string                   `json:"notice"`
+	Justification      *ApprovalJustification   `json:"justification"`
+	Choice             string                   `json:"choice"`
+	Tasks              []BackgroundTask         `json:"tasks"`
+	SubagentTasks      []SubagentTask           `json:"subagentTasks"`
+	Jobs               []DshJob                 `json:"jobs"`
+	Commands           []DshCommandDescriptor   `json:"commands"`
+	PlanMode           *DshPlanMode             `json:"planMode"`
+	Command            *DshCommandResult        `json:"command"`
+	Goal               *CodingGoalState         `json:"goal"`
+	Resumed            bool                     `json:"resumed"`
+	Aborted            bool                     `json:"aborted"`
+	Compaction         *CompactionResult        `json:"compaction"`
+	Steering           []string                 `json:"steering"`
+	FollowUp           []string                 `json:"followUp"`
+	Source             string                   `json:"source"`
+	From               string                   `json:"from"`
+	To                 string                   `json:"to"`
+	Module             string                   `json:"module"`
+	Usage              *ModelUsage              `json:"usage"`
+	ContextComposition *ContextComposition      `json:"contextComposition"`
+	ForkedSessionID    string                   `json:"forkedSessionId"`
 }
 
 type childProcess struct {
@@ -449,25 +438,16 @@ type childProcess struct {
 	// staleReason is the human-readable cause recorded when the process was marked
 	// stale, so tests and diagnostics can tell credential rotation from shutdown.
 	staleReason string
+	// stopReason records why the sidecar was stopped (parked-reap, retired, credential-revoked,
+	// shutdown, hard-stop), so the stop event and diagnostics can say why it went away instead of
+	// just “stopped”. The last stop wins.
+	stopReason atomic.Value
 	// retiredTurns holds the sessions whose turn was still in flight when this process
 	// left rotation. Retirement happens exactly when the same workspace gets a fresh
 	// sidecar, so (kernel, workspace) no longer identifies who runs what: these turns
 	// stay here until they settle, while anything started afterwards belongs to the
 	// replacement. Written and read under Supervisor.mu.
 	retiredTurns map[string]struct{}
-	// lastPromptAt records when a command was handed to this sidecar. Its turn_started
-	// event may still be in flight, so the park pool must not read that window as idle:
-	// doing so killed a sidecar mid-turn and made a brand-new task look stuck at 0.0s.
-	// 搬运自本地分支。
-	lastPromptAt atomic.Int64
-	// lastActivity is the last time this sidecar wrote a line, so a process that is plainly
-	// still talking to us (slow model, long tool) is never read as idle. 搬运自本地分支。
-	lastActivity atomic.Int64
-	// stopReason records why the sidecar was stopped (parked-reap, retired, credential-revoked,
-	// shutdown, hard-stop). It travels with the sidecar lifecycle event so the renderer and the
-	// log can tell idle housekeeping apart from a turn that really died; without it every
-	// reclaim reads as a bare "Agent stopped". 搬运自本地分支。
-	stopReason atomic.Value
 }
 
 type sidecarStderrBuffer struct {
@@ -565,11 +545,7 @@ type Supervisor struct {
 	parkedAt map[string]time.Time
 	// retiring holds stale processes that are still finishing an in-flight turn.
 	// They are unreachable for new work and swept once their grace runs out.
-	retiring []*childProcess
-	// pendingStale holds processes that should become stale but are mid-turn. Replacing them now
-	// would kill the turn the reader is watching, so they are marked the moment their own turn
-	// settles (and by the reaper, for a probe with no turn). Keyed by process, valued by reason.
-	pendingStale      map[*childProcess]string
+	retiring          []*childProcess
 	sessionKernels    map[string]string
 	sessionWorkspaces map[string]string
 	// busySessions holds the sessions whose turn has been sent but not settled. A
@@ -716,13 +692,7 @@ func (s *Supervisor) writeToSessionLocked(sessionID string, value any) error {
 	if proc == nil {
 		return s.sidecarMissingError(sessionID)
 	}
-	if err := writeCommand(proc.stdin, value); err != nil {
-		return err
-	}
-	// The sidecar has work in hand now, so protect it from the park pool even before its
-	// first event arrives (搬运自本地分支：刚收到指令的 sidecar 不许被回收).
-	proc.lastPromptAt.Store(time.Now().UnixNano())
-	return nil
+	return writeCommand(proc.stdin, value)
 }
 
 func (s *Supervisor) rememberForkedSessionLocked(parentID, forkedID string) {
@@ -737,18 +707,6 @@ func (s *Supervisor) rememberForkedSessionLocked(parentID, forkedID string) {
 	// A fork lives in the same workspace as its parent, so it must reach the same
 	// Sidecar even while that workspace is parked.
 	s.bindSessionWorkspaceLocked(forkedID, s.sessionWorkspaces[parentID])
-}
-
-// stoppedReason reads the recorded stop cause; a sidecar that died on its own has none.
-// 搬运自本地分支。
-func stoppedReason(process *childProcess) string {
-	if process == nil {
-		return ""
-	}
-	if value, ok := process.stopReason.Load().(string); ok {
-		return value
-	}
-	return ""
 }
 
 func stopChildProcess(process *childProcess, reason string) {
@@ -849,51 +807,6 @@ func (s *Supervisor) workspaceHasRunningTurnLocked(kernel, workspace string) boo
 
 // oldestParkedCandidateLocked returns the least recently parked sidecar of one kernel.
 // When requireIdle is set, sidecars still running a turn are skipped.
-// parkedBusyWindow bounds how long "it just received work" protects a sidecar. A variable
-// so tests can shorten it. 搬运自本地分支。
-var parkedBusyWindow = 30 * time.Second
-
-func recentEnough(stamp int64, now time.Time) bool {
-	if stamp <= 0 {
-		return false
-	}
-	return now.Sub(time.Unix(0, stamp)) < parkedBusyWindow
-}
-
-// parkedProcessRecentlyBusy reports whether the process itself looks busy right now, even
-// when no session is registered as running a turn yet: a prompt that was just handed over
-// and a sidecar still writing both fall in that gap, and reading the gap as idle is what let
-// the park pool kill a sidecar mid-turn. 搬运自本地分支。
-func (s *Supervisor) parkedProcessRecentlyBusy(process *childProcess) bool {
-	if process == nil {
-		return false
-	}
-	now := time.Now()
-	return recentEnough(process.lastPromptAt.Load(), now) ||
-		recentEnough(process.lastActivity.Load(), now)
-}
-
-// workspaceHasWaiterLocked reports whether any session in the workspace is waiting on a
-// model probe, a control round-trip or a recovery. That is work a parked sidecar is still
-// serving even though no turn is registered. 搬运自本地分支。
-func (s *Supervisor) workspaceHasWaiterLocked(workspace string) bool {
-	for sessionID, bound := range s.sessionWorkspaces {
-		if bound != workspace {
-			continue
-		}
-		if _, waiting := s.probeWaiters[sessionID]; waiting {
-			return true
-		}
-		if _, waiting := s.controlWaiters[sessionID]; waiting {
-			return true
-		}
-		if waiters := s.recoveryWaiters[sessionID]; len(waiters) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Supervisor) oldestParkedCandidateLocked(kernel string, requireIdle bool) string {
 	prefix := NormalizeKernel(kernel) + "\x00"
 	oldestKey := ""
@@ -904,9 +817,7 @@ func (s *Supervisor) oldestParkedCandidateLocked(kernel string, requireIdle bool
 		}
 		process := s.parked[key]
 		if requireIdle && process != nil &&
-			(s.workspaceHasRunningTurnLocked(kernel, process.workspace) ||
-				s.parkedProcessRecentlyBusy(process) ||
-				s.workspaceHasWaiterLocked(process.workspace)) {
+			s.workspaceHasRunningTurnLocked(kernel, process.workspace) {
 			continue
 		}
 		if oldestKey == "" || at.Before(oldestAt) {
@@ -1057,9 +968,12 @@ func (s *Supervisor) reportInterruptedSessions(kernel string, sessions []string)
 // credential change has to reach the next turn. Stopping the processes outright also
 // stopped turns that were still streaming, and it stopped a model probe that was in
 // flight while the account credential was being synced - the reason "Test connection"
-// reported a failure even though the model had answered. Stale sidecars are replaced
-// lazily by ensureKernelProcessLocked and reaped by reapStaleProcessesLocked once the
-// turn they were kept for is over, or once staleSidecarGraceTimeout runs out.
+// reported a failure even though the model had answered.
+//
+// The mark is immediate, so a turn that starts next never runs on the environment the user just
+// replaced. Only the replacement is lazy: ensureKernelProcessLocked retires the stale process on
+// the next dispatch, and reapStaleProcessesLocked stops it once the turn it was carrying has
+// finished - or after staleSidecarBusyCeiling, the long backstop for a busy record that is wrong.
 //
 // It returns how many processes were marked so the caller can log the rotation.
 func (s *Supervisor) InvalidateCredentials(reason string) int {
@@ -1067,37 +981,36 @@ func (s *Supervisor) InvalidateCredentials(reason string) int {
 	defer s.mu.Unlock()
 	reason = strings.TrimSpace(reason)
 	marked := 0
-	for _, process := range s.credentialProcessesLocked() {
-		if s.markStaleLocked(process, reason) {
-			marked++
+	mark := func(process *childProcess) {
+		if process == nil || process.stale.Load() {
+			return
 		}
+		// Marked at once, even while a turn is in flight: the next dispatch must never start on the
+		// credentials the user just replaced. Retiring is what is lazy, not the mark.
+		process.stale.Store(true)
+		process.staleSince.Store(time.Now().UnixNano())
+		process.staleReason = reason
+		marked++
+	}
+	mark(s.process)
+	mark(s.dshProcess)
+	for _, process := range s.parked {
+		mark(process)
+	}
+	for _, process := range s.retiring {
+		mark(process)
 	}
 	return marked
 }
 
-// credentialProcessesLocked lists every live sidecar a credential rotation has to reach.
-func (s *Supervisor) credentialProcessesLocked() []*childProcess {
-	processes := make([]*childProcess, 0, 2+len(s.parked)+len(s.retiring))
-	appendProcess := func(process *childProcess) {
-		if process == nil {
-			return
+// isRetiringLocked reports whether a process has already left rotation for a replacement.
+func (s *Supervisor) isRetiringLocked(process *childProcess) bool {
+	for _, existing := range s.retiring {
+		if existing == process {
+			return true
 		}
-		for _, existing := range processes {
-			if existing == process {
-				return
-			}
-		}
-		processes = append(processes, process)
 	}
-	appendProcess(s.process)
-	appendProcess(s.dshProcess)
-	for _, process := range s.parked {
-		appendProcess(process)
-	}
-	for _, process := range s.retiring {
-		appendProcess(process)
-	}
-	return processes
+	return false
 }
 
 // sidecarServesSessionLocked reports whether a session's turn belongs to this sidecar. A session
@@ -1113,17 +1026,41 @@ func (s *Supervisor) sidecarServesSessionLocked(process *childProcess, sessionID
 	return bound == process.workspace
 }
 
+// sessionsWithWaiters snapshots the sessions a product caller is waiting on: a model probe or a
+// background recovery. A probe never settles a turn, so a sidecar serving one has to be treated as
+// busy even with no turn in flight.
+//
+// controlWaiters is deliberately absent: it is keyed by request id, not session id, and a control
+// call is written to whichever process currently serves the session, never to a retired one. If
+// that process does stop, deliverControlEvent broadcasts engine.stopped to every control waiter,
+// so such a call fails loudly instead of hanging.
+//
+// These maps belong to probeMu, so they are read here under that lock and returned as a snapshot:
+// the caller holds s.mu, and taking probeMu inside s.mu is the order the rest of the file uses.
+func (s *Supervisor) sessionsWithWaiters() map[string]struct{} {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	waiting := make(map[string]struct{}, len(s.probeWaiters)+len(s.recoveryWaiters))
+	for sessionID := range s.probeWaiters {
+		waiting[sessionID] = struct{}{}
+	}
+	for sessionID, waiters := range s.recoveryWaiters {
+		if len(waiters) > 0 {
+			waiting[sessionID] = struct{}{}
+		}
+	}
+	return waiting
+}
+
 // processBusyLocked reports whether a sidecar is serving something a rotation must not interrupt:
-// a turn in flight on one of its sessions, a probe/control/recovery waiter (a probe never settles
-// a turn), or a turn it was retired while running.
+// a turn in flight on one of its sessions, a probe or recovery waiter, or - for a sidecar that
+// already left rotation - a turn it was carrying when it left. A turn started after retirement
+// belongs to the replacement, even in the same workspace, so it must not pin the old process.
 func (s *Supervisor) processBusyLocked(process *childProcess) bool {
 	if process == nil {
 		return false
 	}
 	if process.retired.Load() || s.isRetiringLocked(process) {
-		// A sidecar that has left rotation only owns the turns it was carrying when it left; a
-		// turn started afterwards belongs to the replacement, even in the same workspace. Asking
-		// the workspace instead is what made the reap pin itself on the new sidecar's turn.
 		if s.retiredTurnRunningLocked(process) {
 			return true
 		}
@@ -1134,112 +1071,15 @@ func (s *Supervisor) processBusyLocked(process *childProcess) bool {
 			}
 		}
 	}
-	for sessionID := range s.sessions {
-		if s.sidecarServesSessionLocked(process, sessionID) && s.sessionHasWaiterLocked(sessionID) {
+	for sessionID := range s.sessionsWithWaiters() {
+		if _, live := s.sessions[sessionID]; !live {
+			continue
+		}
+		if s.sidecarServesSessionLocked(process, sessionID) {
 			return true
 		}
 	}
 	return false
-}
-
-// isRetiringLocked reports whether a process has already left rotation for a replacement.
-func (s *Supervisor) isRetiringLocked(process *childProcess) bool {
-	for _, existing := range s.retiring {
-		if existing == process {
-			return true
-		}
-	}
-	return false
-}
-
-// sessionHasWaiterLocked reports whether any product caller is waiting on this session: a model
-// probe, a control call, or a background recovery. A probe never settles a turn, so a process
-// serving one is busy even with no turn in flight.
-func (s *Supervisor) sessionHasWaiterLocked(sessionID string) bool {
-	if _, waiting := s.probeWaiters[sessionID]; waiting {
-		return true
-	}
-	if _, waiting := s.controlWaiters[sessionID]; waiting {
-		return true
-	}
-	return len(s.recoveryWaiters[sessionID]) > 0
-}
-
-// markStaleLocked records that a sidecar must be replaced. A busy process - one with a turn in
-// flight - is only put on the pending list and marked when that turn settles, so no turn is ever
-// interrupted by a credential or settings rotation. Returns true when the process changed state
-// (already stale, or already pending, counts as no change).
-func (s *Supervisor) markStaleLocked(process *childProcess, reason string) bool {
-	if process == nil || process.stale.Load() {
-		return false
-	}
-	if _, pending := s.pendingStale[process]; pending {
-		return false
-	}
-	if s.processBusyLocked(process) {
-		s.pendingStale[process] = reason
-		return false
-	}
-	process.stale.Store(true)
-	process.staleSince.Store(time.Now().UnixNano())
-	process.staleReason = reason
-	return true
-}
-
-// applyPendingStaleLocked promotes a process whose work finished to a real stale mark.
-func (s *Supervisor) applyPendingStaleLocked(process *childProcess) {
-	if process == nil || s.processBusyLocked(process) {
-		return
-	}
-	reason, pending := s.pendingStale[process]
-	if !pending {
-		return
-	}
-	delete(s.pendingStale, process)
-	if process.stale.Load() {
-		return
-	}
-	process.stale.Store(true)
-	process.staleSince.Store(time.Now().UnixNano())
-	process.staleReason = reason
-}
-
-// forceApplyPendingStaleLocked marks every pending rotation stale, busier or not. Revocation uses
-// it: keeping a revoked credential usable for a turn in flight is exactly what was just undone.
-func (s *Supervisor) forceApplyPendingStaleLocked() {
-	if len(s.pendingStale) == 0 {
-		return
-	}
-	for process, reason := range s.pendingStale {
-		delete(s.pendingStale, process)
-		if process == nil || process.stale.Load() {
-			continue
-		}
-		process.stale.Store(true)
-		process.staleSince.Store(time.Now().UnixNano())
-		process.staleReason = reason
-	}
-}
-
-// promoteIdlePendingStaleLocked applies every rotation whose work has finished. The reaper runs
-// it, so a sidecar kept alive for a probe is marked the moment that probe is done - even though a
-// probe never settles a turn.
-func (s *Supervisor) promoteIdlePendingStaleLocked() {
-	if len(s.pendingStale) == 0 {
-		return
-	}
-	for process, reason := range s.pendingStale {
-		if s.processBusyLocked(process) {
-			continue
-		}
-		delete(s.pendingStale, process)
-		if process.stale.Load() {
-			continue
-		}
-		process.stale.Store(true)
-		process.staleSince.Store(time.Now().UnixNano())
-		process.staleReason = reason
-	}
 }
 
 // retireStaleProcessLocked takes a stale process out of rotation without stopping it,
@@ -1356,36 +1196,42 @@ func (s *Supervisor) stopRetiredProcessLocked(process *childProcess) []string {
 	return interrupted
 }
 
-// reapStaleProcessesLocked stops a stale process once the turn it was kept for has
-// finished, or once its grace window runs out.
+// reapStaleProcessesLocked stops a stale process once the turn it was carrying has finished.
 //
 // The turn decides, exactly as in reapParkedLocked: stdout silence cannot tell an
 // abandoned sidecar from a working one, because a foreground bash can run for minutes
 // without writing a line. Stopping on silence is what killed in-flight turns before,
 // and lastActivity only ever recorded stdout lines.
+//
+// staleSidecarGraceTimeout is not that signal either - it bounds how long a stale sidecar may
+// serve, it does not tell "working" from "idle" - so a sidecar that is carrying a turn is left
+// alone however long its window has been expired. staleSidecarBusyCeiling is the only thing that
+// may stop it earlier, and it is a backstop for a busy record that is wrong, not the normal path:
+// the turn ending is what ends the wait, and a sidecar with nothing in flight is still stopped
+// here at once.
 func (s *Supervisor) reapStaleProcessesLocked() {
-	// A rotation kept for a probe has no turn to settle, so the reaper is also where its work
-	// being finished applies the new credentials. This runs before the early return: a pending
-	// process is not necessarily in the retire list yet.
-	s.promoteIdlePendingStaleLocked()
 	if len(s.retiring) == 0 {
 		return
 	}
+	now := time.Now()
 	kept := s.retiring[:0]
 	for _, process := range s.retiring {
 		if process == nil {
 			continue
 		}
-		// A sidecar serving a turn is never stopped, however long its grace has run. The grace
-		// window used to stop a streaming turn about five seconds after a rotation, which is the
-		// "it stopped talking halfway through" the reader saw.
-		if s.processBusyLocked(process) {
+		// A sidecar that is carrying a turn is not stopped for a rotation: silence cannot tell a
+		// working sidecar from an abandoned one, so the turn itself decides. staleSidecarGraceTimeout
+		// cannot do this job either - it is a bound on how long a stale sidecar may serve, not a way
+		// to tell "working" from "idle", and a single sleep 75 produces no output at all.
+		//
+		// The ceiling below only exists so a wrongly recorded busy state cannot pin a process
+		// forever: past it the sidecar is retired anyway and the conversations that lose their turn
+		// are told individually.
+		if s.processBusyLocked(process) &&
+			now.Sub(time.Unix(0, process.staleSince.Load())) < staleSidecarBusyCeiling {
 			kept = append(kept, process)
 			continue
 		}
-		// Not busy: the turn (if any) is over, so the replacement can take over now. Busy-ness is
-		// decided by real work in flight rather than by how quiet the process has been, which is
-		// what the old elapsed-time window got wrong.
 		s.reportInterruptedSessions(process.kernel, s.stopRetiredProcessLocked(process))
 	}
 	s.retiring = kept
@@ -1396,7 +1242,7 @@ func (s *Supervisor) reapStaleProcessesLocked() {
 //
 // Rotating a credential is lazy on purpose: the new value takes over on the next turn, so a
 // sidecar that is mid-turn is left to finish on the environment it started with, and only
-// the grace window bounds it.
+// staleSidecarBusyCeiling bounds it.
 //
 // Revoking a credential is not that change. The user is taking the credential away, so there
 // is nothing left for the old environment to run with: a turn that is mid-flight would fail
@@ -1409,12 +1255,9 @@ func (s *Supervisor) StopStaleSidecars() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stopped := 0
-	// Revocation is not rotation: the credential is being taken away, so a sidecar that was kept
-	// pending for a turn in flight is stopped here as well (see the doc comment below).
-	s.forceApplyPendingStaleLocked()
 	stop := func(kernel string, process *childProcess, interrupted []string) {
 		process.retired.Store(true)
-		stopChildProcess(process, "credential-revoked")
+		stopChildProcess(process, "stale-retired")
 		s.reportInterruptedSessions(kernel, interrupted)
 		stopped++
 	}
@@ -1462,7 +1305,6 @@ func NewSupervisor(emit func(Event)) *Supervisor {
 		sessionWorkspaces: make(map[string]string),
 		sessions:          make(map[string]struct{}),
 		busySessions:      make(map[string]struct{}),
-		pendingStale:      make(map[*childProcess]string),
 		parked:            make(map[string]*childProcess),
 		parkedAt:          make(map[string]time.Time),
 		probeWaiters:      make(map[string]chan Event),
@@ -1788,21 +1630,20 @@ func (s *Supervisor) sendMessage(
 		resourceRuntime = s.agentResources()
 	}
 	command := map[string]any{
-		"action":           "send_message",
-		"conversationId":   sessionID,
-		"prompt":           prompt,
-		"locale":           resolvedUserInterfaceLocale(settings),
-		"provider":         settings.ActiveProvider,
-		"model":            settings.ActiveModel,
-		"thinking":         thinking,
-		"sessionRole":      strings.TrimSpace(sessionRole),
-		"executionMode":    codingPolicy.ExecutionMode,
-		"approvalPolicy":   codingPolicy.ApprovalPolicy,
-		"protectedFolders": settings.ProtectedFolders,
-		"mcpServers":       mcpServers,
-		"mcpConfigDigest":  strings.TrimSpace(mcpConfigDigest),
-		"disabledSkills":   mergeDisabledSkills(settings.DisabledSkills, resourceRuntime.HideFactorySkills),
-		"attachments":      attachments,
+		"action":          "send_message",
+		"conversationId":  sessionID,
+		"prompt":          prompt,
+		"locale":          resolvedUserInterfaceLocale(settings),
+		"provider":        settings.ActiveProvider,
+		"model":           settings.ActiveModel,
+		"thinking":        thinking,
+		"sessionRole":     strings.TrimSpace(sessionRole),
+		"executionMode":   codingPolicy.ExecutionMode,
+		"approvalPolicy":  codingPolicy.ApprovalPolicy,
+		"mcpServers":      mcpServers,
+		"mcpConfigDigest": strings.TrimSpace(mcpConfigDigest),
+		"disabledSkills":  mergeDisabledSkills(settings.DisabledSkills, resourceRuntime.HideFactorySkills),
+		"attachments":     attachments,
 		"modelSourceOrder": preferredModelSourceOrder(
 			settings,
 			preference,
@@ -1870,10 +1711,7 @@ func (s *Supervisor) sendMessage(
 }
 
 func resolvedUserInterfaceLocale(settings config.AppSettings) string {
-	if settings.Locale != nil && strings.EqualFold(strings.TrimSpace(*settings.Locale), "en") {
-		return "en"
-	}
-	return "zh"
+	return config.ResolvedUserInterfaceLocale(settings)
 }
 
 func normalizeCodingProductActionDescriptor(
@@ -2344,6 +2182,68 @@ func (s *Supervisor) QueueMessage(sessionID, prompt string) error {
 	}); err != nil {
 		return fmt.Errorf("queue engine message: %w", err)
 	}
+	return nil
+}
+
+// FollowUpMessage parks a next-turn prompt on a live Pi session without aborting
+// the current assistant stream.
+func (s *Supervisor) FollowUpMessage(sessionID, prompt string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	prompt = strings.TrimSpace(prompt)
+	if sessionID == "" {
+		return fmt.Errorf("session id is required")
+	}
+	if prompt == "" {
+		return fmt.Errorf("follow-up message is required")
+	}
+	if len([]rune(prompt)) > 16000 {
+		return fmt.Errorf("follow-up message exceeds 16000 characters")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.sessions[sessionID]; !exists {
+		return s.sessionMissingError(sessionID)
+	}
+	if err := s.writeToSessionLocked(sessionID, map[string]any{
+		"action":         "followup_message",
+		"conversationId": sessionID,
+		"prompt":         prompt,
+	}); err != nil {
+		return fmt.Errorf("follow-up engine message: %w", err)
+	}
+	return nil
+}
+
+// SendRegisteredMessage starts a new turn on a sidecar session that is already
+// live, without rebuilding the session policy from a full send_message payload.
+func (s *Supervisor) SendRegisteredMessage(sessionID, prompt string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	prompt = strings.TrimSpace(prompt)
+	if sessionID == "" {
+		return fmt.Errorf("session id is required")
+	}
+	if prompt == "" {
+		return fmt.Errorf("relay message is required")
+	}
+	if len([]rune(prompt)) > 16000 {
+		return fmt.Errorf("relay message exceeds 16000 characters")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.sessions[sessionID]; !exists {
+		return s.sessionMissingError(sessionID)
+	}
+	if err := s.writeToSessionLocked(sessionID, map[string]any{
+		"action":         "relay_message",
+		"conversationId": sessionID,
+		"prompt":         prompt,
+	}); err != nil {
+		return fmt.Errorf("relay engine message: %w", err)
+	}
+	if s.busySessions == nil {
+		s.busySessions = make(map[string]struct{})
+	}
+	s.busySessions[sessionID] = struct{}{}
 	return nil
 }
 
@@ -3281,24 +3181,12 @@ func (s *Supervisor) ensureKernelProcessLocked(
 	return nil
 }
 
-// promotePendingStale marks a sidecar stale once the turn it was kept for has settled, so a
-// credential rotation that arrived mid-turn still takes effect - just not by killing the answer
-// the reader is watching.
-func (s *Supervisor) promotePendingStale(process *childProcess) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.applyPendingStaleLocked(process)
-}
-
 func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.Reader) {
 	kernel = NormalizeKernel(kernel)
 	scanner := bufio.NewScanner(stdout)
 	buffer := make([]byte, 64*1024)
 	scanner.Buffer(buffer, 4*1024*1024)
 	for scanner.Scan() {
-		// The process is alive and talking: record it so the park pool never reads a
-		// quiet-but-working sidecar as idle (搬运自本地分支).
-		process.lastActivity.Store(time.Now().UnixNano())
 		var raw bridgeEvent
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			s.emitEvent(Event{Engine: kernel, Type: "engine.protocol_error", Error: err.Error()})
@@ -3314,13 +3202,6 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 		event := normalizeBridgeEvent(raw, kernel)
 		s.observeRuntimeEvent(event)
 		s.observeTurnLifecycle(raw, event)
-		// A turn ending is the moment a rotation that arrived mid-turn takes effect: the sidecar
-		// becomes stale and the next turn starts on fresh credentials, without this answer ever
-		// having been interrupted.
-		switch raw.Type {
-		case "turn_settled", "error", "session_destroyed", "session_stopped":
-			s.promotePendingStale(process)
-		}
 		s.emitEvent(event)
 	}
 
@@ -3380,14 +3261,7 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 	}
 	// Every ended Sidecar produces the lifecycle receipt, so the persisted
 	// sidecar.stopped event stops disappearing for processes the Supervisor retired.
-	s.emitEvent(Event{
-		Engine: kernel,
-		Type:   engineSidecarStoppedEvent,
-		Error:  errorText,
-		// Why it went away: parked-reap / retired / credential-revoked / shutdown / hard-stop.
-		// 搬运自本地分支：没有它时，任何一次回收在界面和日志里都只显示“已停止”。
-		Reason: stoppedReason(process),
-	})
+	s.emitEvent(Event{Engine: kernel, Type: engineSidecarStoppedEvent, Error: errorText})
 	if !current {
 		// A parked or retired Sidecar is one workspace, not the engine. engine.stopped
 		// ends every waiter and every running conversation, so it must stay reserved for
@@ -3396,7 +3270,7 @@ func (s *Supervisor) readEvents(kernel string, process *childProcess, stdout io.
 		s.reportInterruptedSessions(kernel, interrupted)
 		return
 	}
-	s.emitEvent(Event{Engine: kernel, Type: "engine.stopped", Error: errorText, Done: true, Reason: stoppedReason(process)})
+	s.emitEvent(Event{Engine: kernel, Type: "engine.stopped", Error: errorText, Done: true})
 }
 
 // observeTurnLifecycle keeps busySessions in step with the turn boundaries Pi reports, so
@@ -3705,10 +3579,6 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 	// default arm would prefix them with engine.raw. and they could never match.
 	case "destructive.blocked", "agent.delivery":
 		event.Type = raw.Type
-		event.Text = raw.Text
-		event.TargetConversationID = raw.TargetConversationID
-		event.DeliveryOrigin = raw.DeliveryOrigin
-		event.Kind = raw.Kind
 	case "approval_resolved":
 		event.Type = "approval.resolved"
 		event.Done = true
@@ -4056,13 +3926,52 @@ func projectRootContainsSidecar(root string) bool {
 	return true
 }
 
-// 以下三个方法由本地分支搬入（React 基线适配版）：
-//
-//	SettleAgentDelivery  跨对话投递的回执
-//	HardStopSession      三级停止里的"硬停"
-//	ClearQueuedMessages  清掉 pi 仍持有的排队消息
-//
-// 它们只使用上游已有的内部函数，不改动停靠/回收等既有设计。
+// stoppedReason reads back why a sidecar was stopped, for the stop event and its tests.
+func stoppedReason(process *childProcess) string {
+	if process == nil {
+		return ""
+	}
+	if value, ok := process.stopReason.Load().(string); ok {
+		return value
+	}
+	return ""
+}
+
+// HardStopSession kills the sidecar serving a session right away, without the lazy rotation
+// grace: the reader asked for this stop, so nothing it was carrying should keep running.
+func (s *Supervisor) HardStopSession(sessionID string) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	s.mu.Lock()
+	process := s.processForSessionLocked(sessionID)
+	s.mu.Unlock()
+	if process == nil {
+		return
+	}
+	stopChildProcess(process, "hard-stop")
+}
+
+// ClearQueuedMessages drops the inbox of a session: the reader removed messages that were
+// waiting for the current turn to end.
+func (s *Supervisor) ClearQueuedMessages(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("session id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.sessions[sessionID]; !exists {
+		return s.sessionMissingError(sessionID)
+	}
+	return s.writeToSessionLocked(sessionID, map[string]any{
+		"action":         "clear_queued_messages",
+		"conversationId": sessionID,
+	})
+}
+
+// SettleAgentDelivery answers a cross-conversation delivery request with its outcome, so the
+// waiting side can stop showing it as pending.
 func (s *Supervisor) SettleAgentDelivery(sessionID, requestID, status, detail string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	requestID = strings.TrimSpace(requestID)
@@ -4087,33 +3996,4 @@ func (s *Supervisor) SettleAgentDelivery(sessionID, requestID, status, detail st
 		command["detail"] = trimmed
 	}
 	return s.writeToSessionLocked(sessionID, command)
-}
-
-func (s *Supervisor) HardStopSession(sessionID string) {
-	if strings.TrimSpace(sessionID) == "" {
-		return
-	}
-	s.mu.Lock()
-	process := s.processForSessionLocked(sessionID)
-	s.mu.Unlock()
-	if process == nil {
-		return
-	}
-	stopChildProcess(process, "hard-stop")
-}
-
-func (s *Supervisor) ClearQueuedMessages(sessionID string) error {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return fmt.Errorf("session id is required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.sessions[sessionID]; !exists {
-		return s.sessionMissingError(sessionID)
-	}
-	return s.writeToSessionLocked(sessionID, map[string]any{
-		"action":         "clear_queued_messages",
-		"conversationId": sessionID,
-	})
 }

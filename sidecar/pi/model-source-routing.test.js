@@ -308,3 +308,44 @@ test("an account-source failure says so in English too", () => {
   assert.match(text, /account source/);
   assert.match(text, /tokenflux/);
 });
+
+// The reader must see the source that actually failed. A two-element order used to be read as
+// "personal is in the list, so call it personal", which labelled an account failure as the reader's
+// own relay - the opposite of what they need to act on.
+test("a two-element order reports the source that really failed", () => {
+  const text = modelSourceFailureMessage({
+    provider: "tokenflux",
+    model: "deepseek/deepseek-flash",
+    requestedOrder: ["account", "personal"],
+    source: "account",
+    locale: "zh-CN",
+  });
+  assert.match(text, /^模型调用失败：账号来源 \//);
+  // The route must not name the other source, even though the reason sentence mentions that no
+  // account fallback happened.
+  assert.doesNotMatch(text, /^模型调用失败：自有来源/);
+
+  // And the same order with a personal failure reports personal.
+  const personal = modelSourceFailureMessage({
+    provider: "custom-relay-deepseek",
+    model: "deepseek-flash",
+    requestedOrder: ["account", "personal"],
+    source: "personal",
+    locale: "zh-CN",
+  });
+  assert.match(personal, /^模型调用失败：自有来源 \//);
+  assert.doesNotMatch(personal, /^模型调用失败：账号来源/);
+});
+
+// Without an explicit source the first requested source is the intended one, never "any source that
+// happens to appear in the list".
+test("the first requested source is the fallback when none is given", () => {
+  const text = modelSourceFailureMessage({
+    provider: "tokenflux",
+    model: "deepseek/deepseek-flash",
+    requestedOrder: ["account", "personal"],
+    locale: "en",
+  });
+  assert.match(text, /^Model call failed: account source \//);
+  assert.doesNotMatch(text, /personal source/);
+});

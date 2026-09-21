@@ -1,6 +1,6 @@
 import { t } from '@/lib/uiLocale'
 
-export type WorkspaceSection = 'ctf' | 'vuln' | 'lab' | 'chat'
+export type WorkspaceSection = 'ctf' | 'vuln' | 'lab' | 'chat' | 'companion'
 export type CTFWorkspaceSection = 'catalog'
 export type AppSection = WorkspaceSection | 'profile' | 'settings'
 
@@ -39,7 +39,7 @@ export const WORKSPACE_SIDEBAR_ITEMS = [
   { id: 'vuln', label: () => 'CVE' },
   { id: 'lab', label: () => 'Lab' },
 ] as const satisfies ReadonlyArray<{
-  id: WorkspaceSection
+  id: Exclude<WorkspaceSection, 'companion'>
   label: () => string
 }>
 
