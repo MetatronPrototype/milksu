@@ -41,3 +41,23 @@ export function settleConsumedQueuedMessages<T extends QueuedMessage>(
   // 没变化就返回原数组，避免无谓的重渲染（转录里可能有几千条消息）。
   return changed ? settled : messages
 }
+
+/**
+ * 进入会话 / 载入会话时的对账，**带一个安全门**。
+ *
+ * 为什么需要安全门：重启后本地队列是**空的**（还没拿到引擎回声）⇒ 此时若直接对账，会把
+ * "其实还在引擎队列里、只是我们还没同步"的排队消息**误判为已消费** ✗ ⇒ 转成历史消息后，
+ * 等回声回来，同一段正文会在"历史"与"队列"两处各出现一次 ⇒ **重复** ✗。
+ *
+ * ⇒ 只在"**该会话已经完成过一次队列同步**"（收到过引擎的队列报告）之后才对账 ✓；
+ *   没同步过 ⇒ **原样返回**（本次不转正 ✓，等队列信息到手再转 ✓）。
+ */
+export function settleQueuedMessagesWhenQueueKnown<T extends QueuedMessage>(
+  messages: T[] | undefined,
+  pendingSteering: readonly string[] | undefined,
+  queueKnown: boolean,
+): T[] | undefined {
+  // 队列未知 ⇒ 本次不转正（宁可暂时不显示，也不许制造重复）。
+  if (!queueKnown) return messages
+  return settleConsumedQueuedMessages(messages, pendingSteering)
+}
