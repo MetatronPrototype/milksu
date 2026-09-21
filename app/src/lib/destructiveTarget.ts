@@ -635,8 +635,11 @@ export function assessDestructiveRequest(
   }
 }
 
-/** 下限取整：宁可再说小一点，也不让读者以为这是精确总量（GB ⇒ 整 GB，MB ⇒ 整 10 MB）。 */
-function formatBytesFloor(bytes: number): string {
+/**
+ * 下限取整：宁可再说小一点，也不让读者以为这是精确总量（GB ⇒ 整 GB，MB ⇒ 整 10 MB）。
+ * **导出**是为了让组件（`ChatMessageItem`）和 verdict 用**同一套**下限文案，别再各拼一遍（否则又会漂移）。
+ */
+export function formatBytesFloor(bytes: number): string {
   const gb = 1024 * 1024 * 1024
   const mb = 1024 * 1024
   const value = Math.max(0, Math.floor(bytes))

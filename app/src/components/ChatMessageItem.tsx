@@ -27,7 +27,12 @@ import {
   parseAskOptions,
 } from '@/lib/agentAsk'
 import { toolBudgetToolName } from '@/lib/toolBudget'
-import { assessApprovalRequest, type DestructiveAssessment, type DestructiveFacts } from '@/lib/destructiveTarget'
+import {
+  assessApprovalRequest,
+  formatBytesFloor,
+  type DestructiveAssessment,
+  type DestructiveFacts,
+} from '@/lib/destructiveTarget'
 
 /** 过长的消息（派单清单、长回复）默认只显示这么多行，其余折叠，点一下展开。 */
 const COLLAPSED_BODY_LINES = 15
@@ -618,8 +623,10 @@ export default function ChatMessageItem({
                   ) : null}
                   {approvalMeasurement.fileCount !== undefined ? (
                     <p className="text-muted-foreground">
-                      {t('规模', 'Size')}：{approvalMeasurement.fileCount} {t('个文件', 'files')}
-                      {approvalMeasurement.sampled ? `（${t('仅采样', 'sampled')}）` : ''}
+                      {t('规模', 'Size')}：{approvalMeasurement.sampled
+                        // 与 verdict 同一套用词：被上限截停的统计是**下限**（旧的那种把样本当总量的说法已去掉）。
+                        ? `${t('至少', 'at least')} ${approvalMeasurement.fileCount} ${t('个文件', 'files')} / ≥ ${formatBytesFloor(approvalMeasurement.totalBytes ?? 0)}${t('（未扫完）', ' (not fully scanned)')}`
+                        : `${approvalMeasurement.fileCount} ${t('个文件', 'files')}`}
                     </p>
                   ) : null}
                   {approvalMeasurement.inGitRepository !== undefined ? (
