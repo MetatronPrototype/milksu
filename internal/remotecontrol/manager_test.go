@@ -1021,3 +1021,24 @@ func TestPageUsesTheHostPushStream(t *testing.T) {
 		t.Fatal("the page must not keep the old five second poll")
 	}
 }
+
+// 连续的工具卡要折进一个**默认收起**的块：手机屏幕留给读者自己的话与助手的结论。
+func TestPageCollapsesConsecutiveToolCards(t *testing.T) {
+	_, status, _ := startManager(t)
+	response, err := http.Get(status.URL)
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	page := string(body)
+	for _, marker := range []string{"tool-group", "<details", "次工具调用", "row.tool"} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("the page is missing %s", marker)
+		}
+	}
+	// 默认收起：那个 details 不能带 open，否则读者一进页面就看到满屏工具输出。
+	if strings.Contains(page, "<details class=\"tool-group\" open") {
+		t.Fatal("tool groups must start collapsed")
+	}
+}

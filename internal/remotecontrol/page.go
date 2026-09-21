@@ -60,6 +60,11 @@ const dashboardHTML = `<!doctype html>
   .msg.me { align-self:flex-end; background:var(--me); }
   .msg .who { display:block; font-size:11px; color:var(--dim); margin-bottom:3px; }
   .msg.tool { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--dim); max-width:100%; }
+  /* 连续的工具卡折进一个默认收起的块：手机屏幕留给读者自己的话与助手的结论。 */
+  .tool-group { margin:6px 0; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+  .tool-group > summary { cursor:pointer; padding:7px 10px; font-size:12px; color:var(--dim); }
+  .tool-group[open] > summary { border-bottom:1px solid var(--line); }
+  .tool-group .msg.tool { border:0; background:transparent; margin:0 0 6px; padding:0 10px; }
   .approval { border:1px solid var(--warn); border-radius:12px; padding:10px; background:var(--card); }
   .approval h3 { font-size:14px; margin:0 0 4px; }
   .approval .row { display:flex; gap:8px; margin-top:8px; }
@@ -397,20 +402,39 @@ function renderQueue() {
   })
 }
 
+function toolGroup(entries) {
+  return '<details class="tool-group"><summary>' + entries.length + ' 次工具调用</summary>' +
+    entries.join('') + '</details>'
+}
+
 function renderMessages(currentMessages) {
   messages = currentMessages || []
   if (!messages.length) {
     $('messages').innerHTML = '<p style="color:var(--dim)">这个对话还没有消息。</p>'
     return
   }
-  $('messages').innerHTML = messages.map(message => {
+  const rows = messages.map(message => {
     const role = String(message.role || '')
     const mine = role === '你'
     const tool = role === '工具'
-    return '<div class="msg' + (mine ? ' me' : '') + (tool ? ' tool' : '') + '">' +
-      '<span class="who">' + escapeHtml(role) + ' · ' + escapeHtml(message.at || '') + '</span>' +
-      escapeHtml(message.text || '') + '</div>'
-  }).join('')
+    return {
+      tool: tool,
+      html: '<div class="msg' + (mine ? ' me' : '') + (tool ? ' tool' : '') + '">' +
+        '<span class="who">' + escapeHtml(role) + ' · ' + escapeHtml(message.at || '') + '</span>' +
+        escapeHtml(message.text || '') + '</div>',
+    }
+  })
+  // 连续的工具卡收进一个块（默认收起 ✓）—— 读者要的是自己的话与助手的结论，不是中间过程。
+  let out = ''
+  let pending = []
+  const flush = () => { if (pending.length) { out += toolGroup(pending); pending = [] } }
+  for (const row of rows) {
+    if (row.tool) { pending.push(row.html); continue }
+    flush()
+    out += row.html
+  }
+  flush()
+  $('messages').innerHTML = out
 }
 
 function renderContextPills() {
