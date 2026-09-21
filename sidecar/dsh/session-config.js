@@ -2,7 +2,10 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 
-const { tokenfluxBareModelID } = createRequire(import.meta.url)("../pi/tokenflux-model-id.cjs");
+// Static import on purpose: this module is bundled into dsh-bridge.cjs, which sits in the
+// packaged sidecar root. A createRequire("../pi/...") written for the source layout would
+// resolve one level above the packaged sidecar directory and crash the bridge at load.
+import { tokenfluxBareModelID } from "../pi/tokenflux-model-id.cjs";
 
 export const dshAcpProviderId = "deepseek-official";
 export const tokenfluxChatCompletionsURL = "https://tokenflux.dev/v1";
