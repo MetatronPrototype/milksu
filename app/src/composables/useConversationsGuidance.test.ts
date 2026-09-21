@@ -172,3 +172,42 @@ describe('queued guidance', () => {
     expect(conversations.activeQueuedGuidanceInterrupted).toBe(false)
   })
 })
+
+// 真机数据定位的真因：读者**先直接发出**同一句话（send() 直发），随后又点「加入对话」⇒
+// 注入路径再无脑追加一条 ⇒ 同文本两条（引擎其实只收到一条 = 纯显示重复）。
+describe('guidance already sent directly', () => {
+  it('does not append a second copy when the same text was just sent directly', async () => {
+    const { conversations } = await loadRuntime()
+    // 1) 先直接发出（这条路径是直发；会话是否在跑由其它用例的共享状态决定，与本用例无关）
+    await conversations.send('测试')
+    // 清掉计数：③ 只关心"注入这一次"有没有额外多发（不许靠"少发一次"变绿）。
+    commandCalls.length = 0
+    // 2) 再把它放进排程并点「加入对话」
+    seedQueue(conversations, ['测试'])
+    expect(await conversations.injectQueuedGuidance(0)).toBe(true)
+
+    // ① 转录里该正文恰 1 条 —— 不许再追加第二份。
+    const messages = conversations.conversations
+      .find(item => item.id === 'conversation-1')?.messages ?? []
+    expect(messages.filter(item => item.role === 'user' && item.content === '测试')).toHaveLength(1)
+    // ② 可见性没被牺牲：「已加入本轮」列表照旧写上。
+    expect(conversations.activeInjectedGuidance).toEqual(['测试'])
+    // ③ 不许靠"少发一次"来变绿：直发仍然只发生一次。
+    expect(commandCalls.filter(call => call.command === 'steer_message')).toHaveLength(1)
+  })
+
+  // 注：注入路径的查重**只**看最近 30 秒内同文本的 user 消息；更早的同名文本不该被误判。
+  it('still appends when the same text is older than the window', async () => {
+    const { conversations } = await loadRuntime()
+    await conversations.send('旧话')
+    const target = conversations.conversations.find(item => item.id === 'conversation-1')
+    if (target) {
+      target.messages = target.messages.map(message => ({ ...message, timestamp: Date.now() - 60_000 }))
+    }
+    seedQueue(conversations, ['旧话'])
+    expect(await conversations.injectQueuedGuidance(0)).toBe(true)
+    const messages = conversations.conversations
+      .find(item => item.id === 'conversation-1')?.messages ?? []
+    expect(messages.filter(item => item.role === 'user' && item.content === '旧话')).toHaveLength(2)
+  })
+})
