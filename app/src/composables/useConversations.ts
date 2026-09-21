@@ -1193,6 +1193,34 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get pendingComposerDraft() { return store.getState().pendingComposerDraft },
     set pendingComposerDraft(value) { store.setState({ pendingComposerDraft: value }) },
   }
+
+  // TEMP DEBUG（临时打点，仅用于定性"同一条文本被写成两条"；查清后必须删除）：
+  // 拦截状态上 conversations 的**每一次赋值** ⇒ 无论第二条是"追加"还是"整体替换后变多"，
+  // 都能拿到：前后条数 + 新那条的 id/内容前 30 字 + **调用方那一层栈帧（文件名:行号）**。
+  try {
+    let debugShadow = s.conversations
+    Object.defineProperty(s, 'conversations', {
+      configurable: true,
+      get() { return debugShadow },
+      set(next: typeof debugShadow) {
+        try {
+          const before = new Map((debugShadow ?? []).map(c => [c.id, c.messages?.length ?? 0]))
+          const caller = String(new Error().stack ?? '').split('\n')[3]?.trim() ?? ''
+          for (const conversation of next ?? []) {
+            const was = before.get(conversation.id) ?? 0
+            const now = conversation.messages?.length ?? 0
+            if (now > was) {
+              const added = conversation.messages?.[now - 1]
+              console.info('[milksu-conv]', conversation.id, `${was}→${now}`,
+                added?.id, String(added?.content ?? '').slice(0, 30), caller)
+            }
+          }
+        } catch { /* 打点绝不能影响状态 */ }
+        debugShadow = next
+      },
+    })
+  } catch { /* 打点失败也不影响功能 */ }
+
   const parkedPendingByHome: Partial<Record<WorkspaceHome, ParkedPendingCanvas>> = {}
   const pendingDshGoals = new Map<string, string>()
 
