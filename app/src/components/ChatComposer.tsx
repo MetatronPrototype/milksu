@@ -1,3 +1,4 @@
+import ComposerInjectedGuidance from '@/components/ComposerInjectedGuidance'
 import {
   forwardRef,
   useEffect,
@@ -1639,19 +1640,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
 
           {/* 搬运自本地分支（A 引导）：已经交给本轮的引导也要看得见，
               否则读者会以为它凭空消失了。 */}
-          {injectedGuidance?.length ? (
-            <section className="chat-composer__queued-guidance" aria-label={t('已加入本轮的引导', 'Steering merged into this turn')}>
-              <div className="flex items-center gap-2 text-caption font-medium text-muted-foreground">
-                <Check className="size-3.5" />
-                <span>{t(`${injectedGuidance.length} 条引导已加入本轮`, `${injectedGuidance.length} steering messages merged into this turn`)}</span>
-              </div>
-              {injectedGuidance.map((message, index) => (
-                <div key={`injected:${index}:${message}`} className="mt-1 flex items-center gap-2 rounded-xl border border-border/70 bg-background/55 px-2 py-1.5">
-                  <p className="min-w-0 flex-1 truncate text-caption text-muted-foreground" title={message}>{message}</p>
-                </div>
-              ))}
-            </section>
-          ) : null}
+          <ComposerInjectedGuidance messages={injectedGuidance} toolRunning={queuedGuidanceAwaitingTool} />
 
           {queuedGuidance?.length ? (
             <section className="chat-composer__queued-guidance" aria-label={t('待应用引导', 'Queued steering')}>
