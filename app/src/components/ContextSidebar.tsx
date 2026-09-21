@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { isComposingKey } from '@/lib/imeComposition'
 import AgentPixelLoader from '@/components/AgentPixelLoader'
 import AgentDecisionMark from '@/components/AgentDecisionMark'
+import { BackgroundTaskLine } from '@/components/BackgroundTaskLine'
+import { useConversations } from '@/composables/useConversations'
 import { needsDecisionConversationIds as needsDecisionConversationIdsFrom } from '@/lib/needsDecision'
 import profileAvatar from '@/assets/ctf-learner-avatar.png'
 import { invokeCommand } from '@/desktop'
@@ -299,6 +301,8 @@ export default function ContextSidebar({
   const runningConversationIds = new Set(runningIdsProp ?? [])
   // 待决策直接从 conversations 里算（它本来就拿到了 messages）—— 少一层 prop 管线，也不用 App 另传。
   const needsDecisionConversationIds = new Set(needsDecisionConversationIdsFrom(conversations))
+  // 后台任务（事实层）：由 useConversations 的 background_tasks 分支写入，finishRun 时再评估。
+  const { backgroundTasks } = useConversations()
   const projectGroups = codingGroups.filter(group => !group.temporary)
   const temporaryGroup = codingGroups.find(group => group.temporary) ?? null
   const avatarSource = accountStatus.user?.avatarUrl || profileAvatar
@@ -688,6 +692,9 @@ export default function ContextSidebar({
                 <span className="coding-session-complete size-1.5 rounded-full bg-primary" aria-label={t('有新消息', 'New messages')} />
               ) : null}
             </span>
+            {/* (B)/(C)①：读 store 里的**事实**（backgroundTasks），不读会被覆盖的短命提示；
+                有任务就显示，任务清零就消失 ⇒ 有任务在跑时状态区不会只剩"已结束"。 */}
+            <BackgroundTaskLine tasks={backgroundTasks[conversation.id]} />
             <span className="flex size-5 shrink-0" aria-hidden="true" />
             <span className="agent-sidebar__copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium">{conversation.title}</span>
             {age ? (
