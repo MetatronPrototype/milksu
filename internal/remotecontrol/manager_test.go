@@ -1037,6 +1037,12 @@ func TestPageCollapsesConsecutiveToolCards(t *testing.T) {
 			t.Fatalf("the page is missing %s", marker)
 		}
 	}
+	// 展开状态必须活过重绘：记住 key、渲染时重新应用、用**捕获阶段**接不冒泡的 toggle。
+	for _, marker := range []string{"openToolGroups", "data-group-key", "addEventListener('toggle'", "}, true)"} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("the page is missing %s", marker)
+		}
+	}
 	// 默认收起：那个 details 不能带 open，否则读者一进页面就看到满屏工具输出。
 	if strings.Contains(page, "<details class=\"tool-group\" open") {
 		t.Fatal("tool groups must start collapsed")

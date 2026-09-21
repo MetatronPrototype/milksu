@@ -402,8 +402,18 @@ function renderQueue() {
   })
 }
 
-function toolGroup(entries) {
-  return '<details class="tool-group"><summary>' + entries.length + ' 次工具调用</summary>' +
+// 读者展开过的折叠块要**活过重绘**：每次 SSE 变化（审批、排队、状态）都会整块重画转写区，
+// 不记住就等于每次都被自动合上 ✗ —— 而任务在跑时事件最密，正是最想展开看的时刻。
+const openToolGroups = new Set()
+
+function toolGroupKey(message) {
+  // key 取该组**第一条**消息的时间戳 + 正文前缀：组随新工具调用变长时 key 不变 ✓。
+  return String((message && message.at) || '') + '|' + String((message && message.text) || '').slice(0, 40)
+}
+
+function toolGroup(entries, key) {
+  return '<details class="tool-group"' + (openToolGroups.has(key) ? ' open' : '') +
+    ' data-group-key="' + escapeHtml(key) + '"><summary>' + entries.length + ' 次工具调用</summary>' +
     entries.join('') + '</details>'
 }
 
@@ -418,6 +428,7 @@ function renderMessages(currentMessages) {
     const mine = role === '你'
     const tool = role === '工具'
     return {
+      message: message,
       tool: tool,
       html: '<div class="msg' + (mine ? ' me' : '') + (tool ? ' tool' : '') + '">' +
         '<span class="who">' + escapeHtml(role) + ' · ' + escapeHtml(message.at || '') + '</span>' +
@@ -427,14 +438,27 @@ function renderMessages(currentMessages) {
   // 连续的工具卡收进一个块（默认收起 ✓）—— 读者要的是自己的话与助手的结论，不是中间过程。
   let out = ''
   let pending = []
-  const flush = () => { if (pending.length) { out += toolGroup(pending); pending = [] } }
+  let pendingKey = ''
+  const flush = () => {
+    if (pending.length) { out += toolGroup(pending, pendingKey); pending = [] }
+  }
   for (const row of rows) {
-    if (row.tool) { pending.push(row.html); continue }
+    if (row.tool) {
+      if (!pending.length) pendingKey = toolGroupKey(row.message)
+      pending.push(row.html)
+      continue
+    }
     flush()
     out += row.html
   }
   flush()
   $('messages').innerHTML = out
+  // 只记状态、不改 DOM：滑出窗口的 key 清掉，避免无限增长 ✓。
+  const live = new Set(Array.from(document.querySelectorAll('.tool-group'))
+    .map(group => group.getAttribute('data-group-key') || ''))
+  for (const key of Array.from(openToolGroups)) {
+    if (!live.has(key)) openToolGroups.delete(key)
+  }
 }
 
 function renderContextPills() {
@@ -545,6 +569,16 @@ async function refreshAudit() {
 }
 
 // --- 交互 ---
+// 折叠状态：toggle **不冒泡** ⇒ 用**捕获阶段**接 ✓。只记状态、不改 DOM，
+// 下一次重绘时由 toolGroup() 重新应用 ⇒ 刷新不吃掉读者的展开。
+$('messages').addEventListener('toggle', event => {
+  const group = event.target
+  if (!group || !group.classList || !group.classList.contains('tool-group')) return
+  const key = group.getAttribute('data-group-key') || ''
+  if (!key) return
+  if (group.open) openToolGroups.add(key)
+  else openToolGroups.delete(key)
+}, true)
 $('pairButton').addEventListener('click', () => { void pair() })
 $('code').addEventListener('keydown', event => { if (event.key === 'Enter') void pair() })
 $('loginButton').addEventListener('click', () => { void login() })
