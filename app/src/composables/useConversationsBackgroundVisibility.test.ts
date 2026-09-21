@@ -120,4 +120,29 @@ describe('background task survives the turn end', () => {
     expect(notice).toContain('后台仍在运行')
     expect(notice).toContain(TASK_NAME)
   })
+
+  // 任务**自己结束**时不会再有 `bg_task` 工具调用 ⇒ 侧车不发事件 ⇒ 那行会粘住 ✗。
+  // 有任务在跑时轮询现成刷新命令；清零即停（有界 ✓）。
+  it('polls the refresh command while a task runs, and stops once it clears', async () => {
+    vi.useFakeTimers()
+    try {
+      const { invokeCommand } = await import('@/desktop')
+      const calls = () => (invokeCommand as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .filter(call => call[0] === 'refresh_coding_background_tasks').length
+      const conversations = await loadRuntime()
+      emitEngineEvent({ sessionId: 'conversation-1', type: 'runtime.background_tasks', backgroundTasks: [
+        { id: 't1', name: TASK_NAME, status: 'running' },
+      ] })
+      const before = calls()
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(calls()).toBeGreaterThan(before)
+      const afterFirst = calls()
+      emitEngineEvent({ sessionId: 'conversation-1', type: 'runtime.background_tasks', backgroundTasks: [] })
+      await vi.advanceTimersByTimeAsync(15000 * 3)
+      expect(calls()).toBe(afterFirst)
+      conversations.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

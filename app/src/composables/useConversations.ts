@@ -1295,6 +1295,25 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   // 后台任务可见性：每个会话"之前是否报过有后台任务在跑"（用来决定"跑完了"要不要说一声 ✓）。
   // 放在 composable 本地即可 ⇒ 不动状态类型（本轮最小改动 ✓）。
   const reportedBackgroundTasks = new Map<string, boolean>()
+  // 任务**自己结束**不会再触发 `bg_task` 工具调用 ⇒ 侧车不会再发事件 ⇒ 状态区那行会永远停在
+  // 上一次的「仍在运行」✗（真机读数：任务已结束、事件列表里仍是 count 1）。有任务在跑时
+  // **轻量轮询**现成的刷新命令（15 秒一次、清零即停 ⇒ 有界 ✓）：刷新让侧车重读 pi 的登记表
+  // 并回发同一个事件 ✓，那行就会自己消失 ✓。
+  const BACKGROUND_TASK_REFRESH_MS = 15000
+  let backgroundTaskRefreshTimer: ReturnType<typeof setInterval> | undefined
+  function scheduleBackgroundTaskRefresh(hasRunning: boolean) {
+    if (!hasRunning) {
+      if (backgroundTaskRefreshTimer !== undefined) {
+        clearInterval(backgroundTaskRefreshTimer)
+        backgroundTaskRefreshTimer = undefined
+      }
+      return
+    }
+    if (backgroundTaskRefreshTimer !== undefined) return
+    backgroundTaskRefreshTimer = setInterval(() => {
+      void invokeCommand('refresh_coding_background_tasks').catch(() => undefined)
+    }, BACKGROUND_TASK_REFRESH_MS)
+  }
   function currentRunEpoch(id: string) {
     return runEpochByConversation.get(id) ?? 0
   }
@@ -3949,6 +3968,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           ? tasksPayload.tasks
           : (Array.isArray(tasksPayload.backgroundTasks) ? tasksPayload.backgroundTasks : [])
         const tasks = rawTasks as Array<{ name?: unknown; status?: unknown }>
+        // 有任务在跑 ⇒ 开轮询；全清 ⇒ 停（任务自己结束时不会再有工具调用事件 ✗）。
+        scheduleBackgroundTaskRefresh(rawTasks.length > 0)
         const running = tasks.filter(task => String(task?.status ?? '') === 'running')
         const notice = backgroundTaskNotice({
           // 回合是否已结束：这一轮没在跑 ⇒ 读者看到的"结束"更需要说明 ✓。
@@ -4439,6 +4460,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   }
 
   function dispose() {
+    if (backgroundTaskRefreshTimer !== undefined) {
+      clearInterval(backgroundTaskRefreshTimer)
+      backgroundTaskRefreshTimer = undefined
+    }
     stopWatchActiveId()
     disposeEvents?.()
     disposeEvents = undefined
