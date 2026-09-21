@@ -283,10 +283,10 @@ export default function CompanionSettingsPanel({
           )}
         />
         <SettingsRow
-          label={t('悬浮窗', 'Floating window')}
+          label={t('显示桌宠', 'Show companion')}
           description={shell?.wayland
-            ? t('当前会话是 Wayland，不能贴悬浮窗。', 'This session is Wayland, so the float cannot be placed.')
-            : undefined}
+            ? t('当前会话是 Wayland，不能贴桌宠（悬浮窗）。', 'This session is Wayland, so the companion float cannot be placed.')
+            : t('在桌面上显示桌宠（悬浮窗）。关掉后它不再出现，托盘图标仍可把它叫回来。', 'Show the companion on the desktop (the float). When off it stays away; the tray icon can bring it back.')}
           stack={rowStack}
           trailing={(
             <Switch
@@ -298,7 +298,7 @@ export default function CompanionSettingsPanel({
                   .then(value => setShell(value))
                   .catch(() => undefined)
               }}
-              aria-label={t('悬浮窗', 'Floating window')}
+              aria-label={t('显示桌宠', 'Show companion')}
             />
           )}
         />
