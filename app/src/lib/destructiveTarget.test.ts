@@ -138,7 +138,10 @@ describe('destructive assessment', () => {
       [{ exists: true, fileCount: 42, totalBytes: 3 * 1024 * 1024, sampled: true }],
     )
     expect(assessment.verdict).toContain('42 个文件')
-    expect(assessment.verdict).toContain('仅采样')
+    // 被上限截停的统计是**下限**，不再是"（仅采样）"这种把样本当总量的写法。
+    expect(assessment.verdict).toContain('至少 42 个文件')
+    expect(assessment.verdict).toContain('未扫完')
+    expect(assessment.verdict).toContain('≥')
   })
 
   it('refuses a tilde path when HOME cannot be read', () => {

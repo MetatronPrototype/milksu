@@ -528,6 +528,12 @@ function createdPrefixes(command: string): string[] {
   return prefixes
 }
 
+// 破坏性目标的"规模大到需要提醒"的线（依据：Dev 裁决 —— "规模未知（被上限截停）"或"大但不是
+// 禁区（> 1 GB 或 > 10000 个文件）"都不允许再报"低"风险；只因为"大"不升到 high，删 5 GB 缓存是正常的。
+// 这两个数是可调的提醒线，不是安全边界：是否允许只看 canAllow。
+export const DESTRUCTIVE_SIZE_MEDIUM_BYTES = 1024 * 1024 * 1024
+export const DESTRUCTIVE_SIZE_MEDIUM_FILES = 10000
+
 export function assessDestructiveRequest(
   command: string,
   facts: DestructiveFacts[] = [],
@@ -584,10 +590,18 @@ export function assessDestructiveRequest(
 
   // Risk is informational: it no longer decides whether the reader may allow. Only an
   // unknown target or a protected path is refused outright.
+  const size = facts.find(fact => typeof fact.totalBytes === 'number' && typeof fact.fileCount === 'number')
+  // 规模未知（统计被上限截停 = sampled）⇒ 读者看到的是**下限**，绝不足以说"低"。
+  const sizeUnknown = Boolean(size?.sampled)
+  const sizeLarge = Boolean(size
+    && ((size.totalBytes ?? 0) > DESTRUCTIVE_SIZE_MEDIUM_BYTES
+      || (size.fileCount ?? 0) > DESTRUCTIVE_SIZE_MEDIUM_FILES))
+
   let risk: DestructiveAssessment['risk'] = 'low'
   if (protections.length || touchesUserDataFlag) risk = 'high'
   else if (untracked && !rebuildable) risk = 'medium'
   else if (undetermined || missing) risk = 'medium'
+  else if (sizeUnknown || sizeLarge) risk = 'medium'
 
   const parts: string[] = []
   if (protections.length) parts.push(`命中受保护清单（${protections.join('、')}）`)
@@ -598,9 +612,14 @@ export function assessDestructiveRequest(
   else if (rebuildable) parts.push('可重建，未触及用户数据')
   else parts.push('目标明确，未触及用户数据')
 
-  const size = facts.find(fact => typeof fact.totalBytes === 'number' && typeof fact.fileCount === 'number')
   if (size) {
-    parts.push(`${size.fileCount} 个文件 / ${formatBytes(size.totalBytes ?? 0)}${size.sampled ? '（仅采样）' : ''}`)
+    if (size.sampled) {
+      // 统计被上限截停 ⇒ 这是**下限**，不是总量：必须说清"至少/未扫完"，并且下限要取整，
+      // 否则 "731.3 MB" 这种精确到小数点的下限反而更像真值。
+      parts.push(`至少 ${size.fileCount ?? 0} 个文件 / ≥ ${formatBytesFloor(size.totalBytes ?? 0)}（未扫完）`)
+    } else {
+      parts.push(`${size.fileCount ?? 0} 个文件 / ${formatBytes(size.totalBytes ?? 0)}`)
+    }
   }
 
   return {
@@ -614,4 +633,14 @@ export function assessDestructiveRequest(
     risk,
     touchesUserData: touchesUserDataFlag,
   }
+}
+
+/** 下限取整：宁可再说小一点，也不让读者以为这是精确总量（GB ⇒ 整 GB，MB ⇒ 整 10 MB）。 */
+function formatBytesFloor(bytes: number): string {
+  const gb = 1024 * 1024 * 1024
+  const mb = 1024 * 1024
+  const value = Math.max(0, Math.floor(bytes))
+  if (value >= gb) return `${Math.floor(value / gb)} GB`
+  if (value >= mb) return `${Math.max(1, Math.floor(value / (10 * mb)) * 10)} MB`
+  return formatBytes(value)
 }
