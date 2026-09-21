@@ -970,6 +970,9 @@ type ConversationsState = {
   // 已经收到过引擎队列报告的会话：只有这些会话才允许做离队⇒转正的对账（防重启误判⇒重复）。
   queueSyncedIds: Set<string>
   engineNotice: string
+  // (A)/(C)①：**最后已知的后台任务**（按会话）。这是**事实层** —— 状态区据此显示"后台仍在运行"，
+  // 而不是依赖会被后续状态行覆盖的短命 `engineNotice`。
+  backgroundTasks: Record<string, Array<{ id: string; name: string; status: string }>>
   engineNoticeRepeat: number
   engineNoticeAt: number
   abortStalledIds: Set<string>
@@ -1100,6 +1103,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     messageQueues: new Map<string, CodingMessageQueue>(),
     queueSyncedIds: new Set<string>(),
     engineNotice: '',
+    backgroundTasks: {},
     engineNoticeRepeat: 0,
     engineNoticeAt: 0,
     abortStalledIds: new Set<string>(),
@@ -1166,6 +1170,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set runningTools(value) { store.setState({ runningTools: value }) },
     get heartbeatTick() { return store.getState().heartbeatTick },
     set heartbeatTick(value) { store.setState({ heartbeatTick: value }) },
+    get backgroundTasks() { return store.getState().backgroundTasks },
+    set backgroundTasks(value) { store.setState({ backgroundTasks: value }) },
     get engineNotice() { return store.getState().engineNotice },
     set engineNotice(value) { store.setState({ engineNotice: value }) },
     get engineNoticeRepeat() { return store.getState().engineNoticeRepeat },
@@ -1954,6 +1960,28 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     )
     s.runningIds = next.running
     s.abortingIds = next.aborting
+    // (A) 回合结束的唯一汇合点。用**最后一份**后台任务再评估：这时读者看到"回合结束"，
+    // 而任务还在跑 ⇒ 必须说清在跑什么、并提醒别关机。事实留在 store 的 backgroundTasks 里，
+    // 状态区（(C)①）会一直显示它，不依赖这条短命状态行。
+    {
+      const kept = store.getState().backgroundTasks[id] ?? []
+      const notice = kept.length > 0
+        ? backgroundTaskNotice({ turnEnded: true, running: kept, hadRunning: true })
+        : null
+      if (notice?.kind === 'still-running') {
+        const name = String(notice.name)
+        const more = notice.count > 1 ? t(`（还有 ${notice.count - 1} 件）`, ` (${notice.count - 1} more)`) : ''
+        store.setState(state => ({
+          ...state,
+          engineNotice: t(
+            `后台仍在运行：${notice.count} 件 · ${name}${more} —— 请不要关机。`,
+            `Still running in the background: ${notice.count} · ${name}${more} - please do not shut down.`,
+          ),
+          engineNoticeRepeat: 0,
+          engineNoticeAt: Date.now(),
+        }))
+      }
+    }
     if (parentId && parentId !== id) {
       reconcileParentRun(parentId, {
         workingJustEmptied: parentLiveBefore > 0 && liveWorkingCountFor(parentId) === 0,
@@ -3876,6 +3904,13 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           hadRunning: reportedBackgroundTasks.get(sessionId) === true,
         })
         reportedBackgroundTasks.set(sessionId, running.length > 0)
+        // 留下**最后一份**（事实层）—— 回合结束时还要用它，状态区也据此显示。
+        const kept = running.map(task => ({
+          id: String((task as { id?: unknown })?.id ?? ''),
+          name: String(task?.name ?? ''),
+          status: String(task?.status ?? ''),
+        }))
+        store.setState(state => ({ ...state, backgroundTasks: { ...state.backgroundTasks, [sessionId]: kept } }))
         if (notice?.kind === 'still-running') {
           const name = String(notice.name)
           const suffix = notice.count > 1
