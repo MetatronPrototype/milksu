@@ -1,4 +1,5 @@
 import { createStore, nextTick } from '@/lib/reactStore'
+import { settleConsumedQueuedMessages } from '@/lib/queuedGuidanceStatus'
 import { invokeCommand, listenEvent } from '@/desktop'
 import type { CodingCompactionResult, CodingProjectMemory } from '@/codingEnvironmentTypes'
 import {
@@ -3771,8 +3772,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         return
       }
       if (type === 'session.queue_updated') {
-        const previousQueue = s.messageQueues.get(sessionId)
-          ?? { steering: [], followUp: [] }
         const engineQueue = projectCodingMessageQueue(steering, followUp)
         // 以本地为准：本会话已经"加入对话"（= 已注入本轮）的条目不接受引擎回声放回队列，
         // 否则读者会看到同一段正文既在「已加入本轮」又回到队列里（真机截图：⏱ …已并入本回合）。
@@ -3784,32 +3783,23 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
               followUp: engineQueue.followUp,
             }
           : engineQueue
-        const appliedSteeringCount = Math.max(
-          0,
-          previousQueue.steering.length - nextQueue.steering.length,
-        )
         setMessageQueue(
           sessionId,
           nextQueue,
         )
         if (!nextQueue.steering.length) markQueueStalled(sessionId, false)
-        if (appliedSteeringCount > 0) {
-          let remaining = appliedSteeringCount
-          s.conversations = s.conversations.map(conversation => (
-            conversation.id === sessionId
-              ? {
-                  ...conversation,
-                  messages: conversation.messages.map(message => {
-                    if (remaining <= 0 || message.role !== 'user' || message.status !== 'queued') {
-                      return message
-                    }
-                    remaining -= 1
-                    return { ...message, status: 'done' }
-                  }),
-                }
-              : conversation
-          ))
-        }
+        // 把"已经不再排队的排队消息"转正：旧写法只在"两次回声之间队列变短"时按**数量**转正，
+        // 而"加入对话"已经在本地提前移除该条 ⇒ 长度不变 ⇒ 计数恒为 0 ⇒ 那条 `status:'queued'`
+        // 会永远留着 ⇒ 界面把它当"排队中"，看起来像被吞了（现场症状）。这里改成**按文本对账**：
+        // 队列里已经没有这条正文 ⇒ 它不再排队 ⇒ 转成正常历史消息。
+        s.conversations = s.conversations.map(conversation => (
+          conversation.id === sessionId
+            ? {
+                ...conversation,
+                messages: settleConsumedQueuedMessages(conversation.messages, nextQueue.steering),
+              }
+            : conversation
+        ))
       }
       s.conversations = s.conversations.map(conversation => {
         if (conversation.id !== sessionId) return conversation
