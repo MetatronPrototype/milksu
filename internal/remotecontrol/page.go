@@ -86,7 +86,10 @@ const dashboardHTML = `<!doctype html>
   @media (prefers-reduced-motion: reduce) { .px-mark, .px-mark i { animation:none; } }
   .conv-item .badge { margin-left:6px; font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:8px; padding:0 5px; }
   .queue { border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:var(--card); }
-  .queue-head { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--dim); }
+  .queue-head { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:12px; color:var(--dim); }
+  .queue-head .dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--dim); margin-right:5px; vertical-align:middle; }
+  .queue-head .joined { color:var(--ok); }
+  .queue-head .sep { opacity:.5; margin:0 6px; }
   .queue-item { display:flex; gap:8px; align-items:center; margin-top:6px; font-size:13px; }
   .queue-item .kind { font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:8px; padding:0 5px; }
   .queue-item .text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -355,7 +358,18 @@ function renderQueue() {
   const current = conversations.find(item => item.id === selectedId)
   const queue = (current && current.queue) || []
   if (!queue.length) { container.innerHTML = ''; return }
-  container.innerHTML = '<div class="queue"><div class="queue-head">排队中 ' + queue.length +
+  // 与主界面同口径：引导在「工具还在跑」时只是等待加入，跑完才算已加入本轮。
+  const steering = queue.filter(item => item.queue === 'steering')
+  const followUp = queue.filter(item => item.queue === 'followUp')
+  const waiting = current.tool_running === true
+  const head = []
+  if (steering.length) {
+    head.push(waiting
+      ? '<span><span class="dot"></span>' + steering.length + ' 条引导等待加入：工具调用结束后加入对话</span>'
+      : '<span class="joined">✓ ' + steering.length + ' 条引导已加入本轮</span>')
+  }
+  if (followUp.length) head.push('<span>' + followUp.length + ' 条排队等待下一轮</span>')
+  container.innerHTML = '<div class="queue"><div class="queue-head">' + head.join('<span class="sep">·</span>') +
     '<button class="link" id="clearQueue"' + (canControl ? '' : ' disabled') + '>全部清空</button></div>' +
     queue.map(item =>
       '<div class="queue-item"><span class="kind">' + (item.queue === 'steering' ? '引导' : '排队') + '</span>' +

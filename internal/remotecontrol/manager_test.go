@@ -964,6 +964,10 @@ func TestPageCarriesTheParityControls(t *testing.T) {
 		"px-mark decision",
 		"需要你决定",
 		"px-breathe",
+		// 引导只在工具跑完才算加入本轮；这两句与主界面同款。
+		"引导等待加入",
+		"已加入本轮",
+		"tool_running",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Fatalf("the page is missing %s", marker)

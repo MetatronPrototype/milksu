@@ -166,3 +166,41 @@ func TestRemoteBridgeRefusesUnknownQueueAndScope(t *testing.T) {
 		t.Fatal("an unknown scope must be refused")
 	}
 }
+
+// Guidance only joins a turn once the tool it waits behind has finished, so the projection
+// has to expose the same signal the composer uses — and an ask card is a question, not work
+// that guidance queues behind.
+func TestConversationToolRunningFollowsTheComposerRule(t *testing.T) {
+	running := "running"
+	done := "done"
+	toolName := "bash"
+	askName := remoteAskToolName
+
+	withMessages := func(messages ...conversation.StoredMessage) conversation.StoredConversation {
+		return conversation.StoredConversation{Messages: messages}
+	}
+
+	if !conversationToolRunning(withMessages(conversation.StoredMessage{
+		Role: "tool", ToolName: &toolName, Status: &running,
+	})) {
+		t.Fatal("a running tool call must count as waiting for guidance")
+	}
+	if conversationToolRunning(withMessages(conversation.StoredMessage{
+		Role: "tool", ToolName: &askName, Status: &running,
+	})) {
+		t.Fatal("an ask card is not a tool the guidance waits behind")
+	}
+	if conversationToolRunning(withMessages(conversation.StoredMessage{
+		Role: "tool", ToolName: &toolName, Status: &done,
+	})) {
+		t.Fatal("a finished tool call must not count")
+	}
+	if conversationToolRunning(withMessages(conversation.StoredMessage{
+		Role: "assistant", Status: &running,
+	})) {
+		t.Fatal("only tool messages count")
+	}
+	if conversationToolRunning(withMessages()) {
+		t.Fatal("an empty conversation has nothing running")
+	}
+}

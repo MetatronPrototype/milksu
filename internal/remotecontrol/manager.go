@@ -187,6 +187,9 @@ type Conversation struct {
 	PendingRequestIDs []string `json:"pending_request_ids,omitempty"`
 	// Queue holds the prompts parked behind the running turn, in order.
 	Queue []QueuedMessage `json:"queue,omitempty"`
+	// ToolRunning reports whether a tool call is still running. The host uses the same signal
+	// to decide whether injected guidance is still waiting to join the turn.
+	ToolRunning bool `json:"tool_running,omitempty"`
 }
 
 // ApprovalOption is one choice on an ask card.

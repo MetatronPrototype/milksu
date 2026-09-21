@@ -275,6 +275,7 @@ func (a *App) remoteControlSnapshot(_ context.Context) (remotecontrol.Snapshot, 
 		}
 		projection.NeedsDecision, projection.PendingRequestIDs = conversationDecision(conversation)
 		projection.Queue = a.remoteQueueFor(conversation.ID)
+		projection.ToolRunning = conversationToolRunning(conversation)
 		// The engine's Running flag is per kernel: using it here marked every conversation
 		// as running whenever any sidecar was alive. Use this conversation's own activity.
 		projection.Running = a.conversationActiveRecently(conversation.ID)
@@ -315,6 +316,24 @@ func conversationDecision(conversation conversation.StoredConversation) (bool, [
 		}
 	}
 	return len(ids) > 0, ids
+}
+
+// conversationToolRunning mirrors the host composer's queuedGuidanceAwaitingTool rule: a tool
+// message still running means injected guidance has not joined the turn yet. An ask card is
+// excluded because it is a question, not work the guidance has to wait behind.
+func conversationToolRunning(conversation conversation.StoredConversation) bool {
+	for _, message := range conversation.Messages {
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+			continue
+		}
+		if message.ToolName != nil && strings.TrimSpace(*message.ToolName) == remoteAskToolName {
+			continue
+		}
+		if message.Status != nil && strings.TrimSpace(*message.Status) == "running" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseAskCard reads the question and its choices out of a milksu_ask approval input, so the
