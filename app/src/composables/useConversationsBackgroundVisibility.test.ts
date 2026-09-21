@@ -135,6 +135,10 @@ describe('background task survives the turn end', () => {
         { id: 't1', name: TASK_NAME, status: 'running' },
       ] })
       const before = calls()
+      // 任务刚结束时最容易被看到"还挂着" ✗（读者看到的是上一秒的事实）⇒ 第一次查询要早，
+      // 不靠 15 秒那一轮。
+      await vi.advanceTimersByTimeAsync(2500)
+      expect(calls()).toBeGreaterThan(before)
       await vi.advanceTimersByTimeAsync(15000)
       expect(calls()).toBeGreaterThan(before)
       // 回归保护：引擎侧 sessionID 为空会直接报 `session id is required` ✗ ⇒ 漏参时命令永远失败

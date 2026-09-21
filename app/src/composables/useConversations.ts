@@ -1300,17 +1300,27 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   // **轻量轮询**现成的刷新命令（15 秒一次、清零即停 ⇒ 有界 ✓）：刷新让侧车重读 pi 的登记表
   // 并回发同一个事件 ✓，那行就会自己消失 ✓。
   const BACKGROUND_TASK_REFRESH_MS = 15000
+  // 任务刚结束时最容易被看到"还挂着" ✗（读者看到的是上一秒的事实）⇒ 先**快查一次**，再按 15 秒兜底。
+  const BACKGROUND_TASK_REFRESH_FIRST_MS = 2000
   let backgroundTaskRefreshTimer: ReturnType<typeof setInterval> | undefined
+  let backgroundTaskRefreshFirst: ReturnType<typeof setTimeout> | undefined
+  function stopBackgroundTaskRefresh() {
+    if (backgroundTaskRefreshTimer !== undefined) {
+      clearInterval(backgroundTaskRefreshTimer)
+      backgroundTaskRefreshTimer = undefined
+    }
+    if (backgroundTaskRefreshFirst !== undefined) {
+      clearTimeout(backgroundTaskRefreshFirst)
+      backgroundTaskRefreshFirst = undefined
+    }
+  }
   function scheduleBackgroundTaskRefresh(hasRunning: boolean, sessionId: string) {
     if (!hasRunning) {
-      if (backgroundTaskRefreshTimer !== undefined) {
-        clearInterval(backgroundTaskRefreshTimer)
-        backgroundTaskRefreshTimer = undefined
-      }
+      stopBackgroundTaskRefresh()
       return
     }
-    if (backgroundTaskRefreshTimer !== undefined) return
-    backgroundTaskRefreshTimer = setInterval(() => {
+    if (backgroundTaskRefreshTimer !== undefined || backgroundTaskRefreshFirst !== undefined) return
+    const runRefresh = () => {
       // ⚠️ 这个命令**必须带会话**：引擎侧 `RefreshBackgroundTasks` 在 sessionID 为空时直接返回
       // `session id is required` ✗。之前两次调用都没传参 ⇒ 每次都失败、又被静默吞掉 ⇒ 状态区那行
       // 就永远停在“仍在运行”（真机：任务结束后仍显示 ✓）。参数照 `:2118` 的先例给 ✓。
@@ -1331,9 +1341,13 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           ...state,
           backgroundTasks: { ...state.backgroundTasks, [sessionId]: running },
         }))
-        if (running.length === 0) scheduleBackgroundTaskRefresh(false, sessionId)
+        if (running.length === 0) {
+          stopBackgroundTaskRefresh()
+        }
       }).catch(() => undefined)
-    }, BACKGROUND_TASK_REFRESH_MS)
+    }
+    backgroundTaskRefreshFirst = setTimeout(runRefresh, BACKGROUND_TASK_REFRESH_FIRST_MS)
+    backgroundTaskRefreshTimer = setInterval(runRefresh, BACKGROUND_TASK_REFRESH_MS)
   }
   function currentRunEpoch(id: string) {
     return runEpochByConversation.get(id) ?? 0
@@ -4490,10 +4504,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   }
 
   function dispose() {
-    if (backgroundTaskRefreshTimer !== undefined) {
-      clearInterval(backgroundTaskRefreshTimer)
-      backgroundTaskRefreshTimer = undefined
-    }
+    stopBackgroundTaskRefresh()
     stopWatchActiveId()
     disposeEvents?.()
     disposeEvents = undefined
