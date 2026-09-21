@@ -1199,7 +1199,9 @@ export default function SettingsPage({
                   />
                   <SettingsRow
                     label={t('绑定码', 'Pairing code')}
-                    description={remotePairingHint}
+                    description={[remotePairingHint, remoteCodeExpiryLabel(remoteStatus?.pairing_expires_at)
+                      ? t(`本码有效期到 ${remoteCodeExpiryLabel(remoteStatus?.pairing_expires_at)}，过期后重新生成即可。`, `This code is valid until ${remoteCodeExpiryLabel(remoteStatus?.pairing_expires_at)}; generate a new one after that.`)
+                      : ''].filter(Boolean).join(' ')}
                     trailing={(
                       <div className="flex items-center gap-2">
                         <Button
@@ -1218,7 +1220,9 @@ export default function SettingsPage({
                   />
                   <SettingsRow
                     label={t('访问地址', 'Address')}
-                    description={remoteStatus?.url || t('未启动', 'Not running')}
+                    description={remoteStatus?.url
+                      ? t(`手机浏览器打开这个地址就能进入：${remoteStatus.url}（只监听到局域网，离开这个网络就打不开）`, `Open this address in the phone's browser: ${remoteStatus.url} (LAN only — it stops working off this network)`)
+                      : t('未启动：先打开上面的开关。', 'Not running yet — turn the switch above on.')}
                     trailing={(
                       <div className="flex items-center gap-2">
                         <Button
@@ -1244,7 +1248,7 @@ export default function SettingsPage({
                   ) : null}
                 </SettingsSection>
 
-                <SettingsSection title={t('远端设备', 'Remote devices')}>
+                <SettingsSection title={t('远端安全与设备', 'Remote safety & devices')}>
                   <SettingsRow
                     label={t('允许远端执行危险操作', 'Allow remote dangerous actions')}
                     description={t(
@@ -1260,6 +1264,17 @@ export default function SettingsPage({
                       />
                     )}
                   />
+                  {remoteDangerousTools ? (
+                    <div
+                      className="border-b border-border px-4 py-2 text-xs text-destructive"
+                      data-testid="remote-danger-warning"
+                    >
+                      {t(
+                        '危险操作已开给远端：手机可以批准 bash / edit / write，也可以把审批策略切成自动批准；问答卡不受这个开关影响，始终可以回答。只在你信任当前网络和设备时保持开启。',
+                        'Dangerous actions are open to remote devices: a phone may approve bash / edit / write and switch the policy to auto-approve. Ask cards are not affected by this switch and can always be answered. Keep it on only when you trust the current network and devices.',
+                      )}
+                    </div>
+                  ) : null}
                   <SettingsRow
                     label={t('已配对设备', 'Paired devices')}
                     description={remoteStatus?.devices?.length
@@ -1286,14 +1301,17 @@ export default function SettingsPage({
                               >
                                 {device.capability === 'control' ? t('降为只读', 'Make read-only') : t('升级为可操作', 'Allow control')}
                               </Button>
-                              <Button variant="ghost" size="sm" onClick={() => void store.renewRemoteDevice(device.id)}>{t('续期', 'Renew')}</Button>
-                              <Button variant="ghost" size="sm" onClick={() => void store.issueRemotePairingCode(device.id)}>{t('换网重配', 'Re-pair')}</Button>
-                              <Button variant="ghost" size="sm" onClick={() => void store.revokeRemoteDevice(device.id)}>{t('注销', 'Revoke')}</Button>
+                              <Button variant="ghost" size="sm" title={t('把授权延长 7 天并核验当前网络', 'Extend for another 7 days and verify the current network')} onClick={() => void store.renewRemoteDevice(device.id)}>{t('续期', 'Renew')}</Button>
+                              <Button variant="ghost" size="sm" title={t('生成一个只给这台设备的绑定码：换网后在它上面重新输一次，权限与已核验网络都保留', 'Issue a code for this device only: enter it there after a network change and its permission and verified networks stay')} onClick={() => void store.issueRemotePairingCode(device.id)}>{t('换网重配', 'Re-pair')}</Button>
+                              <Button variant="ghost" size="sm" title={t('立即失效，手机需要重新配对', 'Stops working immediately; the phone has to pair again')} onClick={() => void store.revokeRemoteDevice(device.id)}>{t('注销', 'Revoke')}</Button>
                             </div>
                           </div>
-                          <div className="text-muted-foreground">
-                            {device.ip || t('未知地址', 'Unknown address')}
-                            {' · '}{t('到期', 'Expires')}: {remoteExpiryLabel(device.expires_at)}
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
+                            <span>{device.ip || t('未知地址', 'Unknown address')}</span>
+                            <span className={remoteExpiryUrgent(device.expires_at) ? 'text-destructive' : undefined}>
+                              {t('到期', 'Expires')}: {remoteExpiryLabel(device.expires_at)}
+                            </span>
+                            <span>{t('上次活动', 'Last seen')}: {remoteSeenLabel(device.last_seen_at)}</span>
                           </div>
                           {(device.networks ?? []).length ? (
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
@@ -1308,6 +1326,7 @@ export default function SettingsPage({
                           ) : null}
                           {device.pending_subnet ? (
                             <div className="flex flex-wrap items-center gap-2 text-destructive">
+                              <Badge variant="destructive">{t('待核验网络', 'Unverified network')}</Badge>
                               {t(`新网络待核验：${device.pending_subnet}`, `New network to verify: ${device.pending_subnet}`)}
                               <Button variant="outline" size="sm" onClick={() => void store.approveRemoteDeviceNetwork(device.id)}>{t('核验此网络', 'Verify this network')}</Button>
                             </div>
@@ -1801,6 +1820,32 @@ function remoteExpiryLabel(value: string) {
   return days > 0
     ? t(`${local}（还有 ${days} 天）`, `${local} (${days} days left)`)
     : t(`${local}（已到期）`, `${local} (expired)`)
+}
+
+// remoteSeenLabel 把「上次活动」压成人能一眼看懂的说法；没有记录时不编造时间。
+function remoteSeenLabel(value: string) {
+  const at = new Date(value)
+  if (!value || Number.isNaN(at.getTime())) return t('未记录', 'Not recorded')
+  const minutes = Math.round((Date.now() - at.getTime()) / 60_000)
+  if (minutes < 1) return t('刚刚', 'Just now')
+  if (minutes < 60) return t(`${minutes} 分钟前`, `${minutes} min ago`)
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return t(`${hours} 小时前`, `${hours} h ago`)
+  return t(`${Math.round(hours / 24)} 天前`, `${Math.round(hours / 24)} d ago`)
+}
+
+// remoteExpiryUrgent 标记 24 小时内到期的设备，让「快过期」在列表里看得出来。
+function remoteExpiryUrgent(value: string) {
+  const at = new Date(value)
+  if (!value || Number.isNaN(at.getTime())) return false
+  return at.getTime() - Date.now() <= 86_400_000
+}
+
+// remoteCodeExpiryLabel 把绑定码的有效期说成具体时刻，而不是让用户自己算 5 分钟。
+function remoteCodeExpiryLabel(value?: string) {
+  const at = new Date(String(value || ''))
+  if (!value || Number.isNaN(at.getTime())) return ''
+  return at.toLocaleTimeString()
 }
 
 function createSettingsStore(

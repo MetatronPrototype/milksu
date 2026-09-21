@@ -29,16 +29,19 @@ func (provider stubProvider) RemoteConversation(_ context.Context, conversationI
 }
 
 type stubController struct {
-	mu        sync.Mutex
-	sent      []string
-	approvals []string
-	models    []string
-	policies  []string
-	created   []string
-	fail      error
+	mu             sync.Mutex
+	sent           []string
+	approvals      []string
+	models         []string
+	policies       []string
+	created        []string
+	withdrawn      []string
+	withdrawnIndex []int
+	cleared        []string
+	fail           error
 }
 
-func (controller *stubController) RemoteApproveTool(_ context.Context, conversationID, requestID string, approved bool) error {
+func (controller *stubController) RemoteApproveTool(_ context.Context, conversationID, requestID string, approved bool, scope, choice string) error {
 	controller.mu.Lock()
 	defer controller.mu.Unlock()
 	if controller.fail != nil {
@@ -48,17 +51,49 @@ func (controller *stubController) RemoteApproveTool(_ context.Context, conversat
 	if approved {
 		verdict = "approve"
 	}
-	controller.approvals = append(controller.approvals, verdict+":"+conversationID+":"+requestID)
+	record := verdict + ":" + conversationID + ":" + requestID
+	if scope != "" {
+		record += ":" + scope
+	}
+	if choice != "" {
+		record += ":" + choice
+	}
+	controller.approvals = append(controller.approvals, record)
 	return nil
 }
 
-func (controller *stubController) RemoteSendMessage(_ context.Context, conversationID, prompt string) error {
+func (controller *stubController) RemoteSendMessage(_ context.Context, conversationID, prompt, mode string) error {
 	controller.mu.Lock()
 	defer controller.mu.Unlock()
 	if controller.fail != nil {
 		return controller.fail
 	}
-	controller.sent = append(controller.sent, conversationID+":"+prompt)
+	record := conversationID + ":" + prompt
+	if mode != "" {
+		record += ":" + mode
+	}
+	controller.sent = append(controller.sent, record)
+	return nil
+}
+
+func (controller *stubController) RemoteWithdrawQueued(_ context.Context, conversationID, queue string, index int, expected string) error {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if controller.fail != nil {
+		return controller.fail
+	}
+	controller.withdrawn = append(controller.withdrawn, conversationID+":"+queue+":"+expected)
+	controller.withdrawnIndex = append(controller.withdrawnIndex, index)
+	return nil
+}
+
+func (controller *stubController) RemoteClearQueued(_ context.Context, conversationID string) error {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if controller.fail != nil {
+		return controller.fail
+	}
+	controller.cleared = append(controller.cleared, conversationID)
 	return nil
 }
 
@@ -797,5 +832,192 @@ func TestAmbiguousDeviceIsNotMergedAndABoundCodeStillWorks(t *testing.T) {
 	}
 	if status := manager.Status(); status.PairingDeviceID != "" {
 		t.Fatalf("pairing device id = %q, want it cleared once the code was used", status.PairingDeviceID)
+	}
+}
+
+// A remote device may answer a prompt with the same two extra bits the desktop card offers:
+// allow the tool for this conversation, and pick a choice on an ask card.
+func TestApproveCarriesScopeAndChoice(t *testing.T) {
+	manager, status, controller := startManager(t)
+	cookie := pair(t, manager, status)
+	device := manager.Status().Devices[0]
+	if err := manager.SetDeviceCapability(device.ID, CapabilityControl); err != nil {
+		t.Fatalf("promote failed: %v", err)
+	}
+
+	granted := post(t, status.URL+"api/action/approve",
+		`{"conversation_id":"conversation-1","request_id":"req-1","approved":true,"scope":"conversation","choice":"other:自己写"}`,
+		cookie, true)
+	granted.Body.Close()
+	if granted.StatusCode != http.StatusOK {
+		t.Fatalf("approve with scope = %d, want 200", granted.StatusCode)
+	}
+	if len(controller.approvals) != 1 || controller.approvals[0] != "approve:conversation-1:req-1:conversation:other:自己写" {
+		t.Fatalf("approvals = %#v", controller.approvals)
+	}
+
+	denied := post(t, status.URL+"api/action/approve",
+		`{"conversation_id":"conversation-1","request_id":"req-2","approved":false}`,
+		cookie, true)
+	denied.Body.Close()
+	if len(controller.approvals) != 2 || controller.approvals[1] != "deny:conversation-1:req-2" {
+		t.Fatalf("approvals = %#v", controller.approvals)
+	}
+
+	// An unknown scope is refused instead of silently granting something else.
+	bad := post(t, status.URL+"api/action/approve",
+		`{"conversation_id":"conversation-1","request_id":"req-3","approved":true,"scope":"everything"}`,
+		cookie, true)
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown scope = %d, want 400", bad.StatusCode)
+	}
+}
+
+// Sending mirrors the desktop composer: the page may send, park behind the running turn, or
+// steer it, and only those three modes are accepted.
+func TestSendCarriesTheQueueMode(t *testing.T) {
+	manager, status, controller := startManager(t)
+	cookie := pair(t, manager, status)
+	device := manager.Status().Devices[0]
+	if err := manager.SetDeviceCapability(device.ID, CapabilityControl); err != nil {
+		t.Fatalf("promote failed: %v", err)
+	}
+
+	queued := post(t, status.URL+"api/action/send", `{"conversation_id":"conversation-1","prompt":"排队这条","mode":"queue"}`, cookie, true)
+	queued.Body.Close()
+	if queued.StatusCode != http.StatusOK {
+		t.Fatalf("queue send = %d, want 200", queued.StatusCode)
+	}
+	steered := post(t, status.URL+"api/action/send", `{"conversation_id":"conversation-1","prompt":"引导这条","mode":"steer"}`, cookie, true)
+	steered.Body.Close()
+	if steered.StatusCode != http.StatusOK {
+		t.Fatalf("steer send = %d, want 200", steered.StatusCode)
+	}
+	bad := post(t, status.URL+"api/action/send", `{"conversation_id":"conversation-1","prompt":"x","mode":"nope"}`, cookie, true)
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown mode = %d, want 400", bad.StatusCode)
+	}
+
+	if len(controller.sent) != 2 ||
+		controller.sent[0] != "conversation-1:排队这条:queue" ||
+		controller.sent[1] != "conversation-1:引导这条:steer" {
+		t.Fatalf("sent = %#v", controller.sent)
+	}
+}
+
+// Withdrawing one parked prompt and clearing the queue both reach the controller, and a queue
+// name the host does not know is refused.
+func TestQueueActionsReachTheController(t *testing.T) {
+	manager, status, controller := startManager(t)
+	cookie := pair(t, manager, status)
+	device := manager.Status().Devices[0]
+	if err := manager.SetDeviceCapability(device.ID, CapabilityControl); err != nil {
+		t.Fatalf("promote failed: %v", err)
+	}
+
+	withdrawn := post(t, status.URL+"api/action/queue",
+		`{"conversation_id":"conversation-1","queue":"followUp","index":1,"expected":"第二条"}`,
+		cookie, true)
+	withdrawn.Body.Close()
+	if withdrawn.StatusCode != http.StatusOK {
+		t.Fatalf("withdraw = %d, want 200", withdrawn.StatusCode)
+	}
+	cleared := post(t, status.URL+"api/action/queue/clear", `{"conversation_id":"conversation-1"}`, cookie, true)
+	cleared.Body.Close()
+	if cleared.StatusCode != http.StatusOK {
+		t.Fatalf("clear = %d, want 200", cleared.StatusCode)
+	}
+
+	if len(controller.withdrawn) != 1 || controller.withdrawn[0] != "conversation-1:followUp:第二条" {
+		t.Fatalf("withdrawn = %#v", controller.withdrawn)
+	}
+	if len(controller.withdrawnIndex) != 1 || controller.withdrawnIndex[0] != 1 {
+		t.Fatalf("withdrawn index = %#v", controller.withdrawnIndex)
+	}
+	if len(controller.cleared) != 1 || controller.cleared[0] != "conversation-1" {
+		t.Fatalf("cleared = %#v", controller.cleared)
+	}
+}
+
+// The parity work depends on four hooks living in the page: the ask choices, the
+// conversation-scope checkbox, the needs-decision mark and the queue controls. They are easy
+// to drop in a later edit, so this pins them.
+func TestPageCarriesTheParityControls(t *testing.T) {
+	_, status, _ := startManager(t)
+	response, err := http.Get(status.URL)
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	page := string(body)
+	for _, marker := range []string{
+		"data-choice=\"",
+		"data-scope=\"",
+		"data-withdraw=\"",
+		"needs_decision",
+		"id=\"queue\"",
+		"/api/action/queue/clear",
+		// 状态标记跟主界面同款：3×3 点阵、中心留空的琥珀环 + 整组呼吸。
+		"px-mark decision",
+		"需要你决定",
+		"px-breathe",
+		// 引导只在工具跑完才算加入本轮；这两句与主界面同款。
+		"引导等待加入",
+		"已加入本轮",
+		"tool_running",
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("the page is missing %s", marker)
+		}
+	}
+	// 早期版本用一个问号代替待决策标记，那是旧设计，不能再回来。
+	if strings.Contains(page, "等你拍板") {
+		t.Fatal("the decision mark must be the host's pixel ring, not a question mark")
+	}
+}
+
+// The page learned to wait for a ping instead of polling on a timer, so the manager has to
+// wake every listener and stop waking one that unsubscribed.
+func TestChangeSubscriptionReceivesAPing(t *testing.T) {
+	manager, _, _ := startManager(t)
+
+	changes, cancel := manager.Subscribe()
+	manager.NotifyChange()
+	select {
+	case <-changes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a subscriber must be woken by NotifyChange")
+	}
+
+	cancel()
+	manager.NotifyChange()
+	select {
+	case <-changes:
+		t.Fatal("a cancelled subscriber must not be woken")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// The stream is the only push channel the page has, so its route and its client have to stay
+// wired in the page.
+func TestPageUsesTheHostPushStream(t *testing.T) {
+	_, status, _ := startManager(t)
+	response, err := http.Get(status.URL)
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	page := string(body)
+	for _, marker := range []string{"EventSource('/api/events')", "watchHostChanges()"} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("the page is missing %s", marker)
+		}
+	}
+	if strings.Contains(page, "}, 5000)") {
+		t.Fatal("the page must not keep the old five second poll")
 	}
 }

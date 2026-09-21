@@ -25,9 +25,9 @@ function flush() {
   })
 }
 
-function settingsPayload(): AppSettings {
+function settingsPayload(allowDangerousTools = false): AppSettings {
   return withAppSettingsDefaults({
-    remote_control: { enabled: true, bind_mode: 'lan', port: 58993, allow_dangerous_tools: false },
+    remote_control: { enabled: true, bind_mode: 'lan', port: 58993, allow_dangerous_tools: allowDangerousTools },
   } as AppSettings)
 }
 
@@ -110,14 +110,14 @@ function appFixture(overrides: AppFixture = {}): AppFixture {
   })
 }
 
-async function renderSettings(fixture: AppFixture = appFixture()) {
+async function renderSettings(fixture: AppFixture = appFixture(), settings: AppSettings = settingsPayload()) {
   ;(window as unknown as { go: unknown }).go = { main: { App: fixture } }
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
   mountedRoots.push(root)
   await act(async () => {
-    root.render(<SettingsPage settings={settingsPayload()} initialCategory="network" resolvedTheme="dark" />)
+    root.render(<SettingsPage settings={settings} initialCategory="network" resolvedTheme="dark" />)
   })
   await flush()
   await flush()
@@ -162,8 +162,16 @@ describe('SettingsPage remote control panel', () => {
     expect(text).toContain('192.168.0.44')
     expect(text).toContain('192.168.0.0/24')
     expect(text).toContain('还有')
+    expect(text).toContain('上次活动')
     expect(remoteCalls('GetRemoteControlStatus').length).toBeGreaterThan(0)
     expect(remoteCalls('GetRemoteAudit')[0]?.args[0]).toBe(40)
+  })
+
+  it('warns when dangerous actions are open to remote devices', async () => {
+    await renderSettings(appFixture(), settingsPayload(true))
+    const warning = document.querySelector('[data-testid="remote-danger-warning"]')
+    expect(warning).not.toBeNull()
+    expect(warning?.textContent ?? '').toContain('危险操作已开给远端')
   })
 
   it('copies the pairing code and the address with one tap', async () => {

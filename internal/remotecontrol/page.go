@@ -63,6 +63,37 @@ const dashboardHTML = `<!doctype html>
   .approval { border:1px solid var(--warn); border-radius:12px; padding:10px; background:var(--card); }
   .approval h3 { font-size:14px; margin:0 0 4px; }
   .approval .row { display:flex; gap:8px; margin-top:8px; }
+  .approval.ask { border-color:var(--ok); }
+  .approval .note { font-size:12px; color:var(--dim); margin-top:4px; }
+  .approval .danger-tag { margin-left:6px; font-size:11px; color:var(--warn); border:1px solid var(--warn); border-radius:6px; padding:0 4px; }
+  .approval .q { margin-top:6px; white-space:pre-wrap; }
+  .approval .choices { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+  .approval .choice { text-align:left; padding:9px 11px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; }
+  .approval .choice .detail { display:block; font-size:11px; color:var(--dim); margin-top:2px; }
+  .approval .other { flex:1; min-width:0; padding:9px 11px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; }
+  .approval .scope { display:flex; align-items:center; gap:6px; margin-top:8px; font-size:12px; color:var(--dim); }
+  .conv-item .mark { color:var(--warn); font-weight:700; margin-left:6px; }
+  /* 与主界面同款的状态标记：3×3 像素点阵、4px 格子、1.5px 间距。
+     运行中 = 逐格呼吸；待决策 = 中心留空的琥珀色小环、整组 2.4 秒呼吸。
+     待决策优先于运行中（正在跑又在等人拍板时，用户最需要知道“轮到我”）。 */
+  .px-mark { display:inline-grid; grid-template-columns:repeat(3,4px); gap:1.5px; margin-right:6px; flex-shrink:0; }
+  .px-mark i { width:4px; height:4px; border-radius:1px; background:var(--fg); opacity:.15; animation:px-on 650ms ease-in-out infinite; animation-delay:calc(var(--i, 0) * 90ms); }
+  .px-mark.decision { margin-left:6px; margin-right:0; animation:px-breathe 2.4s ease-in-out infinite; }
+  .px-mark.decision i { background:var(--warn); opacity:1; animation:none; }
+  .px-mark i.hole { background:transparent; }
+  @keyframes px-on { 0%,100% { opacity:.15; } 50% { opacity:1; } }
+  @keyframes px-breathe { 0%,100% { opacity:.75; transform:scale(.96); } 50% { opacity:1; transform:scale(1.04); } }
+  @media (prefers-reduced-motion: reduce) { .px-mark, .px-mark i { animation:none; } }
+  .conv-item .badge { margin-left:6px; font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:8px; padding:0 5px; }
+  .queue { border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:var(--card); }
+  .queue-head { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:12px; color:var(--dim); }
+  .queue-head .dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--dim); margin-right:5px; vertical-align:middle; }
+  .queue-head .joined { color:var(--ok); }
+  .queue-head .sep { opacity:.5; margin:0 6px; }
+  .queue-item { display:flex; gap:8px; align-items:center; margin-top:6px; font-size:13px; }
+  .queue-item .kind { font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:8px; padding:0 5px; }
+  .queue-item .text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  button.link { background:none; border:none; color:var(--dim); text-decoration:underline; padding:0; font:inherit; }
 
   #composer { display:flex; gap:8px; align-items:flex-end; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); background:var(--panel); }
   #composer textarea { flex:1; resize:none; min-height:44px; max-height:140px; border-radius:11px; padding:11px; background:var(--bg); color:var(--fg); border:1px solid var(--line); font:inherit; }
@@ -110,6 +141,7 @@ const dashboardHTML = `<!doctype html>
 
   <main id="chat">
     <div id="approvals"></div>
+    <div id="queue"></div>
     <div class="status" id="status"></div>
     <div id="messages"></div>
   </main>
@@ -225,8 +257,19 @@ function renderDrawer() {
   $('conversationList').innerHTML = conversations.map(conversation => {
     const last = (conversation.messages || [])[(conversation.messages || []).length - 1]
     const preview = last ? String(last.text || '').slice(0, 46) : ''
+    // 状态标记与主界面同款：待决策优先于运行中；两者都是 3×3 点阵，只是一环一叶。
+    const slots = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    const statusMark = conversation.needs_decision
+      ? '<span class="px-mark decision" role="status" aria-label="需要你决定" title="需要你决定">' +
+        slots.map(index => index === 4 ? '<i class="hole"></i>' : '<i></i>').join('') + '</span>'
+      : conversation.running
+        ? '<span class="px-mark" role="status" aria-label="运行中" title="运行中">' +
+          slots.map(index => '<i style="--i:' + index + '"></i>').join('') + '</span>'
+        : ''
+    const queued = (conversation.queue || []).length
+    const queueBadge = queued ? '<span class="badge" title="排队中">' + queued + '</span>' : ''
     return '<button class="conv-item' + (conversation.id === selectedId ? ' active' : '') + '" data-conversation="' + escapeHtml(conversation.id) + '">' +
-      '<span class="t">' + escapeHtml(conversation.title || conversation.id) + (conversation.running ? ' ●' : '') + '</span>' +
+      '<span class="t">' + statusMark + escapeHtml(conversation.title || conversation.id) + queueBadge + '</span>' +
       '<span class="m">' + escapeHtml(conversation.updated_at || '') + (preview ? ' · ' + escapeHtml(preview) : '') + '</span></button>'
   }).join('')
 }
@@ -266,16 +309,92 @@ function renderStatus() {
 }
 
 function renderApprovals() {
+  // 队列和待决审批一起刷新，免得两个区域只更新其中一个。
+  renderQueue()
   const approvals = (state && state.approvals) || []
   if (!approvals.length) { $('approvals').innerHTML = ''; return }
-  $('approvals').innerHTML = approvals.map(item =>
-    '<div class="approval"><h3>' + escapeHtml(item.tool_name || '工具调用') + '</h3>' +
-    '<div style="color:var(--dim);font-size:12px">' + escapeHtml(item.conversation_id || '') + ' · ' + escapeHtml(item.requested_at || '') + '</div>' +
-    (item.input ? '<div class="msg tool" style="margin-top:6px">' + escapeHtml(item.input) + '</div>' : '') +
-    '<div class="row">' +
-      '<button class="primary" data-approve="' + escapeHtml(item.request_id) + '" data-conversation="' + escapeHtml(item.conversation_id) + '"' + (canControl ? '' : ' disabled') + '>批准</button>' +
-      '<button class="danger" data-deny="' + escapeHtml(item.request_id) + '" data-conversation="' + escapeHtml(item.conversation_id) + '"' + (canControl ? '' : ' disabled') + '>拒绝</button>' +
-    '</div></div>').join('')
+  $('approvals').innerHTML = approvals.map(item => {
+    const id = escapeHtml(item.request_id)
+    const conversation = escapeHtml(item.conversation_id)
+    const disabled = canControl ? '' : ' disabled'
+    const meta = '<div style="color:var(--dim);font-size:12px">' + conversation + ' · ' + escapeHtml(item.requested_at || '') + '</div>'
+    if (item.kind === 'ask') {
+      // ask 是选择题（milksu_ask）：能点选项，也能自由作答，不能只给“批准/拒绝”。
+      const options = (item.options || []).map(option =>
+        '<button class="choice" data-approve="' + id + '" data-conversation="' + conversation + '" data-choice="' + escapeHtml(option.id) + '"' + disabled + '>' +
+        escapeHtml(option.label) +
+        (option.detail ? '<span class="detail">' + escapeHtml(option.detail) + '</span>' : '') + '</button>').join('')
+      return '<div class="approval ask"><h3>需要你回答</h3>' + meta +
+        '<div class="q">' + escapeHtml(item.question || item.input || '') + '</div>' +
+        '<div class="choices">' + options + '</div>' +
+        '<div class="row">' +
+          '<input class="other" data-other="' + id + '" placeholder="其他答案…"' + disabled + '>' +
+          '<button class="primary" data-approve="' + id + '" data-conversation="' + conversation + '" data-choice="other"' + disabled + '>提交</button>' +
+          '<button class="danger" data-deny="' + id + '" data-conversation="' + conversation + '"' + disabled + '>拒绝</button>' +
+        '</div></div>'
+    }
+    const reason = item.reason ? '<div class="note">原因：' + escapeHtml(item.reason) + '</div>' : ''
+    const justification = item.justification && (item.justification.purpose || item.justification.safety)
+      ? '<div class="note">用途：' + escapeHtml(item.justification.purpose || '—') + ' · 安全：' + escapeHtml(item.justification.safety || '—') + '</div>'
+      : ''
+    // 主机说这张卡可以在本对话内一直允许时，才显示范围勾选。
+    const scope = item.grants_conversation
+      ? '<label class="scope"><input type="checkbox" data-scope="' + id + '"' + disabled + '> 本对话内一直允许</label>'
+      : ''
+    return '<div class="approval"><h3>' + escapeHtml(item.tool_name || '工具调用') +
+      (item.dangerous ? '<span class="danger-tag">危险</span>' : '') + '</h3>' + meta + reason + justification +
+      (item.input ? '<div class="msg tool" style="margin-top:6px">' + escapeHtml(item.input) + '</div>' : '') +
+      scope +
+      '<div class="row">' +
+        '<button class="primary" data-approve="' + id + '" data-conversation="' + conversation + '"' + disabled + '>批准</button>' +
+        '<button class="danger" data-deny="' + id + '" data-conversation="' + conversation + '"' + disabled + '>拒绝</button>' +
+      '</div></div>'
+  }).join('')
+}
+
+function renderQueue() {
+  const container = $('queue')
+  if (!container) return
+  const current = conversations.find(item => item.id === selectedId)
+  const queue = (current && current.queue) || []
+  if (!queue.length) { container.innerHTML = ''; return }
+  // 与主界面同口径：引导在「工具还在跑」时只是等待加入，跑完才算已加入本轮。
+  const steering = queue.filter(item => item.queue === 'steering')
+  const followUp = queue.filter(item => item.queue === 'followUp')
+  const waiting = current.tool_running === true
+  const head = []
+  if (steering.length) {
+    head.push(waiting
+      ? '<span><span class="dot"></span>' + steering.length + ' 条引导等待加入：工具调用结束后加入对话</span>'
+      : '<span class="joined">✓ ' + steering.length + ' 条引导已加入本轮</span>')
+  }
+  if (followUp.length) head.push('<span>' + followUp.length + ' 条排队等待下一轮</span>')
+  container.innerHTML = '<div class="queue"><div class="queue-head">' + head.join('<span class="sep">·</span>') +
+    '<button class="link" id="clearQueue"' + (canControl ? '' : ' disabled') + '>全部清空</button></div>' +
+    queue.map(item =>
+      '<div class="queue-item"><span class="kind">' + (item.queue === 'steering' ? '引导' : '排队') + '</span>' +
+      '<span class="text">' + escapeHtml(item.text || '') + '</span>' +
+      '<button class="link" data-withdraw="' + escapeHtml(String(item.queue)) + ':' + item.index + '" data-expected="' + escapeHtml(item.text || '') + '"' + (canControl ? '' : ' disabled') + '>撤回</button></div>').join('') +
+    '</div>'
+  const clear = $('clearQueue')
+  if (clear) {
+    clear.onclick = () => {
+      if (!selectedId) return
+      void act('/api/action/queue/clear', { conversation_id: selectedId }, '清空排队')
+    }
+  }
+  container.querySelectorAll('[data-withdraw]').forEach(button => {
+    button.onclick = () => {
+      const parts = String(button.getAttribute('data-withdraw') || '').split(':')
+      if (!selectedId || parts.length !== 2) return
+      void act('/api/action/queue', {
+        conversation_id: selectedId,
+        queue: parts[0],
+        index: Number(parts[1]),
+        expected: button.getAttribute('data-expected') || '',
+      }, '撤回排队')
+    }
+  })
 }
 
 function renderMessages(currentMessages) {
@@ -452,10 +571,26 @@ $('approvals').addEventListener('click', event => {
   const approve = target.getAttribute('data-approve')
   const deny = target.getAttribute('data-deny')
   if (!approve && !deny) return
+  let choice = target.getAttribute('data-choice') || ''
+  let scope = ''
+  if (approve) {
+    const scopeBox = document.querySelector('input[data-scope="' + approve + '"]')
+    if (scopeBox instanceof HTMLInputElement && scopeBox.checked) scope = 'conversation'
+    if (choice === 'other') {
+      const box = document.querySelector('input[data-other="' + approve + '"]')
+      const text = box instanceof HTMLInputElement ? box.value.trim() : ''
+      if (!text) { $('actionError').textContent = '请先填写你的答案'; return }
+      choice = 'other:' + text
+    }
+  } else {
+    choice = ''
+  }
   void act('/api/action/approve', {
     conversation_id: target.getAttribute('data-conversation'),
     request_id: approve || deny,
     approved: Boolean(approve),
+    scope,
+    choice,
   }, approve ? '批准' : '拒绝')
 })
 $('composer').addEventListener('submit', async event => {
@@ -486,7 +621,37 @@ void fetch('/api/mode').then(r => r.ok ? r.json() : null)
   .then(mode => { if (mode && mode.local_only) $('passwordBlock').classList.remove('hidden') })
   .catch(() => {})
 void refreshAll()
-setInterval(() => { if (!$('app').classList.contains('hidden')) void refreshAll() }, 5000)
+
+// 主机在有变化时推一次；页面不再靠固定轮询。30 秒的慢轮询只做兜底，断线或事件丢失时
+// 仍能自愈。推送密集时合并刷新，避免一次风暴把状态接口打十遍。
+let refreshing = false
+let refreshQueued = false
+async function refreshSoon() {
+  if (refreshing) { refreshQueued = true; return }
+  refreshing = true
+  try {
+    await refreshAll()
+  } finally {
+    refreshing = false
+    if (refreshQueued) { refreshQueued = false; void refreshSoon() }
+  }
+}
+
+setInterval(() => { if (!$('app').classList.contains('hidden')) void refreshAll() }, 30000)
+
+function watchHostChanges() {
+  if (!window.EventSource) return
+  const source = new EventSource('/api/events')
+  source.addEventListener('changed', () => { void refreshSoon() })
+  source.addEventListener('error', () => {
+    // EventSource 自己会重连；慢轮询在这期间继续兜底。
+  })
+}
+
+watchHostChanges()
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) void refreshSoon()
+})
 </script>
 </body>
 </html>

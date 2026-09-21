@@ -76,19 +76,27 @@ func (bridge remoteControlBridge) RemoteApproveTool(
 	conversationID,
 	requestID string,
 	approved bool,
+	scope,
+	choice string,
 ) error {
 	conversationID = strings.TrimSpace(conversationID)
 	requestID = strings.TrimSpace(requestID)
 	if conversationID == "" || requestID == "" {
 		return errors.New("缺少对话或请求标识")
 	}
-	if approved && !bridge.app.dangerousToolsAllowed() {
+	scope = strings.TrimSpace(scope)
+	if scope != "" && scope != "conversation" {
+		return fmt.Errorf("不支持的授权范围：%s", scope)
+	}
+	// An ask card is not a dangerous tool: answering it is how the reader moves the agent on.
+	ask := strings.TrimSpace(bridge.app.pendingApprovalTool(requestID)) == remoteAskToolName
+	if approved && !ask && !bridge.app.dangerousToolsAllowed() {
 		tool := bridge.app.pendingApprovalTool(requestID)
 		if remoteToolIsDangerous(tool) {
 			return fmt.Errorf("主机已关闭「允许远端执行危险操作」：%s 只能在本机批准（可从远端拒绝）", tool)
 		}
 	}
-	return bridge.app.RespondToolApproval(conversationID, requestID, approved, "", "")
+	return bridge.app.RespondToolApproval(conversationID, requestID, approved, scope, strings.TrimSpace(choice))
 }
 
 // RemoteSelectModel switches the active provider and model. Credentials are unchanged, so
@@ -263,7 +271,7 @@ func (a *App) remotePolicyOptions() []remotecontrol.PolicyOption {
 // The conversation's own workspace, model and approval policy are reused, so a remote
 // device cannot silently escalate what the agent may run: with the host switch off,
 // bash/edit/write still wait for approval on this machine.
-func (bridge remoteControlBridge) RemoteSendMessage(_ context.Context, conversationID, prompt string) error {
+func (bridge remoteControlBridge) RemoteSendMessage(_ context.Context, conversationID, prompt, mode string) error {
 	conversationID = strings.TrimSpace(conversationID)
 	trimmed := strings.TrimSpace(prompt)
 	if conversationID == "" || trimmed == "" {
@@ -272,6 +280,14 @@ func (bridge remoteControlBridge) RemoteSendMessage(_ context.Context, conversat
 	stored, err := bridge.app.conversations.Get(conversationID)
 	if err != nil {
 		return fmt.Errorf("找不到对话：%w", err)
+	}
+	// The desktop composer has three choices for a busy conversation; mirror them so a phone
+	// can park a prompt instead of cutting into the running turn.
+	switch strings.TrimSpace(mode) {
+	case "queue":
+		return bridge.app.QueueDshMessage(conversationID, trimmed)
+	case "steer":
+		return bridge.app.SteerMessage(conversationID, trimmed)
 	}
 	err = bridge.app.SendMessage(
 		conversationID,
@@ -297,4 +313,30 @@ func (bridge remoteControlBridge) RemoteSendMessage(_ context.Context, conversat
 	// the reply itself.
 	bridge.app.recordRemoteTurnStart(conversationID, trimmed)
 	return nil
+}
+
+// RemoteWithdrawQueued drops one parked prompt. The position and the text the page saw are
+// both checked, so a queue that moved meanwhile is refused instead of dropping a neighbour.
+func (bridge remoteControlBridge) RemoteWithdrawQueued(_ context.Context, conversationID, queue string, index int, expected string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	queue = strings.TrimSpace(queue)
+	if conversationID == "" {
+		return errors.New("缺少对话标识")
+	}
+	if queue != "steering" && queue != "followUp" {
+		return fmt.Errorf("不支持的队列：%s", queue)
+	}
+	if index < 0 {
+		return errors.New("队列位置不正确")
+	}
+	return bridge.app.RemoveQueuedMessage(conversationID, queue, index, expected)
+}
+
+// RemoteClearQueued drops every parked prompt of one conversation.
+func (bridge remoteControlBridge) RemoteClearQueued(_ context.Context, conversationID string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return errors.New("缺少对话标识")
+	}
+	return bridge.app.ClearQueuedMessages(conversationID)
 }

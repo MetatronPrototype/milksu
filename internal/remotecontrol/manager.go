@@ -156,6 +156,18 @@ type Message struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
 	At   string `json:"at"`
+	// Approval marks the message that is waiting on the reader, so the page can jump to it.
+	ApprovalRequestID string `json:"approval_request_id,omitempty"`
+	ApprovalState     string `json:"approval_state,omitempty"`
+	// Kind is "ask" for a question card, empty otherwise.
+	Kind string `json:"kind,omitempty"`
+}
+
+// QueuedMessage is one prompt parked behind a running turn.
+type QueuedMessage struct {
+	Queue string `json:"queue"`
+	Index int    `json:"index"`
+	Text  string `json:"text"`
 }
 
 // Conversation is one conversation projection.
@@ -168,15 +180,49 @@ type Conversation struct {
 	Running         bool      `json:"running"`
 	BackgroundTasks []Task    `json:"background_tasks,omitempty"`
 	Messages        []Message `json:"messages,omitempty"`
+	// NeedsDecision reports a message in this conversation waiting on the reader (a tool
+	// approval or an ask question). The host's sidebar uses the same rule.
+	NeedsDecision bool `json:"needs_decision,omitempty"`
+	// PendingRequestIDs are the requests waiting in this conversation.
+	PendingRequestIDs []string `json:"pending_request_ids,omitempty"`
+	// Queue holds the prompts parked behind the running turn, in order.
+	Queue []QueuedMessage `json:"queue,omitempty"`
+	// ToolRunning reports whether a tool call is still running. The host uses the same signal
+	// to decide whether injected guidance is still waiting to join the turn.
+	ToolRunning bool `json:"tool_running,omitempty"`
 }
 
-// Approval is one permission prompt waiting for the user.
+// ApprovalOption is one choice on an ask card.
+type ApprovalOption struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// ApprovalJustification is the requester's own purpose/safety note, mirroring the host card.
+type ApprovalJustification struct {
+	Purpose string `json:"purpose,omitempty"`
+	Safety  string `json:"safety,omitempty"`
+}
+
+// Approval is one prompt waiting for the user. A prompt is either a tool approval or an ask
+// question (milksu_ask) with choices; the page renders them differently but both are
+// answered through the same action.
 type Approval struct {
-	RequestID      string `json:"request_id"`
-	ConversationID string `json:"conversation_id"`
-	ToolName       string `json:"tool_name"`
-	Input          string `json:"input,omitempty"`
-	RequestedAt    string `json:"requested_at"`
+	RequestID      string                 `json:"request_id"`
+	ConversationID string                 `json:"conversation_id"`
+	ToolName       string                 `json:"tool_name"`
+	Input          string                 `json:"input,omitempty"`
+	RequestedAt    string                 `json:"requested_at"`
+	Kind           string                 `json:"kind,omitempty"`
+	Question       string                 `json:"question,omitempty"`
+	Options        []ApprovalOption       `json:"options,omitempty"`
+	Reason         string                 `json:"reason,omitempty"`
+	Justification  *ApprovalJustification `json:"justification,omitempty"`
+	// GrantsConversation reports whether the host offers "allow for this conversation".
+	GrantsConversation bool `json:"grants_conversation,omitempty"`
+	// Dangerous marks a tool the host may restrict to local approval.
+	Dangerous bool `json:"dangerous,omitempty"`
 }
 
 // ModelOption is one model a remote device may switch to.
@@ -225,10 +271,20 @@ type Provider interface {
 // Controller performs the actions a control-capable device may request. Every method is
 // also recorded in the audit trail by the manager.
 type Controller interface {
-	RemoteApproveTool(ctx context.Context, conversationID, requestID string, approved bool) error
+	// RemoteApproveTool answers a waiting prompt. scope may be "conversation" to grant the
+	// same tool for the rest of the conversation; choice answers an ask card (an option id,
+	// or "other:<text>" for free text).
+	RemoteApproveTool(ctx context.Context, conversationID, requestID string, approved bool, scope, choice string) error
 	// RemoteSendMessage submits a prompt to a conversation, exactly like typing it in
-	// the desktop app. The agent's approval policy still decides what may run.
-	RemoteSendMessage(ctx context.Context, conversationID, prompt string) error
+	// the desktop app. mode is "" to send it, "queue" to park it behind the running turn,
+	// or "steer" to guide the running turn. The agent's approval policy still decides what
+	// may run.
+	RemoteSendMessage(ctx context.Context, conversationID, prompt, mode string) error
+	// RemoteWithdrawQueued removes one parked prompt: queue is "steering" or "followUp",
+	// index is its position and expected is the text the page saw.
+	RemoteWithdrawQueued(ctx context.Context, conversationID, queue string, index int, expected string) error
+	// RemoteClearQueued drops every parked prompt of one conversation.
+	RemoteClearQueued(ctx context.Context, conversationID string) error
 	RemoteSelectModel(ctx context.Context, provider, model string) error
 	RemoteSelectApprovalPolicy(ctx context.Context, conversationID, policy string) error
 	RemoteCreateConversation(ctx context.Context, title, workspacePath string) (string, error)
@@ -274,6 +330,11 @@ type Manager struct {
 	port          int
 	lastError     string
 	loginFailures map[string][]time.Time
+
+	// subMu guards the change listeners. Each subscriber keeps at most one pending ping,
+	// because a ping only tells the page to re-read the whole projection.
+	subMu       sync.Mutex
+	subscribers map[chan struct{}]struct{}
 }
 
 type deviceRecord struct {
@@ -523,6 +584,78 @@ func (m *Manager) Close() error {
 	return nil
 }
 
+// Subscribe returns a channel that pings whenever something the page shows may have changed,
+// plus the cancel function the caller must run when it stops listening.
+func (m *Manager) Subscribe() (<-chan struct{}, func()) {
+	changes := make(chan struct{}, 1)
+	m.subMu.Lock()
+	if m.subscribers == nil {
+		m.subscribers = make(map[chan struct{}]struct{})
+	}
+	m.subscribers[changes] = struct{}{}
+	m.subMu.Unlock()
+	cancel := func() {
+		m.subMu.Lock()
+		delete(m.subscribers, changes)
+		m.subMu.Unlock()
+	}
+	return changes, cancel
+}
+
+// NotifyChange wakes every listener. It never blocks: a listener that is already behind keeps
+// a single pending ping, which is enough because the page re-reads the whole state.
+func (m *Manager) NotifyChange() {
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	for changes := range m.subscribers {
+		select {
+		case changes <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// handleEvents streams a ping whenever the projection changes, so the page stops polling on a
+// fixed timer. The stream carries no state on purpose: the page re-reads /api/state, which
+// keeps one source of truth and one authorisation path.
+func (m *Manager) handleEvents(writer http.ResponseWriter, request *http.Request) {
+	if _, auth := m.deviceForRequest(request); !auth.OK {
+		writeAuthFailure(writer, auth)
+		return
+	}
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		http.Error(writer, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	writer.Header().Set("Connection", "keep-alive")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte(": connected\n\n"))
+	flusher.Flush()
+
+	changes, cancel := m.Subscribe()
+	defer cancel()
+	keepalive := time.NewTicker(20 * time.Second)
+	defer keepalive.Stop()
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case <-keepalive.C:
+			if _, err := writer.Write([]byte(": keepalive\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-changes:
+			if _, err := writer.Write([]byte("event: changed\ndata: {}\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
 // Status reports the current listener, URL, pairing code and devices.
 func (m *Manager) Status() Status {
 	m.mu.Lock()
@@ -731,6 +864,7 @@ func (m *Manager) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", m.handlePage)
 	mux.HandleFunc("/api/state", m.handleState)
+	mux.HandleFunc("/api/events", m.handleEvents)
 	mux.HandleFunc("/api/mode", m.handleMode)
 	mux.HandleFunc("/api/audit", m.handleAudit)
 	mux.HandleFunc("/api/conversation", m.handleConversation)
@@ -739,6 +873,8 @@ func (m *Manager) routes() http.Handler {
 	mux.HandleFunc("/api/login", m.handleLogin)
 	mux.HandleFunc("/api/logout", m.handleLogout)
 	mux.HandleFunc("/api/action/approve", m.handleApprove)
+	mux.HandleFunc("/api/action/queue", m.handleWithdrawQueued)
+	mux.HandleFunc("/api/action/queue/clear", m.handleClearQueued)
 	mux.HandleFunc("/api/action/model", m.handleSelectModel)
 	mux.HandleFunc("/api/action/policy", m.handleSelectPolicy)
 	mux.HandleFunc("/api/action/conversation", m.handleCreateConversation)
@@ -1071,6 +1207,9 @@ func (m *Manager) handleSend(writer http.ResponseWriter, request *http.Request) 
 	var payload struct {
 		ConversationID string `json:"conversation_id"`
 		Prompt         string `json:"prompt"`
+		// Mode is "" to send the prompt, "queue" to park it behind the running turn, or
+		// "steer" to guide the running turn (the same three choices the desktop composer has).
+		Mode string `json:"mode"`
 	}
 	m.writeAction(writer, request, "send", func(ctx context.Context, _ Device) (string, error) {
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 64<<10)).Decode(&payload); err != nil {
@@ -1083,14 +1222,27 @@ func (m *Manager) handleSend(writer http.ResponseWriter, request *http.Request) 
 		if len([]rune(prompt)) > maxRemotePromptRunes {
 			return "", fmt.Errorf("消息过长（上限 %d 字）", maxRemotePromptRunes)
 		}
+		mode := strings.TrimSpace(payload.Mode)
+		switch mode {
+		case "", "queue", "steer":
+		default:
+			return "", fmt.Errorf("不支持的发送方式：%s", mode)
+		}
 		conversationID := strings.TrimSpace(payload.ConversationID)
 		if conversationID == "" {
 			return "", errors.New("缺少对话标识")
 		}
-		if err := m.controller.RemoteSendMessage(ctx, conversationID, prompt); err != nil {
+		if err := m.controller.RemoteSendMessage(ctx, conversationID, prompt, mode); err != nil {
 			return "", err
 		}
-		return "发送到 " + conversationID, nil
+		switch mode {
+		case "queue":
+			return "排队到 " + conversationID, nil
+		case "steer":
+			return "引导 " + conversationID, nil
+		default:
+			return "发送到 " + conversationID, nil
+		}
 	})
 }
 
@@ -1136,6 +1288,8 @@ func (m *Manager) writeAction(
 		Action: action, Detail: detail, OK: err == nil, Error: errorText(err),
 	})
 	m.mu.Unlock()
+	// Another device may be watching: wake it, whatever the outcome was.
+	m.NotifyChange()
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return
@@ -1171,19 +1325,77 @@ func (m *Manager) handleApprove(writer http.ResponseWriter, request *http.Reques
 		ConversationID string `json:"conversation_id"`
 		RequestID      string `json:"request_id"`
 		Approved       bool   `json:"approved"`
+		// Scope is "conversation" to allow the same tool for the rest of the conversation.
+		Scope string `json:"scope"`
+		// Choice answers an ask card: an option id, or "other:<text>" for free text.
+		Choice string `json:"choice"`
 	}
 	m.writeAction(writer, request, "approve", func(ctx context.Context, _ Device) (string, error) {
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10)).Decode(&payload); err != nil {
 			return "", errors.New("请求格式不正确")
 		}
-		if err := m.controller.RemoteApproveTool(ctx, payload.ConversationID, payload.RequestID, payload.Approved); err != nil {
+		scope := strings.TrimSpace(payload.Scope)
+		if scope != "" && scope != "conversation" {
+			return "", fmt.Errorf("不支持的授权范围：%s", scope)
+		}
+		choice := strings.TrimSpace(payload.Choice)
+		if err := m.controller.RemoteApproveTool(ctx, payload.ConversationID, payload.RequestID, payload.Approved, scope, choice); err != nil {
 			return "", err
 		}
 		verdict := "拒绝"
 		if payload.Approved {
 			verdict = "批准"
 		}
+		if scope == "conversation" {
+			verdict += "（本对话内）"
+		}
+		if choice != "" {
+			verdict += " 选择 " + choice
+		}
 		return verdict + " " + payload.RequestID, nil
+	})
+}
+
+// handleWithdrawQueued removes one parked prompt. The page sends back the position and the
+// text it saw, so a queue that moved meanwhile is refused instead of dropping a neighbour.
+func (m *Manager) handleWithdrawQueued(writer http.ResponseWriter, request *http.Request) {
+	var payload struct {
+		ConversationID string `json:"conversation_id"`
+		Queue          string `json:"queue"`
+		Index          int    `json:"index"`
+		Expected       string `json:"expected"`
+	}
+	m.writeAction(writer, request, "queue-withdraw", func(ctx context.Context, _ Device) (string, error) {
+		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10)).Decode(&payload); err != nil {
+			return "", errors.New("请求格式不正确")
+		}
+		if err := m.controller.RemoteWithdrawQueued(
+			ctx,
+			strings.TrimSpace(payload.ConversationID),
+			strings.TrimSpace(payload.Queue),
+			payload.Index,
+			payload.Expected,
+		); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("撤回排队 #%d", payload.Index), nil
+	})
+}
+
+// handleClearQueued drops every parked prompt of one conversation.
+func (m *Manager) handleClearQueued(writer http.ResponseWriter, request *http.Request) {
+	var payload struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	m.writeAction(writer, request, "queue-clear", func(ctx context.Context, _ Device) (string, error) {
+		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10)).Decode(&payload); err != nil {
+			return "", errors.New("请求格式不正确")
+		}
+		conversationID := strings.TrimSpace(payload.ConversationID)
+		if err := m.controller.RemoteClearQueued(ctx, conversationID); err != nil {
+			return "", err
+		}
+		return "清空排队 " + conversationID, nil
 	})
 }
 
