@@ -78,17 +78,19 @@ describe('needs-decision mark appearance', () => {
   // 用户真机反馈"怎么没有黄色"：颜色曾写在组件的 bg-amber-500 上，而 Tailwind 工具类在 @layer utilities 里，
   // 原版 `.agent-pixel__cell { background: var(--foreground) }` 是**未分层**的 ⇒ 未分层优先于任何 @layer ⇒ 被盖成白/灰。
   // 所以背景必须写进**未分层的修饰规则**（两个类，稳定压过原版那条）。
+  // 用户看过 beta.62 后："可以换个亮一点的黄色" ⇒ amber-500 → amber-400（同一主题族，更亮一档）。
   it('paints the decision cells amber from the modifier rule, not from a layered utility', () => {
     const decision = ruleBody('.agent-pixel--decision .agent-pixel__cell {')
-    expect(decision).toContain('background: var(--color-amber-500)')
+    expect(decision).toContain('background: var(--color-amber-400)')
     // 组件上不许再挂 bg-amber-500 这种会被层级盖掉的工具类（避免两个真相来源）。
     const { container } = render(<AgentDecisionMark />)
     for (const cell of container.querySelectorAll('.agent-pixel__cell')) {
       expect(cell.className).not.toMatch(/bg-amber-500/)
     }
-    // 色值必须是主题变量（Tailwind 在构建产物里定义 --color-amber-500），不是自造字面色值。
+    // 色值必须是主题变量（Tailwind 在构建产物里定义 --color-amber-400 ⇒ 已核实 oklch(82.8% .189 84.429)），
+    // 不是自造字面色值。
     const background = decision.match(/background:\s*([^;]+);/)?.[1]?.trim() ?? ''
-    expect(background).toBe('var(--color-amber-500)')
+    expect(background).toBe('var(--color-amber-400)')
     expect(background).not.toMatch(/#[0-9a-f]{3,8}|oklch\(|rgb\(/i)
   })
 
