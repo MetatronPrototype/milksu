@@ -69,6 +69,7 @@ import ChatActivityGroup from '@/components/ChatActivityGroup'
 import ChatProcessFold from '@/components/ChatProcessFold'
 import ChatComposer, { type ChatComposerHandle } from '@/components/ChatComposer'
 import AgentBackgroundTaskMark from '@/components/AgentBackgroundTaskMark'
+import AgentDecisionMark from '@/components/AgentDecisionMark'
 import { ConversationQuoteMenu, selectedTextIn } from '@/components/ConversationQuoteMenu'
 import WorkingTray from '@/components/WorkingTray'
 import ChatMessageItem from '@/components/ChatMessageItem'
@@ -2919,6 +2920,26 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             <span className="hidden" aria-hidden="true" />
           </WindowFileDrop>
 
+          {/* 对话里的"等待你拍板"：与侧栏"待决策"同一枚琥珀像素环 + 与后台任务同一条窄带样式。
+              请求先于其它状态：它要读者动手，不该被后面的任务指示遮住。 */}
+          {pendingApprovalMessage ? (
+            <div
+              className="chat-composer__approval-strip flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground"
+              data-testid="approval-waiting-strip"
+            >
+              <AgentDecisionMark />
+              <span>{t('等待你批准', 'Waiting for your approval')}{approvalSummary ? `：${approvalSummary}` : ''}</span>
+            </div>
+          ) : null}
+          {pendingAskMessage(conversation?.messages) ? (
+            <div
+              className="chat-composer__ask-strip flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground"
+              data-testid="ask-waiting-strip"
+            >
+              <AgentDecisionMark />
+              <span>{t('等待你选择', 'Waiting for your choice')}</span>
+            </div>
+          ) : null}
           {/* 对话里的"后台任务进行中"：同一枚蓝色九格标记、**不带详情**（读者要的是事实，不是清单）。
               放在输入框上方的窄带里 ⇒ 不打断阅读、也不挤掉消息流。 */}
           {(conversations.backgroundTasks?.[conversations.activeId ?? ''] ?? []).length > 0 ? (
