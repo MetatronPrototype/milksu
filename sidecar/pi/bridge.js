@@ -109,6 +109,10 @@ import {
 import { createCTFTruncationContinuationExtension } from "./bridge-ctf-continuation.js";
 import { createReasoningOnlyRecoveryExtension } from "./bridge-reasoning-recovery.js";
 import {
+  createThinkingRepetitionGuard,
+  THINKING_REPEAT_NOTICE,
+} from "./bridge-thinking-repetition.js";
+import {
   armAutoCompactionDeadline,
   clearAutoCompactionDeadline,
   compactSession,
@@ -220,6 +224,8 @@ const sessions = new Map();
 const sessionPolicies = new Map();
 const sessionPolicyControllers = new Map();
 const backgroundTaskControllers = new Map();
+// 思考复读护栏（reasoning 内容，工具护栏管不到的那一层）。
+const thinkingRepetition = createThinkingRepetitionGuard();
 const promptQueues = new Map();
 const compactionRuns = new Map();
 const compactionRequestIds = new Map();
@@ -845,10 +851,14 @@ function createCodingPermissionExtension(
       if (protectedViolation) {
         const reason = `MilkSU blocked a write to a protected path (${protectedViolation.label}): `
           + protectedViolation.path;
+        // 载荷与别处的 guard.alarm 统一成对双语（前端按界面语言选一句）。
+        let englishNotice = protectedAlarmNotice(protectedViolation, "en");
+        if (!String(englishNotice ?? "").trim()) englishNotice = protectedAlarmNotice(protectedViolation, policy.uiLocale);
         emit(conversationId, "guard.alarm", {
           toolName: event.toolName,
           reason,
-          notice: protectedAlarmNotice(protectedViolation, policy.uiLocale),
+          notice: protectedAlarmNotice(protectedViolation, "zh"),
+          noticeEnglish: englishNotice,
         });
         abortedSessions.add(conversationId);
         return { block: true, terminate: true, reason };
@@ -1526,6 +1536,7 @@ function subscribeSession(
       const update = event.assistantMessageEvent;
       if (update.type === "thinking_start") {
         thinkingStreamed = true;
+        thinkingRepetition.reset(conversationId);
         if (!thinkingStartedAt.has(conversationId)) {
           thinkingStartedAt.set(conversationId, Date.now());
         }
@@ -1533,6 +1544,17 @@ function subscribeSession(
       } else if (update.type === "thinking_delta") {
         thinkingStreamed = true;
         streamDeltas.queue("thinking_delta", conversationId, update.delta);
+        // 思考复读：连续 N 行完全相同 ⇒ 告诉读者（可见、绝不静默）。事件名复用已有的 guard.alarm，
+        // 载荷与 attachment.held 同形状（成对双语），前端按界面语言选一句。
+        const repeat = thinkingRepetition.push(conversationId, update.delta);
+        if (repeat) {
+          emit(conversationId, "guard.alarm", {
+            toolName: "",
+            reason: `thinking repeated ${repeat.run} lines: ${repeat.line}`,
+            notice: THINKING_REPEAT_NOTICE.notice,
+            noticeEnglish: THINKING_REPEAT_NOTICE.noticeEnglish,
+          });
+        }
       } else if (update.type === "thinking_end") {
         thinkingStreamed = true;
         const startedAt = thinkingStartedAt.get(conversationId);

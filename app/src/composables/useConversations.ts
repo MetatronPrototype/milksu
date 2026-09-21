@@ -3880,6 +3880,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         ))
         return
       }
+      if (type === 'guard.alarm') {
+        // 引擎的守卫示警（受保护路径被拦、思考陷入重复）。与 attachment.held 同一形状：引擎给中英两句，
+        // 这里按界面语言选一句 ⇒ 读者看得见（绝不静默吞掉）。
+        const payload = event.payload as unknown as { notice?: string; noticeEnglish?: string }
+        const chinese = String(payload?.notice ?? '').trim()
+        const english = String(payload?.noticeEnglish ?? '').trim()
+        if (chinese || english) pushEngineNotice(t(chinese || english, english || chinese))
+        return
+      }
       if (type === 'attachment.held') {
         // 有一张附件没有发出去（例如图片超过尺寸上限）。读者必须看到是哪一张、多大、为什么，
         // 否则他只会反复重试上传 —— 引擎已把中英两句都给了我们，这里按界面语言选一句。
