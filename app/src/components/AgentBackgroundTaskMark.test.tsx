@@ -16,10 +16,11 @@ describe('AgentBackgroundTaskMark', () => {
     expect(lit).toEqual([1, 2, 4, 6, 7])
   })
 
-  it('is blue and announces itself as a status, not a button', () => {
+  it('is blue on the lit cells only, and announces itself as a status', () => {
     const { container } = render(<AgentBackgroundTaskMark />)
-    expect(container.querySelector('.agent-pixel--bg-task.bg-blue-400')).toBeTruthy()
-    expect(container.querySelector('.agent-pixel__cell--bg-task')).toBeTruthy()
+    // 蓝色只跟着点亮的格子走：容器着色会让未点亮的格子（透明）也泛蓝 ✗（真机截图证实）。
+    expect(container.querySelector('.agent-pixel--bg-task')?.classList.contains('bg-blue-400')).toBe(false)
+    expect(container.querySelectorAll('.agent-pixel__cell--bg-task.bg-blue-400')).toHaveLength(5)
     expect(container.querySelector('[role="status"]')?.getAttribute('aria-label')).toBeTruthy()
     expect(container.querySelector('button')).toBeNull()
   })

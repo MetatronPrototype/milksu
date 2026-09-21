@@ -22,12 +22,13 @@ export default function AgentBackgroundTaskMark({ label }: { label?: string }) {
   const text = label ?? t('后台任务进行中', 'Background task running')
   return (
     <span className="agent-bg-task-mark inline-flex items-center" role="status" aria-label={text}>
-      {/* 工具类 `bg-blue-400` 只用来让 Tailwind 把主题变量发射出来；真正的底色写在下面
-          未分层的 `.agent-pixel--bg-task .agent-pixel__cell` 里（否则会被原版规则盖掉）。 */}
-      <span className="agent-pixel agent-pixel--bg-task bg-blue-400" aria-hidden="true">
+      {/* 蓝色工具类放在**点亮的格子**上：它只用来让 Tailwind 把主题变量发射出来，真正的底色
+          写在下面未分层的 `.agent-pixel--bg-task .agent-pixel__cell` 里（否则会被原版规则盖掉）。
+          ⚠️ 不能放在网格容器上 —— 未点亮的格子是**透明**的，容器着色会让那四格也泛蓝 ✗（真机截图证实）。 */}
+      <span className="agent-pixel agent-pixel--bg-task" aria-hidden="true">
         {Array.from({ length: BACKGROUND_TASK_SLOTS }, (_slot, index) =>
           BACKGROUND_TASK_PATH.includes(index)
-            ? <span key={index} className="agent-pixel__cell agent-pixel__cell--bg-task" />
+            ? <span key={index} className="agent-pixel__cell agent-pixel__cell--bg-task bg-blue-400" />
             : <span key={index} className="agent-pixel__cell--hole" />,
         )}
       </span>
