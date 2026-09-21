@@ -1834,6 +1834,7 @@ export default function App() {
                 compactedAt={conv.compactedAt}
                 compactionError={conv.compactionError}
                 turnStatus={conv.turnStatus}
+                backgroundTaskRunning={(conversations.backgroundTasks?.[conv.active?.id ?? ''] ?? []).length > 0}
                 ctfSession={activeCTFConversation}
                 vulnerabilitySession={activeVulnerabilityCodingConversation}
                 ctfMode={conv.active?.ctfMode}

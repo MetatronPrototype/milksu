@@ -245,6 +245,9 @@ export type ChatPageProps = {
   compactedAt?: number
   compactionError?: string
   turnStatus?: SessionTurnSnapshot
+  /** 后台任务**是否有在跑的**（事实层，由持有 runtime 的那一层经 props 传进来 —— 与 `running` 同一条路线）。
+      不要在这里调 `useConversations()` 工厂：那会拿到**另一份新 store**，事实永远是空的 ✗（真机教训 ✓）。 */
+  backgroundTaskRunning?: boolean
   ctfSession: boolean
   vulnerabilitySession?: boolean
   ctfMode?: 'coach' | 'copilot' | 'delegate'
@@ -332,6 +335,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   compactedAt,
   compactionError,
   turnStatus,
+  backgroundTaskRunning,
   ctfSession,
   vulnerabilitySession,
   ctfMode,
@@ -2942,7 +2946,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
           ) : null}
           {/* 对话里的"后台任务进行中"：同一枚蓝色九格标记、**不带详情**（读者要的是事实，不是清单）。
               放在输入框上方的窄带里 ⇒ 不打断阅读、也不挤掉消息流。 */}
-          {(conversations.backgroundTasks?.[conversations.activeId ?? ''] ?? []).length > 0 ? (
+          {backgroundTaskRunning ? (
             <div
               className="chat-composer__background-strip flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground"
               data-testid="background-task-strip"
