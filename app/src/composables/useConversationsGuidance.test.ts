@@ -211,3 +211,59 @@ describe('guidance already sent directly', () => {
     expect(messages.filter(item => item.role === 'user' && item.content === '旧话')).toHaveLength(2)
   })
 })
+
+// 直发闸门（产品口径）：只有"真的在正常跑"才允许直接插进正在跑的回合；
+// 被停过 / 上一轮没正常结束 / 界面显示结束但实际仍在跑 ⇒ 不许直发 ⇒ 进排程 + 明确提示。
+describe('direct send gate', () => {
+  async function runningRuntime() {
+    const { conversations } = await loadRuntime()
+    conversations.store.setState({ runningIds: new Set(['conversation-1']) })
+    return conversations
+  }
+
+  // ① 正常在跑 ⇒ 仍然直发（回归保护：不许把好路径也拦住）。
+  it('still sends directly while the turn is genuinely running', async () => {
+    const conversations = await runningRuntime()
+    conversations.store.setState({
+      interruptedQueueIds: new Set(),
+      stalledQueueIds: new Set(),
+      hardStopFailedIds: new Set(),
+      turnStatusById: new Map(),
+    })
+    await conversations.send('正常跟进')
+    // 今天的设计就是"在跑 ⇒ 排进这一轮"；正常路径必须**保持**这个行为，且**不出现**闸门提示。
+    expect(queueOf(conversations)).toEqual(['正常跟进'])
+    expect(conversations.store.getState().engineNotice ?? '').not.toMatch(/没有直接发出/)
+  })
+
+  // ② 手动停止过 ⇒ 不直发、进排程、有提示。
+  it('queues instead of sending directly after the reader stopped the turn', async () => {
+    const conversations = await runningRuntime()
+    conversations.store.setState({ interruptedQueueIds: new Set(['conversation-1']) })
+    await conversations.send('停过之后发的')
+    expect(queueOf(conversations)).toContain('停过之后发的')
+    expect(conversations.store.getState().engineNotice ?? '').toMatch(/没有直接发出/)
+  })
+
+  // ③ 上一轮没正常结束 ⇒ 不直发、进排程、有提示。
+  it('queues instead of sending directly when the previous turn ended abnormally', async () => {
+    const conversations = await runningRuntime()
+    conversations.store.setState({ stalledQueueIds: new Set(['conversation-1']) })
+    await conversations.send('异常之后发的')
+    expect(queueOf(conversations)).toContain('异常之后发的')
+    expect(conversations.store.getState().engineNotice ?? '').toMatch(/没有正常结束/)
+  })
+
+  // ④ 界面显示已结束、后台仍在跑（最危险）⇒ 不直发、进排程、有提示。
+  it('queues instead of sending directly when the interface says finished but the turn still runs', async () => {
+    const { conversations } = await loadRuntime()
+    conversations.store.setState({
+      runningIds: new Set(),
+      turnStatusById: new Map([['conversation-1', { compacting: false, runStartedAt: Date.now() }]]),
+    })
+    await conversations.send('假结束之后发的')
+    expect(queueOf(conversations)).toContain('假结束之后发的')
+    expect(conversations.store.getState().engineNotice ?? '').toMatch(/状态还不确定/)
+    // ⑤ 不直发≠丢弃：这条文本确实进了排程。
+  })
+})

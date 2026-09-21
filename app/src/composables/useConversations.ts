@@ -1,4 +1,5 @@
 import { createStore, nextTick } from '@/lib/reactStore'
+import { directSendDecision } from '@/lib/directSendGate'
 import {
   type InjectedGuidanceEntry,
   injectedGuidanceTexts,
@@ -2806,10 +2807,39 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     const activeConversation = s.conversations.find(item => item.id === runningConversationId)
     const pendingAsk = pendingAskMessage(activeConversation?.messages)
     const answeringAsk = Boolean(pendingAsk?.approvalRequestId)
+    // 直发闸门（产品口径 ✓）：只有"**真的**在正常跑"才允许把消息直接插进正在跑的回合；
+    // 被读者停过 / 上一轮没正常结束 / 界面显示已结束而实际仍在跑 ⇒ **不许直发** ✗ ⇒ 改走排队 + 明确提示 ✓。
+    // 注意 ✓：**空闲时（本来就没人在跑）的普通发送不受影响** ✗ —— 那种情况由铁定要走"开新回合"，
+    // 不是"直发进正在跑的回合"；只有 `reason` 非空的三种异常才强制排队 ✓。
+    const gate = directSendDecision({
+      running: Boolean(runningConversationId && s.runningIds.has(runningConversationId)),
+      stoppedByUser: Boolean(runningConversationId && s.interruptedQueueIds?.has?.(runningConversationId)),
+      abnormalEnd: Boolean(
+        runningConversationId
+        && (s.stalledQueueIds?.has?.(runningConversationId) || s.hardStopFailedIds?.has?.(runningConversationId)),
+      ),
+      // UI 与真实运行态不一致：界面没把它当在跑，但回合状态里还有"正在跑"的痕迹
+      // （`runStartedAt` 在回合开始时置位、**回合结束时清空** ⇒ 它还在就说明那一轮还没收尾 ✓）。
+      uiBehindBackground: Boolean(
+        runningConversationId
+        && !s.runningIds.has(runningConversationId)
+        && s.turnStatusById?.get?.(runningConversationId)?.runStartedAt !== undefined,
+      ),
+    })
+    const mustQueue = !gate.allow && gate.reason !== null
+    if (mustQueue) {
+      // 必须让读者知情（双语 ✓，复用现成通道 ✓）：说明"没有直接发出、已进入排程"以及原因。
+      const reason = gate.reason
+      pushEngineNotice(reason === 'stopped-by-user'
+        ? t('上一轮是被你手动停止的，所以这条没有直接发出，已进入排程。', 'You stopped the previous turn, so this message was not sent directly; it is queued instead.')
+        : reason === 'abnormal-end'
+          ? t('上一轮没有正常结束，所以这条没有直接发出，已进入排程。', 'The previous turn did not end cleanly, so this message was not sent directly; it is queued instead.')
+          : t('这个回合的状态还不确定（界面显示已结束，但它可能仍在跑），所以这条没有直接发出，已进入排程。', 'This turn is in an uncertain state - it may still be running - so this message was not sent directly; it is queued instead.'))
+    }
     const steering = Boolean(
       runningConversationId
-      && s.runningIds.has(runningConversationId)
-      && !answeringAsk,
+      && !answeringAsk
+      && (s.runningIds.has(runningConversationId) || mustQueue),
     )
     const activeKernel = normalizeAgentKernel(
       activeConversation?.kernel ?? s.pendingKernel,
