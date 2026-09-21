@@ -31,6 +31,8 @@ export interface DestructiveFacts {
   /** Measured by the backend: files and bytes under the target. */
   fileCount?: number
   totalBytes?: number
+  /** 删除**将释放**的空间（块占用口径）。-1/缺失 ⇒ 拿不到 ⇒ 回退到 totalBytes 并改口径用词。 */
+  diskBytes?: number
   /** Sampled means the backend stopped early; the numbers are a lower bound. */
   sampled?: boolean
   /** Git facts: inside a repository and whether the target is tracked. */
@@ -593,8 +595,11 @@ export function assessDestructiveRequest(
   const size = facts.find(fact => typeof fact.totalBytes === 'number' && typeof fact.fileCount === 'number')
   // 规模未知（统计被上限截停 = sampled）⇒ 读者看到的是**下限**，绝不足以说"低"。
   const sizeUnknown = Boolean(size?.sampled)
+  // 口径：读者关心"删掉能释放多少" ⇒ 阈值也按**磁盘占用**判（拿不到才退内容大小）。
+  const diskKnown = typeof size?.diskBytes === 'number' && (size?.diskBytes ?? -1) >= 0
+  const freedBytes = diskKnown ? (size?.diskBytes ?? 0) : (size?.totalBytes ?? 0)
   const sizeLarge = Boolean(size
-    && ((size.totalBytes ?? 0) > DESTRUCTIVE_SIZE_MEDIUM_BYTES
+    && (freedBytes > DESTRUCTIVE_SIZE_MEDIUM_BYTES
       || (size.fileCount ?? 0) > DESTRUCTIVE_SIZE_MEDIUM_FILES))
 
   let risk: DestructiveAssessment['risk'] = 'low'
@@ -613,12 +618,14 @@ export function assessDestructiveRequest(
   else parts.push('目标明确，未触及用户数据')
 
   if (size) {
+    // 主口径 = **删除将释放的空间**（磁盘占用 = du 口径）。拿不到块数时**改说"内容大小"**，
+    // 绝不把回退值冒称"将释放"。采样时保留下限语义（至少/≥/未扫完）。
+    const measure = diskKnown ? '将释放' : '内容大小'
+    const files = `${size.fileCount ?? 0} 个文件`
     if (size.sampled) {
-      // 统计被上限截停 ⇒ 这是**下限**，不是总量：必须说清"至少/未扫完"，并且下限要取整，
-      // 否则 "731.3 MB" 这种精确到小数点的下限反而更像真值。
-      parts.push(`至少 ${size.fileCount ?? 0} 个文件 / ≥ ${formatBytesFloor(size.totalBytes ?? 0)}（未扫完）`)
+      parts.push(`${measure} ≥ ${formatBytesFloor(freedBytes)}（至少 ${files}，未扫完）`)
     } else {
-      parts.push(`${size.fileCount ?? 0} 个文件 / ${formatBytes(size.totalBytes ?? 0)}`)
+      parts.push(`${measure} ${formatBytes(freedBytes)}（${files}）`)
     }
   }
 

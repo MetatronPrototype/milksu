@@ -29,7 +29,7 @@ describe('destructive card size honesty', () => {
     expect(a.verdict).toContain('≥ 730 MB')
     expect(a.verdict).not.toContain('731.3')
     // 精确到整串：下限形态必须完整成立（不能只是"碰巧含 ≥"）。
-    expect(a.verdict).toContain('至少 20000 个文件 / ≥ 730 MB（未扫完）')
+    expect(a.verdict).toContain('内容大小 ≥ 730 MB（至少 20000 个文件，未扫完）')
     // 旧写法（把样本当总量直说）必须消失。
     expect(a.verdict).not.toContain('731.3 MB')
   })
@@ -42,7 +42,7 @@ describe('destructive card size honesty', () => {
     expect(a.verdict).toContain('至少 1 个文件')
     expect(a.verdict).toContain('≥ 1 MB')
     expect(a.verdict).toContain('未扫完')
-    expect(a.verdict).toContain('至少 1 个文件 / ≥ 1 MB（未扫完）')
+    expect(a.verdict).toContain('内容大小 ≥ 1 MB（至少 1 个文件，未扫完）')
   })
 
   // ③ 规模未知 ⇒ 不许说"低"；规模庞大（> 1 GB 或 > 10000 文件）⇒ 也不许说"低"。
