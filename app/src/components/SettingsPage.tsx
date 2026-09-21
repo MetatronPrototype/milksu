@@ -345,6 +345,24 @@ export default function SettingsPage({
   const buildTrackingCopying = state.buildTrackingCopying
   const notice = state.notice
 
+  // 手机上常见的动作是「看一眼、点一下」：把这几个值放大成**可点击复制**的框。
+  // 复制能力沿用既有的 `store.copyRemoteValue`（不要再实现一份 ✗）；空值不渲染（未启动时不留空框 ✓）。
+  const remoteValueBox = (value: string | undefined, label: string, testId: string) => {
+    const text = String(value ?? '').trim()
+    if (!text) return null
+    return (
+      <button
+        type="button"
+        onClick={() => void store.copyRemoteValue(text, label)}
+        aria-label={t(`复制${label}`, `Copy ${label}`)}
+        data-testid={testId}
+        className="w-full break-all rounded-md border border-border bg-surface px-3 py-2 text-left text-lg font-semibold tracking-wide hover:border-primary"
+      >
+        {text}
+      </button>
+    )
+  }
+
   // 远端控制的派生值：危险操作开关读设置（缺省＝允许），绑定码提示文案与 Vue 版同口径。
   const remoteDangerousTools = working?.remote_control?.allow_dangerous_tools !== false
   const remotePairingTargetLabel = (() => {
@@ -1177,18 +1195,21 @@ export default function SettingsPage({
                       ? t(`本码有效期到 ${remoteCodeExpiryLabel(remoteStatus?.pairing_expires_at)}，过期后重新生成即可。`, `This code is valid until ${remoteCodeExpiryLabel(remoteStatus?.pairing_expires_at)}; generate a new one after that.`)
                       : ''].filter(Boolean).join(' ')}
                     trailing={(
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={!remoteStatus?.pairing_code}
-                          onClick={() => void store.copyRemoteValue(remoteStatus?.pairing_code, t('绑定码', 'pairing code'))}
-                        >
-                          <Copy className="size-4" />{t('复制绑定码', 'Copy code')}
-                        </Button>
-                        <Button variant="outline" size="sm" disabled={remoteBusy} onClick={() => void store.issueRemotePairingCode()}>
-                          {remoteStatus?.pairing_code ? t('重新生成', 'New code') : t('生成绑定码', 'New pairing code')}
-                        </Button>
+                      <div className="flex flex-col items-end gap-2">
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={!remoteStatus?.pairing_code}
+                            onClick={() => void store.copyRemoteValue(remoteStatus?.pairing_code, t('绑定码', 'pairing code'))}
+                          >
+                            <Copy className="size-4" />{t('复制绑定码', 'Copy code')}
+                          </Button>
+                          <Button variant="outline" size="sm" disabled={remoteBusy} onClick={() => void store.issueRemotePairingCode()}>
+                            {remoteStatus?.pairing_code ? t('重新生成', 'New code') : t('生成绑定码', 'New pairing code')}
+                          </Button>
+                        </div>
+                        {remoteValueBox(remoteStatus?.pairing_code, t('绑定码', 'pairing code'), 'remote-value-pairing')}
                       </div>
                     )}
                   />
@@ -1198,18 +1219,21 @@ export default function SettingsPage({
                       ? t(`手机浏览器打开这个地址就能进入：${remoteStatus.url}（只监听到局域网，离开这个网络就打不开）`, `Open this address in the phone's browser: ${remoteStatus.url} (LAN only — it stops working off this network)`)
                       : t('未启动：先打开上面的开关。', 'Not running yet — turn the switch above on.')}
                     trailing={(
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={!remoteStatus?.url}
-                          onClick={() => void store.copyRemoteValue(remoteStatus?.url, t('网址', 'address'))}
-                        >
-                          <Copy className="size-4" />{t('复制网址', 'Copy address')}
-                        </Button>
-                        <Button variant="outline" size="sm" disabled={remoteBusy} onClick={() => void store.rotateRemotePassword()}>
-                          {t('重新生成口令', 'New password')}
-                        </Button>
+                      <div className="flex flex-col items-end gap-2">
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={!remoteStatus?.url}
+                            onClick={() => void store.copyRemoteValue(remoteStatus?.url, t('网址', 'address'))}
+                          >
+                            <Copy className="size-4" />{t('复制网址', 'Copy address')}
+                          </Button>
+                          <Button variant="outline" size="sm" disabled={remoteBusy} onClick={() => void store.rotateRemotePassword()}>
+                            {t('重新生成口令', 'New password')}
+                          </Button>
+                        </div>
+                        {remoteValueBox(remoteStatus?.url, t('网址', 'address'), 'remote-value-address')}
                       </div>
                     )}
                   />
@@ -1217,6 +1241,7 @@ export default function SettingsPage({
                     <SettingsRow
                       label={t('本机口令', 'Host password')}
                       description={t(`仅「仅本机」模式可直接用它登录：${remoteStatus.password}`, `Local-only mode may log in with it: ${remoteStatus.password}`)}
+                      trailing={remoteValueBox(remoteStatus?.password, t('本机口令', 'host password'), 'remote-value-password')}
                       divider={false}
                     />
                   ) : null}

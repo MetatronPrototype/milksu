@@ -188,6 +188,23 @@ describe('SettingsPage remote control panel', () => {
     expect(written).toContain('http://192.168.0.126:58993')
   })
 
+  // 手机上的动作是「看一眼、点一下」：三个值都要有**放大且可点即复制**的框，
+  // 而且必须接在**既有**复制能力上（不是又实现一份 ✗）。
+  it('offers the pairing code, the address and the host password as tap-to-copy boxes', async () => {
+    await renderSettings(appFixture({
+      GetRemoteControlStatus: () => statusPayload({ password: 'LOCALPASS1' }),
+    }))
+    const writes = (navigator.clipboard.writeText as unknown as { mock: { calls: string[][] } }).mock.calls
+    const boxes = ['remote-value-pairing', 'remote-value-address', 'remote-value-password']
+      .map(id => document.querySelector<HTMLElement>(`[data-testid="${id}"]`))
+    expect(boxes.every(Boolean)).toBe(true)
+    for (const box of boxes) expect(box?.textContent ?? '').not.toBe('')
+
+    boxes[0]?.click()
+    await flush()
+    expect(writes.map(call => call[0])).toContain('AB12CD34EF')
+  })
+
   it('re-pairs the device it was asked for instead of enrolling a new one', async () => {
     await renderSettings()
     findButton('换网重配')?.click()
