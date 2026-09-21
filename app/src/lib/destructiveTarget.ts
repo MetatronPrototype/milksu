@@ -31,6 +31,8 @@ export interface DestructiveFacts {
   /** Measured by the backend: files and bytes under the target. */
   fileCount?: number
   totalBytes?: number
+  /** 删除**将释放**的空间（块占用口径）。-1/缺失 ⇒ 拿不到 ⇒ 回退到 totalBytes 并改口径用词。 */
+  diskBytes?: number
   /** Sampled means the backend stopped early; the numbers are a lower bound. */
   sampled?: boolean
   /** Git facts: inside a repository and whether the target is tracked. */
@@ -528,6 +530,12 @@ function createdPrefixes(command: string): string[] {
   return prefixes
 }
 
+// 破坏性目标的"规模大到需要提醒"的线（依据：Dev 裁决 —— "规模未知（被上限截停）"或"大但不是
+// 禁区（> 1 GB 或 > 10000 个文件）"都不允许再报"低"风险；只因为"大"不升到 high，删 5 GB 缓存是正常的。
+// 这两个数是可调的提醒线，不是安全边界：是否允许只看 canAllow。
+export const DESTRUCTIVE_SIZE_MEDIUM_BYTES = 1024 * 1024 * 1024
+export const DESTRUCTIVE_SIZE_MEDIUM_FILES = 10000
+
 export function assessDestructiveRequest(
   command: string,
   facts: DestructiveFacts[] = [],
@@ -584,10 +592,21 @@ export function assessDestructiveRequest(
 
   // Risk is informational: it no longer decides whether the reader may allow. Only an
   // unknown target or a protected path is refused outright.
+  const size = facts.find(fact => typeof fact.totalBytes === 'number' && typeof fact.fileCount === 'number')
+  // 规模未知（统计被上限截停 = sampled）⇒ 读者看到的是**下限**，绝不足以说"低"。
+  const sizeUnknown = Boolean(size?.sampled)
+  // 口径：读者关心"删掉能释放多少" ⇒ 阈值也按**磁盘占用**判（拿不到才退内容大小）。
+  const diskKnown = typeof size?.diskBytes === 'number' && (size?.diskBytes ?? -1) >= 0
+  const freedBytes = diskKnown ? (size?.diskBytes ?? 0) : (size?.totalBytes ?? 0)
+  const sizeLarge = Boolean(size
+    && (freedBytes > DESTRUCTIVE_SIZE_MEDIUM_BYTES
+      || (size.fileCount ?? 0) > DESTRUCTIVE_SIZE_MEDIUM_FILES))
+
   let risk: DestructiveAssessment['risk'] = 'low'
   if (protections.length || touchesUserDataFlag) risk = 'high'
   else if (untracked && !rebuildable) risk = 'medium'
   else if (undetermined || missing) risk = 'medium'
+  else if (sizeUnknown || sizeLarge) risk = 'medium'
 
   const parts: string[] = []
   if (protections.length) parts.push(`命中受保护清单（${protections.join('、')}）`)
@@ -598,9 +617,16 @@ export function assessDestructiveRequest(
   else if (rebuildable) parts.push('可重建，未触及用户数据')
   else parts.push('目标明确，未触及用户数据')
 
-  const size = facts.find(fact => typeof fact.totalBytes === 'number' && typeof fact.fileCount === 'number')
   if (size) {
-    parts.push(`${size.fileCount} 个文件 / ${formatBytes(size.totalBytes ?? 0)}${size.sampled ? '（仅采样）' : ''}`)
+    // 主口径 = **删除将释放的空间**（磁盘占用 = du 口径）。拿不到块数时**改说"内容大小"**，
+    // 绝不把回退值冒称"将释放"。采样时保留下限语义（至少/≥/未扫完）。
+    const measure = diskKnown ? '将释放' : '内容大小'
+    const files = `${size.fileCount ?? 0} 个文件`
+    if (size.sampled) {
+      parts.push(`${measure} ≥ ${formatBytesFloor(freedBytes)}（至少 ${files}，未扫完）`)
+    } else {
+      parts.push(`${measure} ${formatBytes(freedBytes)}（${files}）`)
+    }
   }
 
   return {
@@ -614,4 +640,17 @@ export function assessDestructiveRequest(
     risk,
     touchesUserData: touchesUserDataFlag,
   }
+}
+
+/**
+ * 下限取整：宁可再说小一点，也不让读者以为这是精确总量（GB ⇒ 整 GB，MB ⇒ 整 10 MB）。
+ * **导出**是为了让组件（`ChatMessageItem`）和 verdict 用**同一套**下限文案，别再各拼一遍（否则又会漂移）。
+ */
+export function formatBytesFloor(bytes: number): string {
+  const gb = 1024 * 1024 * 1024
+  const mb = 1024 * 1024
+  const value = Math.max(0, Math.floor(bytes))
+  if (value >= gb) return `${Math.floor(value / gb)} GB`
+  if (value >= mb) return `${Math.max(1, Math.floor(value / (10 * mb)) * 10)} MB`
+  return formatBytes(value)
 }

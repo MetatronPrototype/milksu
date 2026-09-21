@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { isComposingKey } from '@/lib/imeComposition'
 import AgentPixelLoader from '@/components/AgentPixelLoader'
 import AgentDecisionMark from '@/components/AgentDecisionMark'
+import { BackgroundTaskLine } from '@/components/BackgroundTaskLine'
+import type { BackgroundTaskLineTask } from '@/components/BackgroundTaskLine'
 import { needsDecisionConversationIds as needsDecisionConversationIdsFrom } from '@/lib/needsDecision'
 import profileAvatar from '@/assets/ctf-learner-avatar.png'
 import { invokeCommand } from '@/desktop'
@@ -132,6 +134,7 @@ export default function ContextSidebar({
   activeConversationId,
   conversations,
   runningConversationIds: runningIdsProp,
+  backgroundTasks,
   actionError,
   ctfSection: _ctfSection,
   accountStatus,
@@ -168,6 +171,9 @@ export default function ContextSidebar({
   activeConversationId: string | null
   conversations: Conversation[]
   runningConversationIds?: string[]
+  /** 后台任务（**事实层**，由持有 runtime 的那一层传进来 —— 与 runningConversationIds 同一条 props 路线）。
+      不要在这里调 useConversations() 工厂：那会拿到**另一份新 store**，事实永远是空的。 */
+  backgroundTasks?: Record<string, BackgroundTaskLineTask[]>
   actionError?: string
   ctfSection: CTFWorkspaceSection
   accountStatus: AccountStatus
@@ -688,6 +694,9 @@ export default function ContextSidebar({
                 <span className="coding-session-complete size-1.5 rounded-full bg-primary" aria-label={t('有新消息', 'New messages')} />
               ) : null}
             </span>
+            {/* (B)/(C)①：读 store 里的**事实**（backgroundTasks），不读会被覆盖的短命提示；
+                有任务就显示，任务清零就消失 ⇒ 有任务在跑时状态区不会只剩"已结束"。 */}
+            <BackgroundTaskLine tasks={backgroundTasks?.[conversation.id]} />
             <span className="flex size-5 shrink-0" aria-hidden="true" />
             <span className="agent-sidebar__copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium">{conversation.title}</span>
             {age ? (

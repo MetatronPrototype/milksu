@@ -1,3 +1,10 @@
+import WindowFileDrop from '@/components/WindowFileDrop'
+import {
+  approvalBarIsDestructive as approvalBarIsDestructiveFor,
+  approvalCanAllow as approvalCanAllowFrom,
+  approvalSubmitAllowed,
+  approvalTimeoutOutcome,
+} from '@/lib/approvalBar'
 import {
   forwardRef,
   lazy,
@@ -410,13 +417,12 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     content: pendingApprovalMessage?.content ?? '',
     approvalInput: pendingApprovalMessage?.approvalInput ?? '',
   }), [pendingApprovalMessage?.approvalInput, pendingApprovalMessage?.content])
-  const approvalBarIsDestructive = useMemo(() => {
-    const command = `${pendingApprovalMessage?.content ?? ''}\n${pendingApprovalMessage?.approvalInput ?? ''}`
-    return /(^|\s)(rm|find|unlink|shred)\b/.test(command)
-      || /\bxargs\b/.test(command)
-      || approvalAssessed.targets.some(target => target.kind !== 'unknown')
-  }, [approvalAssessed.targets, pendingApprovalMessage?.approvalInput, pendingApprovalMessage?.content])
-  const approvalCanAllow = !approvalBarIsDestructive || approvalAssessed.canAllow
+  const approvalBarIsDestructive = useMemo(() => approvalBarIsDestructiveFor({
+    content: pendingApprovalMessage?.content,
+    approvalInput: pendingApprovalMessage?.approvalInput,
+    targetKinds: approvalAssessed.targets.map(target => target.kind),
+  }), [approvalAssessed.targets, pendingApprovalMessage?.approvalInput, pendingApprovalMessage?.content])
+  const approvalCanAllow = approvalCanAllowFrom(approvalBarIsDestructive, approvalAssessed.canAllow)
   const [approvalSubmitting, setApprovalSubmitting] = useState(false)
   const [approvalError, setApprovalError] = useState('')
   const approvalSummary = String(pendingApprovalMessage?.toolName ?? pendingApprovalMessage?.content ?? '')
@@ -425,16 +431,22 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     .slice(0, 80)
 
   function submitApproval(approved: boolean) {
-    if (!pendingApprovalMessage?.approvalRequestId || approvalSubmitting) return
-    if (approved && !approvalCanAllow) return
+    if (!approvalSubmitAllowed({
+      approved,
+      canAllow: approvalCanAllow,
+      hasRequestId: Boolean(pendingApprovalMessage?.approvalRequestId),
+      submitting: approvalSubmitting,
+    })) return
     setApprovalSubmitting(true)
     setApprovalError('')
-    onRespondApproval?.(pendingApprovalMessage.approvalRequestId, approved, 'once')
+    onRespondApproval?.(pendingApprovalMessage?.approvalRequestId ?? '', approved, 'once')
     window.setTimeout(() => {
       setApprovalSubmitting(current => {
-        if (!current) return current
-        setApprovalError(t('审批未确认，请重试。', 'The decision was not confirmed. Try again.'))
-        return false
+        const outcome = approvalTimeoutOutcome(current)
+        if (outcome.unconfirmed) {
+          setApprovalError(t('审批未确认，请重试。', 'The decision was not confirmed. Try again.'))
+        }
+        return outcome.submitting
       })
     }, APPROVAL_CONFIRM_TIMEOUT_MS)
   }
@@ -2884,6 +2896,24 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
               </Button>
             </div>
           ) : null}
+
+          {/* 整窗拖拽加附件（监听在 window 上 ⇒ 拖到窗口任意处都生效；遮罩 fixed inset-0）。
+              文件交给 composer 现成的 importCodingFiles（经 ref）⇒ 上限/体积/报错都由它负责。 */}
+          <WindowFileDrop
+            onFiles={(files, notices) => {
+              if (files.length) composer.current?.addDroppedFiles(files)
+              // 提示统一从纯模块给的 notices 出口出（**文案在这里用 t() 成对拼** ✓ —— 仓库约定：
+              // 面向用户的文字都要经 t(中文, English)，`uiLocaleCoverage` 会抓 ✗）⇒ 不会重复弹 ✗。
+              for (const notice of notices) {
+                const message = notice.kind === 'overflow'
+                  ? t(`最多 8 个附件，已忽略多余的 ${notice.count} 个。`, `At most 8 attachments; ${notice.count} were ignored.`)
+                  : t('暂不支持文件夹，请拖文件或压缩后再试。', 'Folders are not supported yet; drop files (or a zip) instead.')
+                toastError(message, message)
+              }
+            }}
+          >
+            <span className="hidden" aria-hidden="true" />
+          </WindowFileDrop>
 
           <ChatComposer
             // 按会话重挂载：输入框内部有多处"上一个会话"的 ref，若不重挂载，切换时

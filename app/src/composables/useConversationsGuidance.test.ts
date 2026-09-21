@@ -172,3 +172,98 @@ describe('queued guidance', () => {
     expect(conversations.activeQueuedGuidanceInterrupted).toBe(false)
   })
 })
+
+// 真机数据定位的真因：读者**先直接发出**同一句话（send() 直发），随后又点「加入对话」⇒
+// 注入路径再无脑追加一条 ⇒ 同文本两条（引擎其实只收到一条 = 纯显示重复）。
+describe('guidance already sent directly', () => {
+  it('does not append a second copy when the same text was just sent directly', async () => {
+    const { conversations } = await loadRuntime()
+    // 1) 先直接发出（这条路径是直发；会话是否在跑由其它用例的共享状态决定，与本用例无关）
+    await conversations.send('测试')
+    // 清掉计数：③ 只关心"注入这一次"有没有额外多发（不许靠"少发一次"变绿）。
+    commandCalls.length = 0
+    // 2) 再把它放进排程并点「加入对话」
+    seedQueue(conversations, ['测试'])
+    expect(await conversations.injectQueuedGuidance(0)).toBe(true)
+
+    // ① 转录里该正文恰 1 条 —— 不许再追加第二份。
+    const messages = conversations.conversations
+      .find(item => item.id === 'conversation-1')?.messages ?? []
+    expect(messages.filter(item => item.role === 'user' && item.content === '测试')).toHaveLength(1)
+    // ② 可见性没被牺牲：「已加入本轮」列表照旧写上。
+    expect(conversations.activeInjectedGuidance).toEqual(['测试'])
+    // ③ 不许靠"少发一次"来变绿：直发仍然只发生一次。
+    expect(commandCalls.filter(call => call.command === 'steer_message')).toHaveLength(1)
+  })
+
+  // 注：注入路径的查重**只**看最近 30 秒内同文本的 user 消息；更早的同名文本不该被误判。
+  it('still appends when the same text is older than the window', async () => {
+    const { conversations } = await loadRuntime()
+    await conversations.send('旧话')
+    const target = conversations.conversations.find(item => item.id === 'conversation-1')
+    if (target) {
+      target.messages = target.messages.map(message => ({ ...message, timestamp: Date.now() - 60_000 }))
+    }
+    seedQueue(conversations, ['旧话'])
+    expect(await conversations.injectQueuedGuidance(0)).toBe(true)
+    const messages = conversations.conversations
+      .find(item => item.id === 'conversation-1')?.messages ?? []
+    expect(messages.filter(item => item.role === 'user' && item.content === '旧话')).toHaveLength(2)
+  })
+})
+
+// 直发闸门（产品口径）：只有"真的在正常跑"才允许直接插进正在跑的回合；
+// 被停过 / 上一轮没正常结束 / 界面显示结束但实际仍在跑 ⇒ 不许直发 ⇒ 进排程 + 明确提示。
+describe('direct send gate', () => {
+  async function runningRuntime() {
+    const { conversations } = await loadRuntime()
+    conversations.store.setState({ runningIds: new Set(['conversation-1']) })
+    return conversations
+  }
+
+  // ① 正常在跑 ⇒ 仍然直发（回归保护：不许把好路径也拦住）。
+  it('still sends directly while the turn is genuinely running', async () => {
+    const conversations = await runningRuntime()
+    conversations.store.setState({
+      interruptedQueueIds: new Set(),
+      stalledQueueIds: new Set(),
+      hardStopFailedIds: new Set(),
+      turnStatusById: new Map(),
+    })
+    await conversations.send('正常跟进')
+    // 今天的设计就是"在跑 ⇒ 排进这一轮"；正常路径必须**保持**这个行为，且**不出现**闸门提示。
+    expect(queueOf(conversations)).toEqual(['正常跟进'])
+    expect(conversations.store.getState().engineNotice ?? '').not.toMatch(/没有直接发出/)
+  })
+
+  // ② 手动停止过 ⇒ 不直发、进排程、有提示。
+  it('queues instead of sending directly after the reader stopped the turn', async () => {
+    const conversations = await runningRuntime()
+    conversations.store.setState({ interruptedQueueIds: new Set(['conversation-1']) })
+    await conversations.send('停过之后发的')
+    expect(queueOf(conversations)).toContain('停过之后发的')
+    expect(conversations.store.getState().engineNotice ?? '').toMatch(/没有直接发出/)
+  })
+
+  // ③ 上一轮没正常结束 ⇒ 不直发、进排程、有提示。
+  it('queues instead of sending directly when the previous turn ended abnormally', async () => {
+    const conversations = await runningRuntime()
+    conversations.store.setState({ stalledQueueIds: new Set(['conversation-1']) })
+    await conversations.send('异常之后发的')
+    expect(queueOf(conversations)).toContain('异常之后发的')
+    expect(conversations.store.getState().engineNotice ?? '').toMatch(/没有正常结束/)
+  })
+
+  // ④ 界面显示已结束、后台仍在跑（最危险）⇒ 不直发、进排程、有提示。
+  it('queues instead of sending directly when the interface says finished but the turn still runs', async () => {
+    const { conversations } = await loadRuntime()
+    conversations.store.setState({
+      runningIds: new Set(),
+      turnStatusById: new Map([['conversation-1', { compacting: false, runStartedAt: Date.now() }]]),
+    })
+    await conversations.send('假结束之后发的')
+    expect(queueOf(conversations)).toContain('假结束之后发的')
+    expect(conversations.store.getState().engineNotice ?? '').toMatch(/状态还不确定/)
+    // ⑤ 不直发≠丢弃：这条文本确实进了排程。
+  })
+})

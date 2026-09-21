@@ -27,7 +27,12 @@ import {
   parseAskOptions,
 } from '@/lib/agentAsk'
 import { toolBudgetToolName } from '@/lib/toolBudget'
-import { assessApprovalRequest, type DestructiveAssessment, type DestructiveFacts } from '@/lib/destructiveTarget'
+import {
+  assessApprovalRequest,
+  formatBytesFloor,
+  type DestructiveAssessment,
+  type DestructiveFacts,
+} from '@/lib/destructiveTarget'
 
 /** 过长的消息（派单清单、长回复）默认只显示这么多行，其余折叠，点一下展开。 */
 const COLLAPSED_BODY_LINES = 15
@@ -618,8 +623,11 @@ export default function ChatMessageItem({
                   ) : null}
                   {approvalMeasurement.fileCount !== undefined ? (
                     <p className="text-muted-foreground">
-                      {t('规模', 'Size')}：{approvalMeasurement.fileCount} {t('个文件', 'files')}
-                      {approvalMeasurement.sampled ? `（${t('仅采样', 'sampled')}）` : ''}
+                      {t('规模', 'Size')}：{approvalMeasurement.sampled
+                        // 与 verdict 同一套用词与口径：主口径是"删除将释放的空间"（磁盘占用），拿不到块数
+                        // 时才说"内容大小"；被上限截停的统计是**下限**（至少/≥/未扫完）。
+                        ? `${(approvalMeasurement.diskBytes ?? -1) >= 0 ? t('将释放', 'will free') : t('内容大小', 'content size')} ≥ ${formatBytesFloor((approvalMeasurement.diskBytes ?? -1) >= 0 ? (approvalMeasurement.diskBytes ?? 0) : (approvalMeasurement.totalBytes ?? 0))}${t(`（至少 ${approvalMeasurement.fileCount} 个文件，未扫完）`, ` (at least ${approvalMeasurement.fileCount} files, not fully scanned)`)}`
+                        : `${(approvalMeasurement.diskBytes ?? -1) >= 0 ? t('将释放', 'will free') : t('内容大小', 'content size')} ${formatBytesFloor((approvalMeasurement.diskBytes ?? -1) >= 0 ? (approvalMeasurement.diskBytes ?? 0) : (approvalMeasurement.totalBytes ?? 0))}${t(`（${approvalMeasurement.fileCount} 个文件）`, ` (${approvalMeasurement.fileCount} files)`)}`}
                     </p>
                   ) : null}
                   {approvalMeasurement.inGitRepository !== undefined ? (

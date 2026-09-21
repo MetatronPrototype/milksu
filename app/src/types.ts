@@ -43,6 +43,10 @@ export interface CodingAttachment {
   mediaType: string
   size: number
   sha256: string
+  // 只有"真的做过有损压缩"时后端才给这两句（受控例外：仅我们自己的 HEIC 转出图、且温和压缩成功）。
+  // 界面必须显示它 —— 不许静默压缩；没压就没有这两句。
+  notice?: string
+  noticeEnglish?: string
 }
 
 export interface CodingAttachmentImport {

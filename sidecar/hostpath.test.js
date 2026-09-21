@@ -105,3 +105,33 @@ test("Computer Use unix sockets hash the session id when the root is long", () =
   assert.ok(Buffer.byteLength(path) <= 103);
   assert.notEqual(path, join(root, "mcu-0123456789abcdef0123456789abcdef.sock"));
 });
+
+// 中文长路径（一个汉字 3 字节 UTF-8 ⇒ 同样的字符长度更容易撞上 103 字节的 sun_path 上限）。
+// 本机真实出现过 ~/MilkSU/Coding/**中文目录**/**中文目录** 这种根 ✓ ⇒ 这条把"实现不会因此崩、
+// 也不会截断"钉住（**回归保护** ✓：实现本来就对 ✓，不是新修 ✗）。
+test('a long non-ASCII root still yields a bindable socket, never a truncated path', () => {
+  // 用 linux 分支注入根（那里认 XDG_RUNTIME_DIR ✓），构造一个远超 103 字节的中文根。
+  const chineseRoot = join('/tmp', '中文目录'.repeat(10)); // 40 个字符 ⇒ 120 字节
+  assert.ok(Buffer.byteLength(chineseRoot) > 103, 'the fixture must exceed the byte limit');
+  assert.ok(Buffer.byteLength(chineseRoot) !== chineseRoot.length, 'the fixture must be non-ASCII');
+
+  const env = { ...process.env, XDG_RUNTIME_DIR: chineseRoot };
+  const socket = computerUseSocket('conversation-1', env, 'linux');
+  // ① 必须能绑：字节长度在上限内（**按字节**判，不是按字符）。
+  assert.ok(Buffer.byteLength(socket) <= 103, `socket too long (${Buffer.byteLength(socket)}): ${socket}`);
+  // ② 不许截断：一定是一整个 `.sock` 结尾的路径（截断会砍掉结尾，还可能让两个会话撞同一个 socket）。
+  assert.ok(socket.endsWith('.sock'), `socket must not be truncated: ${socket}`);
+  // ③ 不同会话不许撞同一个 socket（确定性但互不相同）。
+  const other = computerUseSocket('conversation-2', env, 'linux');
+  assert.notEqual(socket, other);
+  assert.ok(Buffer.byteLength(other) <= 103);
+});
+
+// 同一个会话 ⇒ 每次都得到同一个路径（确定性 ✓，缓存/复用才可靠）。
+test('the same conversation always gets the same socket path', () => {
+  const env = { ...process.env, XDG_RUNTIME_DIR: join('/tmp', '中文目录'.repeat(10)) };
+  assert.equal(
+    computerUseSocket('conversation-1', env, 'linux'),
+    computerUseSocket('conversation-1', env, 'linux'),
+  );
+});

@@ -1,4 +1,12 @@
 import { createStore, nextTick } from '@/lib/reactStore'
+import { backgroundTaskNotice } from '@/lib/backgroundTaskNotice'
+import { directSendDecision } from '@/lib/directSendGate'
+import {
+  type InjectedGuidanceEntry,
+  injectedGuidanceTexts,
+  settleInjectedGuidance,
+} from '@/lib/injectedGuidance'
+import { settleQueuedMessagesWhenQueueKnown } from '@/lib/queuedGuidanceStatus'
 import { invokeCommand, listenEvent } from '@/desktop'
 import type { CodingCompactionResult, CodingProjectMemory } from '@/codingEnvironmentTypes'
 import {
@@ -959,7 +967,12 @@ type ConversationsState = {
   runningIds: Set<string>
   abortingIds: Set<string>
   messageQueues: Map<string, CodingMessageQueue>
+  // 已经收到过引擎队列报告的会话：只有这些会话才允许做离队⇒转正的对账（防重启误判⇒重复）。
+  queueSyncedIds: Set<string>
   engineNotice: string
+  // (A)/(C)①：**最后已知的后台任务**（按会话）。这是**事实层** —— 状态区据此显示"后台仍在运行"，
+  // 而不是依赖会被后续状态行覆盖的短命 `engineNotice`。
+  backgroundTasks: Record<string, Array<{ id: string; name: string; status: string }>>
   engineNoticeRepeat: number
   engineNoticeAt: number
   abortStalledIds: Set<string>
@@ -970,7 +983,7 @@ type ConversationsState = {
   // 搬运自本地分支（C）：另一个对话交过来的消息，在转写里显示为只读提示。
   crossConversationNotices: CrossConversationNotice[]
   // 搬运自本地分支（A 引导）：已经交给正在跑的这一轮的引导，以及“队列已被中断”标记。
-  injectedSteering: Map<string, string[]>
+  injectedSteering: Map<string, InjectedGuidanceEntry[]>
   interruptedQueueIds: Set<string>
   continuity: CodingContinuityState
   turnStatusById: Map<string, SessionTurnSnapshot>
@@ -1088,7 +1101,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     runningIds: new Set<string>(),
     abortingIds: new Set<string>(),
     messageQueues: new Map<string, CodingMessageQueue>(),
+    queueSyncedIds: new Set<string>(),
     engineNotice: '',
+    backgroundTasks: {},
     engineNoticeRepeat: 0,
     engineNoticeAt: 0,
     abortStalledIds: new Set<string>(),
@@ -1096,7 +1111,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     forceStopReadyIds: new Set<string>(),
     hardStopFailedIds: new Set<string>(),
     crossConversationNotices: [],
-    injectedSteering: new Map<string, string[]>(),
+    injectedSteering: new Map<string, InjectedGuidanceEntry[]>(),
     interruptedQueueIds: new Set<string>(),
     continuity: createCodingContinuityState(),
     turnStatusById: new Map<string, SessionTurnSnapshot>(),
@@ -1149,10 +1164,14 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set abortingIds(value) { store.setState({ abortingIds: value }) },
     get messageQueues() { return store.getState().messageQueues },
     set messageQueues(value) { store.setState({ messageQueues: value }) },
+    get queueSyncedIds() { return store.getState().queueSyncedIds },
+    set queueSyncedIds(value) { store.setState({ queueSyncedIds: value }) },
     get runningTools() { return store.getState().runningTools },
     set runningTools(value) { store.setState({ runningTools: value }) },
     get heartbeatTick() { return store.getState().heartbeatTick },
     set heartbeatTick(value) { store.setState({ heartbeatTick: value }) },
+    get backgroundTasks() { return store.getState().backgroundTasks },
+    set backgroundTasks(value) { store.setState({ backgroundTasks: value }) },
     get engineNotice() { return store.getState().engineNotice },
     set engineNotice(value) { store.setState({ engineNotice: value }) },
     get engineNoticeRepeat() { return store.getState().engineNoticeRepeat },
@@ -1182,6 +1201,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get pendingComposerDraft() { return store.getState().pendingComposerDraft },
     set pendingComposerDraft(value) { store.setState({ pendingComposerDraft: value }) },
   }
+
+
   const parkedPendingByHome: Partial<Record<WorkspaceHome, ParkedPendingCanvas>> = {}
   const pendingDshGoals = new Map<string, string>()
 
@@ -1252,6 +1273,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   // 只守被强制停掉的“那个回合”：epoch 一变（新的一轮）立刻释放。
   const runEpochByConversation = new Map<string, number>()
   const forceStopGuard = new Map<string, { epoch: number; until: number }>()
+  // 后台任务可见性：每个会话"之前是否报过有后台任务在跑"（用来决定"跑完了"要不要说一声 ✓）。
+  // 放在 composable 本地即可 ⇒ 不动状态类型（本轮最小改动 ✓）。
+  const reportedBackgroundTasks = new Map<string, boolean>()
   function currentRunEpoch(id: string) {
     return runEpochByConversation.get(id) ?? 0
   }
@@ -1395,7 +1419,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   ))
   // 已经交给正在跑的这一轮的引导：显示出来免得看起来像凭空消失，但它已经不再排队等。
   const activeInjectedGuidance = (() => (
-    s.activeId ? (s.injectedSteering.get(s.activeId) ?? []) : []
+    s.activeId ? injectedGuidanceTexts(s.injectedSteering.get(s.activeId)) : []
   ))
 
   /**
@@ -1447,8 +1471,26 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       followUp: queue.followUp,
     })
     const injected = new Map(s.injectedSteering)
-    injected.set(conversationId, [...(injected.get(conversationId) ?? []), prompt])
+    // 记下注入时刻：这条属于"现在这一轮"⇒ 只有它自己那一轮结束时才清（见 injectedGuidance.ts）。
+    injected.set(conversationId, [
+      ...(injected.get(conversationId) ?? []),
+      { text: prompt, at: Date.now() },
+    ])
     s.injectedSteering = injected
+    // 写入侧查重（真机数据定位的真因 ✓）：读者可能**刚刚直接把同一句话发出去了** ✓
+    // （`send()` 走的是直发 ✓），随后又点了「加入对话」✓ ⇒ 若这里再无脑追加一条 ✓，
+    // 同一段正文就会出现两条 ✗（引擎其实只收到一条 ✓ = 纯显示重复 ✗）。
+    // ⇒ 只对**注入这一条路径**查重：本会话最近 30 秒内已有同文本（trim 后相等）的 user 消息就不再追加。
+    // 注意 ✓：`injectedSteering` 的标记**照旧写入** ✓（那是"本轮已并入"的显示列表 ✓，与转录条目是两件事 ✓）
+    // ⇒「已加入本轮」提示的可见性不受影响 ✓。这**不是**全局/显示层去重 ✗（引擎真收到两遍仍会照旧暴露 ✓）。
+    const recentSameText = (s.conversations.find(item => item.id === conversationId)?.messages ?? [])
+      .some(message => (
+        message.role === 'user'
+        && typeof message.content === 'string'
+        && message.content.trim() === prompt.trim()
+        && Date.now() - Number(message.timestamp ?? 0) < 30_000
+      ))
+    if (!recentSameText) {
     // 显示在转写里：读者把它并进了本轮，它就该看得见，而不是只存在于 pi 内部。
     update(conversationId, current => ({
       ...current,
@@ -1461,6 +1503,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         fromQueuedGuidance: true,
       }],
     }))
+    }
     // 手动加入就是读者接管了：队列重新被信任。
     markQueueInterrupted(conversationId, false)
     return true
@@ -1875,6 +1918,25 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     } catch {
       if (!s.pendingWorkspacePath) s.pendingWorkspacePath = ''
     }
+    // 会话数据到位之后对账一次（安全门在函数里：队列未知的会话一条都不动）。
+    settleQueuedMessagesAfterLoad()
+  }
+
+  /**
+   * 载入会话数据之后跑一次对账（此前只在"队列事件"里跑 ⇒ 重启后 / 长期没有队列变化时，
+   * 那些已被消费的排队消息会永远卡在 queued、永远不显示）。
+   * **仍然带安全门**：队列未知（重启后还没拿到回声，且桥里没有"取队列快照"的现成命令 ⇒ 见回执）
+   * 的会话**一条都不动** —— 宁可暂时不显示，也不许把"引擎里还排着"的误判成已消费而制造重复。
+   */
+  function settleQueuedMessagesAfterLoad() {
+    const synced = s.queueSyncedIds ?? new Set<string>()
+    s.conversations = s.conversations.map(conversation => {
+      if (!(synced.has?.(conversation.id) ?? false)) return conversation
+      const pending = s.messageQueues?.get?.(conversation.id)?.steering ?? []
+      const messages = settleQueuedMessagesWhenQueueKnown(conversation.messages, pending, true)
+        ?? conversation.messages
+      return messages === conversation.messages ? conversation : { ...conversation, messages }
+    })
   }
 
   function update(id: string, updater: (conversation: Conversation) => Conversation) {
@@ -1898,6 +1960,28 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     )
     s.runningIds = next.running
     s.abortingIds = next.aborting
+    // (A) 回合结束的唯一汇合点。用**最后一份**后台任务再评估：这时读者看到"回合结束"，
+    // 而任务还在跑 ⇒ 必须说清在跑什么、并提醒别关机。事实留在 store 的 backgroundTasks 里，
+    // 状态区（(C)①）会一直显示它，不依赖这条短命状态行。
+    {
+      const kept = store.getState().backgroundTasks[id] ?? []
+      const notice = kept.length > 0
+        ? backgroundTaskNotice({ turnEnded: true, running: kept, hadRunning: true })
+        : null
+      if (notice?.kind === 'still-running') {
+        const name = String(notice.name)
+        const more = notice.count > 1 ? t(`（还有 ${notice.count - 1} 件）`, ` (${notice.count - 1} more)`) : ''
+        store.setState(state => ({
+          ...state,
+          engineNotice: t(
+            `后台仍在运行：${notice.count} 件 · ${name}${more} —— 请不要关机。`,
+            `Still running in the background: ${notice.count} · ${name}${more} - please do not shut down.`,
+          ),
+          engineNoticeRepeat: 0,
+          engineNoticeAt: Date.now(),
+        }))
+      }
+    }
     if (parentId && parentId !== id) {
       reconcileParentRun(parentId, {
         workingJustEmptied: parentLiveBefore > 0 && liveWorkingCountFor(parentId) === 0,
@@ -2755,10 +2839,39 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     const activeConversation = s.conversations.find(item => item.id === runningConversationId)
     const pendingAsk = pendingAskMessage(activeConversation?.messages)
     const answeringAsk = Boolean(pendingAsk?.approvalRequestId)
+    // 直发闸门（产品口径 ✓）：只有"**真的**在正常跑"才允许把消息直接插进正在跑的回合；
+    // 被读者停过 / 上一轮没正常结束 / 界面显示已结束而实际仍在跑 ⇒ **不许直发** ✗ ⇒ 改走排队 + 明确提示 ✓。
+    // 注意 ✓：**空闲时（本来就没人在跑）的普通发送不受影响** ✗ —— 那种情况由铁定要走"开新回合"，
+    // 不是"直发进正在跑的回合"；只有 `reason` 非空的三种异常才强制排队 ✓。
+    const gate = directSendDecision({
+      running: Boolean(runningConversationId && s.runningIds.has(runningConversationId)),
+      stoppedByUser: Boolean(runningConversationId && s.interruptedQueueIds?.has?.(runningConversationId)),
+      abnormalEnd: Boolean(
+        runningConversationId
+        && (s.stalledQueueIds?.has?.(runningConversationId) || s.hardStopFailedIds?.has?.(runningConversationId)),
+      ),
+      // UI 与真实运行态不一致：界面没把它当在跑，但回合状态里还有"正在跑"的痕迹
+      // （`runStartedAt` 在回合开始时置位、**回合结束时清空** ⇒ 它还在就说明那一轮还没收尾 ✓）。
+      uiBehindBackground: Boolean(
+        runningConversationId
+        && !s.runningIds.has(runningConversationId)
+        && s.turnStatusById?.get?.(runningConversationId)?.runStartedAt !== undefined,
+      ),
+    })
+    const mustQueue = !gate.allow && gate.reason !== null
+    if (mustQueue) {
+      // 必须让读者知情（双语 ✓，复用现成通道 ✓）：说明"没有直接发出、已进入排程"以及原因。
+      const reason = gate.reason
+      pushEngineNotice(reason === 'stopped-by-user'
+        ? t('上一轮是被你手动停止的，所以这条没有直接发出，已进入排程。', 'You stopped the previous turn, so this message was not sent directly; it is queued instead.')
+        : reason === 'abnormal-end'
+          ? t('上一轮没有正常结束，所以这条没有直接发出，已进入排程。', 'The previous turn did not end cleanly, so this message was not sent directly; it is queued instead.')
+          : t('这个回合的状态还不确定（界面显示已结束，但它可能仍在跑），所以这条没有直接发出，已进入排程。', 'This turn is in an uncertain state - it may still be running - so this message was not sent directly; it is queued instead.'))
+    }
     const steering = Boolean(
       runningConversationId
-      && s.runningIds.has(runningConversationId)
-      && !answeringAsk,
+      && !answeringAsk
+      && (s.runningIds.has(runningConversationId) || mustQueue),
     )
     const activeKernel = normalizeAgentKernel(
       activeConversation?.kernel ?? s.pendingKernel,
@@ -3753,12 +3866,18 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           ?? (event.payload as unknown as { notice?: string })?.notice
           ?? '',
         ).trim()
-        // The engine speaks English for these refusals. Mixing that into a Chinese status
-        // line reads badly, so an untranslated reason is summarised instead of pasted.
-        const localized = /[\u4e00-\u9fff]/.test(reason) ? reason : ''
-        pushEngineNotice(localized
-          ? t(`已拦截一条删除命令：${localized} —— 未执行。`, `Refused a delete command: ${localized} - nothing ran.`)
-          : t('已拦截一条删除命令 —— 未执行。', 'Refused a delete command - nothing ran.'))
+        // 严格同语言：句子里插入的部分必须和句子同语言，否则就是混排
+        // （英文句 + 中文词，或中文句 + 英文词）。所以两个分支**各取所需**，不再共用一个 localized：
+        //   中文句 ⇒ 只在原因本身含汉字时插入；英文句 ⇒ 只在原因不含汉字时插入。
+        // 语言不匹配时只出无变量版 —— 信息少一点可以接受，原因仍在引擎侧（模型看得到、日志里有），
+        // 前端**不翻译**业务词。
+        const hasChinese = /[\u4e00-\u9fff]/.test(reason)
+        const insertZh = hasChinese && reason !== ''
+        const insertEn = !hasChinese && reason !== ''
+        pushEngineNotice(t(
+          insertZh ? `已拦截一条删除命令：${reason} —— 未执行。` : '已拦截一条删除命令 —— 未执行。',
+          insertEn ? `Refused a delete command: ${reason} - nothing ran.` : 'Refused a delete command - nothing ran.',
+        ))
         return
       }
       if (type === 'attachment.held') {
@@ -3770,46 +3889,85 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         if (chinese || english) pushEngineNotice(t(chinese || english, english || chinese))
         return
       }
+      if (type === 'background_tasks') {
+        // 后台任务（打包/verify 那类）**不在** runningIds/turnStatus 里 ⇒ 回合结束时界面会像"完事了" ✗。
+        // 这里订阅侧车已有的 `background_tasks` 事件 ✓（`bridge.js` 的 emitBackgroundTasks ✓），
+        // 用判定层决定说什么 ✓，再用现成通道把话说给读者 ✓ —— 文案在这里用 t() 成对拼 ✓（仓库硬约定 ✓）。
+        const tasks = Array.isArray((event.payload as unknown as { tasks?: unknown })?.tasks)
+          ? ((event.payload as unknown as { tasks: Array<{ name?: unknown; status?: unknown }> }).tasks)
+          : []
+        const running = tasks.filter(task => String(task?.status ?? '') === 'running')
+        const notice = backgroundTaskNotice({
+          // 回合是否已结束：这一轮没在跑 ⇒ 读者看到的"结束"更需要说明 ✓。
+          turnEnded: !s.runningIds.has(sessionId),
+          running,
+          hadRunning: reportedBackgroundTasks.get(sessionId) === true,
+        })
+        // TEMP DEBUG（修好删净）：真机核实"事件到底有没有到前端、带了什么"。
+        try {
+          const debug = (globalThis as { __milksuBgTasks?: unknown[] })
+          debug.__milksuBgTasks = Array.isArray(debug.__milksuBgTasks) ? debug.__milksuBgTasks : []
+          debug.__milksuBgTasks.push({ at: Date.now(), sessionId, count: running.length })
+        } catch { /* 打点绝不影响行为 */ }
+        reportedBackgroundTasks.set(sessionId, running.length > 0)
+        // 留下**最后一份**（事实层）—— 回合结束时还要用它，状态区也据此显示。
+        const kept = running.map(task => ({
+          id: String((task as { id?: unknown })?.id ?? ''),
+          name: String(task?.name ?? ''),
+          status: String(task?.status ?? ''),
+        }))
+        store.setState(state => ({ ...state, backgroundTasks: { ...state.backgroundTasks, [sessionId]: kept } }))
+        if (notice?.kind === 'still-running') {
+          const name = String(notice.name)
+          const suffix = notice.count > 1
+            ? t(`（还有 ${notice.count - 1} 件）`, ` (${notice.count - 1} more)`)
+            : ''
+          pushEngineNotice(t(
+            `后台仍在运行：${name}${suffix} —— 请不要关机。`,
+            `Still running in the background: ${name}${suffix} - please do not shut down.`,
+          ))
+        } else if (notice?.kind === 'finished') {
+          pushEngineNotice(t('后台任务已完成。', 'Background work finished.'))
+        }
+        return
+      }
       if (type === 'session.queue_updated') {
-        const previousQueue = s.messageQueues.get(sessionId)
-          ?? { steering: [], followUp: [] }
+        // 这条事件就是"该会话的队列已经同步过一次"的凭据（重启后第一份可信队列信息）。
+        if (!(s.queueSyncedIds?.has?.(sessionId) ?? false)) {
+          s.queueSyncedIds = new Set(s.queueSyncedIds ?? []).add(sessionId)
+        }
         const engineQueue = projectCodingMessageQueue(steering, followUp)
         // 以本地为准：本会话已经"加入对话"（= 已注入本轮）的条目不接受引擎回声放回队列，
         // 否则读者会看到同一段正文既在「已加入本轮」又回到队列里（真机截图：⏱ …已并入本回合）。
         // 队列的唯一真相源是 MilkSU 本地，引擎回声只用来同步它没见过的变化。
-        const injectedLocally = new Set(s.injectedSteering.get(sessionId) ?? [])
+        const injectedLocally = new Set(injectedGuidanceTexts(s.injectedSteering.get(sessionId)))
         const nextQueue = injectedLocally.size
           ? {
               steering: engineQueue.steering.filter(text => !injectedLocally.has(text)),
               followUp: engineQueue.followUp,
             }
           : engineQueue
-        const appliedSteeringCount = Math.max(
-          0,
-          previousQueue.steering.length - nextQueue.steering.length,
-        )
         setMessageQueue(
           sessionId,
           nextQueue,
         )
         if (!nextQueue.steering.length) markQueueStalled(sessionId, false)
-        if (appliedSteeringCount > 0) {
-          let remaining = appliedSteeringCount
-          s.conversations = s.conversations.map(conversation => (
-            conversation.id === sessionId
-              ? {
-                  ...conversation,
-                  messages: conversation.messages.map(message => {
-                    if (remaining <= 0 || message.role !== 'user' || message.status !== 'queued') {
-                      return message
-                    }
-                    remaining -= 1
-                    return { ...message, status: 'done' }
-                  }),
-                }
-              : conversation
-          ))
-        }
+        // 把"已经不再排队的排队消息"转正：旧写法只在"两次回声之间队列变短"时按**数量**转正，
+        // 而"加入对话"已经在本地提前移除该条 ⇒ 长度不变 ⇒ 计数恒为 0 ⇒ 那条 `status:'queued'`
+        // 会永远留着 ⇒ 界面把它当"排队中"，看起来像被吞了（现场症状）。这里改成**按文本对账**：
+        // 队列里已经没有这条正文 ⇒ 它不再排队 ⇒ 转成正常历史消息。
+        s.conversations = s.conversations.map(conversation => (
+          conversation.id === sessionId
+            ? {
+                ...conversation,
+                messages: settleQueuedMessagesWhenQueueKnown(
+                  conversation.messages,
+                  nextQueue.steering,
+                  s.queueSyncedIds?.has?.(sessionId) ?? false,
+                ) ?? conversation.messages,
+              }
+            : conversation
+        ))
       }
       s.conversations = s.conversations.map(conversation => {
         if (conversation.id !== sessionId) return conversation
@@ -4041,14 +4199,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
             setMessageQueue(sessionId, { steering: [], followUp: [] })
             markQueueStalled(sessionId, false)
           }
-          // 回合结束了：这些引导已经进入这一轮，"已加入本轮"的通知到此为止 ——
-          // 否则它会一直挂在输入框上方（用户看到的就是这个：回合结束后还列着 2 条）。
-          // 只在回合结束时清；回合还在跑时必须继续显示（它是"本轮已并入"的通知）。
-          // ⚠️ 去重用的"最近注入"记录将来要单独另存一份并保留 30 秒（引擎回声可能在回合结束后才到），
-          //    那份记录与这里的显示列表是两件事 —— 目前引擎回声去重尚未落地，先不混在一起。
+          // 回合结束了：只清掉**属于刚结束那一轮**的引导（`at <= 本回合结束时刻`）。
+          // 旧写法"任何回合结束都全清"有个真机可见的坑：读者在回合刚结束/正在结束时点「加入对话」✗
+          // ⇒ 追加后立刻被清掉 ⇒ 提示不显示。晚于结束时刻注入的条目**保留** ✓，
+          // 它们会继续显示，直到**它们自己那一轮**结束才清。退化策略见 injectedGuidance.ts。
           if (s.injectedSteering.has(sessionId)) {
+            const settledEntries = settleInjectedGuidance(s.injectedSteering.get(sessionId), Date.now())
             const withoutInjected = new Map(s.injectedSteering)
-            withoutInjected.delete(sessionId)
+            if (settledEntries.length) withoutInjected.set(sessionId, settledEntries)
+            else withoutInjected.delete(sessionId)
             s.injectedSteering = withoutInjected
           }
           finishRun(sessionId)
@@ -4159,6 +4318,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     // **真正把消息送进目标对话是渲染层的活**（后端注释："它自己不启动回合；
     // 渲染层掌握调度，由它按目标的真实状态决定排队还是启动"）。
     // 不接这一处：投递永远不会落到目标对话，发信的工具也永远等不到回执。
+    // 后台任务：推送事件只在**变化时**来 ⇒ 重启后若已有任务在跑，在它下次变化前不会有事件 ✗，
+    // 那一刻"回合结束"就漏报 ✗。所以加载完成后**主动拉一次**现成命令 ✓（**只一次，不轮询** ✗）。
+    // 失败静默 ✓（拉不到就不提示，别打扰读者 ✗）。
+    void invokeCommand('refresh_coding_background_tasks').catch(() => undefined)
+
     disposeDelivery = await listenEvent<AgentDeliveryEvent>('agent-delivery', event => {
       const payload = event.payload
       const targetId = String(payload?.targetConversationId ?? '').trim()
@@ -4245,7 +4409,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get conversations() { return s.conversations },
     set conversations(value) { s.conversations = value },
     get activeId() { return s.activeId },
-    set activeId(value) { s.activeId = value },
+    set activeId(value) {
+      s.activeId = value
+      // 打开会话时也对账一次（覆盖"重启后打开会话、但还没有队列回声"的入口 —— 仍受安全门约束）。
+      settleQueuedMessagesAfterLoad()
+    },
     get active() { return active() },
     get workspacePath() { return workspacePath() },
     get activeRunning() { return activeRunning() },
@@ -4301,6 +4469,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     forkConversation,
     abort,
     settleRunsForRuntimeRecovery,
+    // 状态区读它（事实层），不读会被后续状态行覆盖的短命 engineNotice。
+    get backgroundTasks() { return store.getState().backgroundTasks },
     compactContext,
     rewindContext,
     handoffContext,
