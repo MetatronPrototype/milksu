@@ -29,6 +29,10 @@ type Attachment struct {
 	MediaType string `json:"mediaType"`
 	Size      int64  `json:"size"`
 	SHA256    string `json:"sha256"`
+	// Notice/NoticeEnglish 只在"发生了有损压缩"时才有值（受控例外，见 sendable.go）。
+	// 界面必须把它显示给读者：不许静默压缩。
+	Notice        string `json:"notice,omitempty"`
+	NoticeEnglish string `json:"noticeEnglish,omitempty"`
 }
 
 // ImportPayload is the bounded renderer-to-Desktop representation used for
@@ -105,6 +109,8 @@ func (s *Store) ImportPayloads(payloads []ImportPayload) ([]Attachment, error) {
 		}
 		name := payload.Name
 		mediaType := payload.MediaType
+		notice := ""
+		noticeEnglish := ""
 		// iPhone 照片默认是 HEIC，而模型服务端不收它。导入那一刻就转成 PNG（只换容器，像素尺寸不变），
 		// 这样尺寸预检、发送、历史全都按 PNG 走；磁盘上那张原图我们没动（库里只是一份副本）。
 		if LooksLikeHEIC(data) || IsHEIFMediaType(payload.MediaType) {
@@ -113,14 +119,27 @@ func (s *Store) ImportPayloads(payloads []ImportPayload) ([]Attachment, error) {
 				// 诚实告知是哪张、为什么 —— 不静默丢弃，也不偷偷发一张坏图。
 				return nil, fmt.Errorf("附件 %q 是 HEIC/HEIF 照片，无法在本机转成 PNG：%v", payload.Name, convertErr)
 			}
-			data = converted
-			name = PNGNameFor(payload.Name)
-			mediaType = "image/png"
+			// 受控例外（用户明确点头，适用范围极窄）：只对"我们自己刚转出来的这张 PNG"、
+			// 且**只在超过可发送体积**时压缩；读者自己上传的文件永远走不到这里。
+			fitted, fittedType, quality, fitErr := FitForSending(converted, nil)
+			if fitErr != nil {
+				return nil, fmt.Errorf("附件 %q 转成 PNG 后仍超过可发送体积：%v", payload.Name, fitErr)
+			}
+			if quality > 0 {
+				// 发生过有损压缩 ⇒ 必须让读者知道（含"原图在本地未改"）。
+				notice = fmt.Sprintf("这张照片已压缩到 %.1f MiB 才发得出去；原图在本地未改。", float64(len(fitted))/(1024*1024))
+				noticeEnglish = fmt.Sprintf("This photo was compressed to %.1f MiB so it could be sent; your original file is unchanged.", float64(len(fitted))/(1024*1024))
+			}
+			data = fitted
+			name = sendableNameFor(payload.Name, fittedType)
+			mediaType = fittedType
 		}
 		attachment, err := attachmentFromData(name, mediaType, data)
 		if err != nil {
 			return nil, err
 		}
+		attachment.Notice = notice
+		attachment.NoticeEnglish = noticeEnglish
 		total += attachment.Size
 		if total > MaxTotalBytes {
 			return nil, fmt.Errorf("附件合计不能超过 96 MiB")
