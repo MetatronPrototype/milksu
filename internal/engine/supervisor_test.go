@@ -3549,3 +3549,36 @@ func TestNormalizeBridgeEventPassesStatusNoticesThrough(t *testing.T) {
 		t.Fatalf("type = %q, want engine.raw.something_new", unknown.Type)
 	}
 }
+
+// 跨会话投递曾经静默断掉：桥接事件结构里少了 targetConversationId / deliveryOrigin，
+// 渲染层拿不到派发目标就不会回裁定，发送方只能等到超时（真机：投递全部 status=unknown
+// 并落进 delivery-spool）。这条锁住「这四个字段必须活到归一化之后」。
+func TestNormalizeBridgeEventKeepsDeliveryFields(t *testing.T) {
+	delivery := normalizeBridgeEvent(bridgeEvent{
+		Type:                 "agent.delivery",
+		ID:                   "session-1",
+		Text:                 "交给别的对话处理",
+		TargetConversationID: "session-2",
+		DeliveryOrigin: &DeliveryOrigin{
+			ConversationID:    "session-1",
+			ConversationTitle: "来源会话",
+			Agent:             "MilkSU agent",
+		},
+		Kind: "result",
+	}, KernelPi)
+	if delivery.Type != "agent.delivery" {
+		t.Fatalf("type = %q, want agent.delivery", delivery.Type)
+	}
+	if delivery.Text != "交给别的对话处理" {
+		t.Fatalf("text = %q, want the delivery body", delivery.Text)
+	}
+	if delivery.TargetConversationID != "session-2" {
+		t.Fatalf("target = %q, want session-2", delivery.TargetConversationID)
+	}
+	if delivery.DeliveryOrigin == nil || delivery.DeliveryOrigin.ConversationID != "session-1" {
+		t.Fatalf("deliveryOrigin = %+v, want the source conversation", delivery.DeliveryOrigin)
+	}
+	if delivery.Kind != "result" {
+		t.Fatalf("kind = %q, want result", delivery.Kind)
+	}
+}
