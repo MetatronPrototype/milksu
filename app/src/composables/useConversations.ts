@@ -3838,12 +3838,18 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           ?? (event.payload as unknown as { notice?: string })?.notice
           ?? '',
         ).trim()
-        // The engine speaks English for these refusals. Mixing that into a Chinese status
-        // line reads badly, so an untranslated reason is summarised instead of pasted.
-        const localized = /[\u4e00-\u9fff]/.test(reason) ? reason : ''
-        pushEngineNotice(localized
-          ? t(`已拦截一条删除命令：${localized} —— 未执行。`, `Refused a delete command: ${localized} - nothing ran.`)
-          : t('已拦截一条删除命令 —— 未执行。', 'Refused a delete command - nothing ran.'))
+        // 严格同语言：句子里插入的部分必须和句子同语言，否则就是混排
+        // （英文句 + 中文词，或中文句 + 英文词）。所以两个分支**各取所需**，不再共用一个 localized：
+        //   中文句 ⇒ 只在原因本身含汉字时插入；英文句 ⇒ 只在原因不含汉字时插入。
+        // 语言不匹配时只出无变量版 —— 信息少一点可以接受，原因仍在引擎侧（模型看得到、日志里有），
+        // 前端**不翻译**业务词。
+        const hasChinese = /[\u4e00-\u9fff]/.test(reason)
+        const insertZh = hasChinese && reason !== ''
+        const insertEn = !hasChinese && reason !== ''
+        pushEngineNotice(t(
+          insertZh ? `已拦截一条删除命令：${reason} —— 未执行。` : '已拦截一条删除命令 —— 未执行。',
+          insertEn ? `Refused a delete command: ${reason} - nothing ran.` : 'Refused a delete command - nothing ran.',
+        ))
         return
       }
       if (type === 'attachment.held') {
