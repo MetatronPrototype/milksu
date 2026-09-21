@@ -1304,7 +1304,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   const BACKGROUND_TASK_REFRESH_FIRST_MS = 2000
   let backgroundTaskRefreshTimer: ReturnType<typeof setInterval> | undefined
   let backgroundTaskRefreshFirst: ReturnType<typeof setTimeout> | undefined
+  // 引擎侧对"刚起来的任务"可能还没登记 ⇒ 单次"空"不能当数（真机：2 秒首查返回空 ⇒ 标记被提前擦掉 ✗）。
+  let backgroundRefreshEmptyStreak = 0
   function stopBackgroundTaskRefresh() {
+    backgroundRefreshEmptyStreak = 0
     if (backgroundTaskRefreshTimer !== undefined) {
       clearInterval(backgroundTaskRefreshTimer)
       backgroundTaskRefreshTimer = undefined
@@ -1342,7 +1345,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           backgroundTasks: { ...state.backgroundTasks, [sessionId]: running },
         }))
         if (running.length === 0) {
-          stopBackgroundTaskRefresh()
+          // 连续两次空才清零 ⇒ 既不误擦刚起来的任务，真结束了也只需约 6 秒 ✓。
+          backgroundRefreshEmptyStreak += 1
+          if (backgroundRefreshEmptyStreak >= 2) stopBackgroundTaskRefresh()
+        } else {
+          backgroundRefreshEmptyStreak = 0
         }
       }).catch(() => undefined)
     }
