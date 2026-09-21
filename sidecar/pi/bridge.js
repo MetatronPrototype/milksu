@@ -1660,19 +1660,6 @@ function subscribeSession(
       if (event.toolName === "bg_task" || event.toolName === "bg_status") {
         emitBackgroundTasks(conversationId);
       }
-      // TEMP DEBUG（修好删净）：真机核实 bg_task 的**真实 toolName** 与"emit 到底有没有发生"。
-      // 只记事实、不改行为；try/catch 保证打点绝不影响运行。
-      try {
-        globalThis.__milksuBgToolNames = Array.isArray(globalThis.__milksuBgToolNames)
-          ? globalThis.__milksuBgToolNames
-          : [];
-        globalThis.__milksuBgToolNames.push({
-          at: Date.now(),
-          type: String(event.type ?? ""),
-          toolName: String(event.toolName ?? ""),
-          conversationId: String(conversationId ?? ""),
-        });
-      } catch { /* 打点不影响行为 */ }
       if (event.toolName === codingCollaborationToolName) {
         const policy = sessionPolicies.get(conversationId);
         const current = sessionSubagentTasks.get(conversationId) ?? [];

@@ -3956,12 +3956,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           running,
           hadRunning: reportedBackgroundTasks.get(sessionId) === true,
         })
-        // TEMP DEBUG（修好删净）：真机核实"事件到底有没有到前端、带了什么"。
-        try {
-          const debug = (globalThis as { __milksuBgTasks?: unknown[] })
-          debug.__milksuBgTasks = Array.isArray(debug.__milksuBgTasks) ? debug.__milksuBgTasks : []
-          debug.__milksuBgTasks.push({ at: Date.now(), sessionId, count: running.length })
-        } catch { /* 打点绝不影响行为 */ }
         reportedBackgroundTasks.set(sessionId, running.length > 0)
         // 留下**最后一份**（事实层）—— 回合结束时还要用它，状态区也据此显示。
         const kept = running.map(task => ({
