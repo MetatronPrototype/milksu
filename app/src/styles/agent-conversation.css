@@ -400,6 +400,37 @@
   background: transparent;
 }
 
+/* 「后台任务在跑」：**同一套九格网格**（尺寸与运行中/待决标一致），只把一条路径点亮成蓝色：
+   行优先索引 左下 6 → 中下 7 → 中 4 → 中上 1 → 右上 2；其余四格是 hole（占位、不画格子）。
+   底色写在**未分层**规则里：原版 `.agent-pixel__cell { background: var(--foreground) }` 是未分层的，
+   会稳定压过 @layer utilities 里的工具类（真机教训见上面待决标那两条注释）。 */
+.agent-pixel--bg-task {
+  animation: agent-bg-task-breathe 1.6s ease-in-out infinite;
+}
+
+.agent-pixel--bg-task .agent-pixel__cell {
+  /* 关掉运行中那种 650ms 快跳：这是"有东西在后台跑"，不是"这一步正在生成"。 */
+  animation: none;
+  opacity: 1;
+  background: var(--color-blue-400);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-pixel--bg-task {
+    animation: none;
+  }
+}
+
+@keyframes agent-bg-task-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
 @keyframes agent-decision-breathe {
   0%, 100% { opacity: 0.75; transform: scale(0.96); }
   50% { opacity: 1; transform: scale(1.04); }

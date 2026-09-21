@@ -3,8 +3,13 @@ import { createPortal } from 'react-dom'
 import { isComposingKey } from '@/lib/imeComposition'
 import AgentPixelLoader from '@/components/AgentPixelLoader'
 import AgentDecisionMark from '@/components/AgentDecisionMark'
-import { BackgroundTaskLine } from '@/components/BackgroundTaskLine'
-import type { BackgroundTaskLineTask } from '@/components/BackgroundTaskLine'
+import AgentBackgroundTaskMark from '@/components/AgentBackgroundTaskMark'
+/** 后台任务（事实层）里一个任务的最小形状 —— 侧栏只需要知道"有没有"，不读名字与状态。 */
+export interface BackgroundTaskLineTask {
+  id?: string
+  name?: string
+  status?: string
+}
 import { needsDecisionConversationIds as needsDecisionConversationIdsFrom } from '@/lib/needsDecision'
 import profileAvatar from '@/assets/ctf-learner-avatar.png'
 import { invokeCommand } from '@/desktop'
@@ -697,9 +702,10 @@ export default function ContextSidebar({
                 <span className="coding-session-complete size-1.5 rounded-full bg-primary" aria-label={t('有新消息', 'New messages')} />
               ) : null}
             </span>
-            {/* (B)/(C)①：读 store 里的**事实**（backgroundTasks），不读会被覆盖的短命提示；
-                有任务就显示，任务清零就消失 ⇒ 有任务在跑时状态区不会只剩"已结束"。 */}
-            <BackgroundTaskLine tasks={backgroundTasks?.[conversation.id]} />
+            {/* 后台任务：只留一个**蓝色九格标记**（左下→中下→中→中上→右上），**不显示任务名/件数**
+                —— 读者在这一栏要的是"还有东西在跑"这一个事实，详情在对话里说（真机反馈：
+                那行文字把列表挤坏了、且任务结束后还留着 ✗）。 */}
+            {(backgroundTasks?.[conversation.id]?.length ?? 0) > 0 ? <AgentBackgroundTaskMark /> : null}
             <span className="flex size-5 shrink-0" aria-hidden="true" />
             <span className="agent-sidebar__copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium">{conversation.title}</span>
             {age ? (

@@ -1,0 +1,36 @@
+import { useT } from '@/hooks/useUiLocale'
+
+// 3×3 点阵：**九个格子的位置都在**，只有一条路径上的 5 格被点亮。
+// 路径（行优先索引）：左下 6 → 中下 7 → 中 4 → 中上 1 → 右上 2。
+const BACKGROUND_TASK_PATH = [6, 7, 4, 1, 2]
+const BACKGROUND_TASK_SLOTS = 9
+
+/**
+ * 「这个会话有后台任务在跑」的标记（侧栏用）。
+ *
+ * 形态：**和运行中/待决策标记同一套 3×3 网格**（`.agent-pixel` = `repeat(3, 4px)` + `gap 1.5px`；
+ * `.agent-pixel__cell` = 4×4 + `border-radius: 1px`）⇒ 并排时尺寸完全一致；颜色**蓝色**。
+ *
+ * 为什么只做标记、不做文字：读者在这一栏要的是**"还有东西在跑"这一个事实** ✓，
+ * 不是"几个任务、叫什么名字"这种详情（真机反馈：那行文字把会话列表挤坏了，
+ * 而且任务结束后还会留着 ✗）。详情放到对话里说。
+ *
+ * 无障碍：`role="status"` + 双语 `aria-label`（这是状态，不是按钮）；`prefers-reduced-motion` 关动画。
+ */
+export default function AgentBackgroundTaskMark({ label }: { label?: string }) {
+  const t = useT()
+  const text = label ?? t('后台任务进行中', 'Background task running')
+  return (
+    <span className="agent-bg-task-mark inline-flex items-center" role="status" aria-label={text}>
+      {/* 工具类 `bg-blue-400` 只用来让 Tailwind 把主题变量发射出来；真正的底色写在下面
+          未分层的 `.agent-pixel--bg-task .agent-pixel__cell` 里（否则会被原版规则盖掉）。 */}
+      <span className="agent-pixel agent-pixel--bg-task bg-blue-400" aria-hidden="true">
+        {Array.from({ length: BACKGROUND_TASK_SLOTS }, (_slot, index) =>
+          BACKGROUND_TASK_PATH.includes(index)
+            ? <span key={index} className="agent-pixel__cell agent-pixel__cell--bg-task" />
+            : <span key={index} className="agent-pixel__cell--hole" />,
+        )}
+      </span>
+    </span>
+  )
+}

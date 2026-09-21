@@ -68,6 +68,7 @@ import AkLoadingMark from '@/components/AkLoadingMark'
 import ChatActivityGroup from '@/components/ChatActivityGroup'
 import ChatProcessFold from '@/components/ChatProcessFold'
 import ChatComposer, { type ChatComposerHandle } from '@/components/ChatComposer'
+import AgentBackgroundTaskMark from '@/components/AgentBackgroundTaskMark'
 import { ConversationQuoteMenu, selectedTextIn } from '@/components/ConversationQuoteMenu'
 import WorkingTray from '@/components/WorkingTray'
 import ChatMessageItem from '@/components/ChatMessageItem'
@@ -2918,6 +2919,17 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             <span className="hidden" aria-hidden="true" />
           </WindowFileDrop>
 
+          {/* 对话里的"后台任务进行中"：同一枚蓝色九格标记、**不带详情**（读者要的是事实，不是清单）。
+              放在输入框上方的窄带里 ⇒ 不打断阅读、也不挤掉消息流。 */}
+          {(conversations.backgroundTasks?.[conversations.activeId ?? ''] ?? []).length > 0 ? (
+            <div
+              className="chat-composer__background-strip flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground"
+              data-testid="background-task-strip"
+            >
+              <AgentBackgroundTaskMark />
+              <span>{t('后台任务进行中', 'Background task running')}</span>
+            </div>
+          ) : null}
           <ChatComposer
             // 按会话重挂载：输入框内部有多处"上一个会话"的 ref，若不重挂载，切换时
             // 它们会互相滞后，把草稿记到别的会话名下（已在装机版复现串稿）。
