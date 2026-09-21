@@ -123,6 +123,7 @@ import {
   layoutComposerAddMenu,
 } from '@/lib/composerAddMenu'
 import { AttachmentPixelBadge } from '@/components/AttachmentPixelBadge'
+import AttachmentNotice from '@/components/AttachmentNotice'
 import { rememberAttachmentPixels } from '@/lib/attachmentPixelCache'
 import { shouldShowMultitaskCapsule } from '@/lib/composerMultitask'
 import { useT } from '@/hooks/useUiLocale'
@@ -1733,6 +1734,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                         <button type="button" className="composer-attachment-thumb__remove" aria-label={t(`移除 ${attachment.name}`, `Remove ${attachment.name}`)} onClick={() => removeCodingAttachment(attachment)}>
                           <X className="size-3" />
                         </button>
+                        <span className="composer-attachment-thumb__notice">
+                          <AttachmentNotice chinese={attachment.notice} english={attachment.noticeEnglish} />
+                        </span>
                       </span>
                     )
                   }
@@ -1744,6 +1748,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                         <span className="shrink-0 text-muted-foreground">{formatAttachmentSize(attachment.size)}</span>
                         <AttachmentPixelBadge attachmentKey={key} />
                       </button>
+                      {/* 后端只在"真的压过"时给这两句；其余附件什么都不渲染。 */}
+                      <AttachmentNotice chinese={attachment.notice} english={attachment.noticeEnglish} />
                       <button type="button" className="rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t(`移除 ${attachment.name}`, `Remove ${attachment.name}`)} onClick={() => removeCodingAttachment(attachment)}>
                         <X className="size-3.5" />
                       </button>

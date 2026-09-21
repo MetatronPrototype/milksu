@@ -21,7 +21,10 @@ import (
 const maxSendableBytes = 24 << 20
 
 // 质量阶梯：从高到低逐档试，**第一档达标就停**（能少压就少压）。没有任何缩放参数。
-var jpegQualityLadder = []int{92, 85, 78, 70, 60, 50}
+//
+// **质量下限 90**：用户明确"如果有损压缩导致图片不可用就得不偿失" ⇒ 只允许温和压缩，
+// 到 90 为止，不许更低；压不下去就**放弃压缩**（见 FitForSending），宁可发不出去也不能发一张糊图。
+var jpegQualityLadder = []int{92, 90}
 
 // JPEGPixelSize 读 JPEG 的 SOF 段（只读文件头，不解码整图）。
 func JPEGPixelSize(data []byte) (int, int, bool) {
@@ -76,6 +79,9 @@ func FitForSending(png []byte, run func(sourcePath, targetPath string, quality i
 	if len(png) <= maxSendableBytes {
 		return png, "image/png", 0, nil
 	}
+	// 质量下限内压不到目标体积 ⇒ **放弃压缩**，原样返回无损 PNG：
+	// 接下来由原有的"超限 ⇒ 本地扣下 + 点名告知读者"那条链路处理（已实现，一行不用改）。
+	// 这里绝不返回半成品，也绝不返回 nil。
 	directory, err := os.MkdirTemp("", "milksu-sendable-")
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("create temporary directory: %w", err)
@@ -89,8 +95,6 @@ func FitForSending(png []byte, run func(sourcePath, targetPath string, quality i
 	if run == nil {
 		run = runSipsToJPEG
 	}
-	var smallestBytes []byte
-	var smallestSize int
 	for _, quality := range jpegQualityLadder {
 		target := filepath.Join(directory, fmt.Sprintf("q%d.jpg", quality))
 		if err := run(source, target, quality); err != nil {
@@ -105,14 +109,11 @@ func FitForSending(png []byte, run func(sourcePath, targetPath string, quality i
 		} else if width == 0 || height == 0 {
 			return nil, "", 0, errors.New("sips produced a JPEG without dimensions")
 		}
-		if smallestBytes == nil || len(candidate) < len(smallestBytes) {
-			smallestBytes, smallestSize = candidate, len(candidate)
-		}
 		if len(candidate) <= maxSendableBytes {
 			return candidate, "image/jpeg", quality, nil
 		}
 	}
-	return nil, "", 0, fmt.Errorf("即使压到最低质量仍然超过可发送体积（%d 字节）", smallestSize)
+	return png, "image/png", 0, nil
 }
 
 // runSipsToJPEG 只降质量：`-s formatOptions` 是质量档，**没有**任何 -Z/-s dpi 之类的缩放参数。
