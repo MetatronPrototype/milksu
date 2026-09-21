@@ -365,7 +365,7 @@
      Tailwind 的工具类在 @layer utilities 里，而原版 `.agent-pixel__cell { background: var(--foreground) }`
      是**未分层**的 —— 未分层样式优先于任何 @layer ⇒ 工具类会被盖成白/灰（用户真机反馈"怎么没有黄色"）。
      这条是未分层的两个类选择器 ⇒ 稳定压过原版那条；色值用 Tailwind 主题变量，不自造色值。 */
-  background: var(--color-amber-500);
+  background: var(--color-amber-400);
 }
 
 /* 中心留空：占位撑住网格，但不画格子。 */
