@@ -1,4 +1,9 @@
 import { createStore, nextTick } from '@/lib/reactStore'
+import {
+  type InjectedGuidanceEntry,
+  injectedGuidanceTexts,
+  settleInjectedGuidance,
+} from '@/lib/injectedGuidance'
 import { settleConsumedQueuedMessages } from '@/lib/queuedGuidanceStatus'
 import { invokeCommand, listenEvent } from '@/desktop'
 import type { CodingCompactionResult, CodingProjectMemory } from '@/codingEnvironmentTypes'
@@ -971,7 +976,7 @@ type ConversationsState = {
   // 搬运自本地分支（C）：另一个对话交过来的消息，在转写里显示为只读提示。
   crossConversationNotices: CrossConversationNotice[]
   // 搬运自本地分支（A 引导）：已经交给正在跑的这一轮的引导，以及“队列已被中断”标记。
-  injectedSteering: Map<string, string[]>
+  injectedSteering: Map<string, InjectedGuidanceEntry[]>
   interruptedQueueIds: Set<string>
   continuity: CodingContinuityState
   turnStatusById: Map<string, SessionTurnSnapshot>
@@ -1097,7 +1102,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     forceStopReadyIds: new Set<string>(),
     hardStopFailedIds: new Set<string>(),
     crossConversationNotices: [],
-    injectedSteering: new Map<string, string[]>(),
+    injectedSteering: new Map<string, InjectedGuidanceEntry[]>(),
     interruptedQueueIds: new Set<string>(),
     continuity: createCodingContinuityState(),
     turnStatusById: new Map<string, SessionTurnSnapshot>(),
@@ -1396,7 +1401,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   ))
   // 已经交给正在跑的这一轮的引导：显示出来免得看起来像凭空消失，但它已经不再排队等。
   const activeInjectedGuidance = (() => (
-    s.activeId ? (s.injectedSteering.get(s.activeId) ?? []) : []
+    s.activeId ? injectedGuidanceTexts(s.injectedSteering.get(s.activeId)) : []
   ))
 
   /**
@@ -1448,7 +1453,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       followUp: queue.followUp,
     })
     const injected = new Map(s.injectedSteering)
-    injected.set(conversationId, [...(injected.get(conversationId) ?? []), prompt])
+    // 记下注入时刻：这条属于"现在这一轮"⇒ 只有它自己那一轮结束时才清（见 injectedGuidance.ts）。
+    injected.set(conversationId, [
+      ...(injected.get(conversationId) ?? []),
+      { text: prompt, at: Date.now() },
+    ])
     s.injectedSteering = injected
     // 显示在转写里：读者把它并进了本轮，它就该看得见，而不是只存在于 pi 内部。
     update(conversationId, current => ({
@@ -3776,7 +3785,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         // 以本地为准：本会话已经"加入对话"（= 已注入本轮）的条目不接受引擎回声放回队列，
         // 否则读者会看到同一段正文既在「已加入本轮」又回到队列里（真机截图：⏱ …已并入本回合）。
         // 队列的唯一真相源是 MilkSU 本地，引擎回声只用来同步它没见过的变化。
-        const injectedLocally = new Set(s.injectedSteering.get(sessionId) ?? [])
+        const injectedLocally = new Set(injectedGuidanceTexts(s.injectedSteering.get(sessionId)))
         const nextQueue = injectedLocally.size
           ? {
               steering: engineQueue.steering.filter(text => !injectedLocally.has(text)),
@@ -4031,14 +4040,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
             setMessageQueue(sessionId, { steering: [], followUp: [] })
             markQueueStalled(sessionId, false)
           }
-          // 回合结束了：这些引导已经进入这一轮，"已加入本轮"的通知到此为止 ——
-          // 否则它会一直挂在输入框上方（用户看到的就是这个：回合结束后还列着 2 条）。
-          // 只在回合结束时清；回合还在跑时必须继续显示（它是"本轮已并入"的通知）。
-          // ⚠️ 去重用的"最近注入"记录将来要单独另存一份并保留 30 秒（引擎回声可能在回合结束后才到），
-          //    那份记录与这里的显示列表是两件事 —— 目前引擎回声去重尚未落地，先不混在一起。
+          // 回合结束了：只清掉**属于刚结束那一轮**的引导（`at <= 本回合结束时刻`）。
+          // 旧写法"任何回合结束都全清"有个真机可见的坑：读者在回合刚结束/正在结束时点「加入对话」✗
+          // ⇒ 追加后立刻被清掉 ⇒ 提示不显示。晚于结束时刻注入的条目**保留** ✓，
+          // 它们会继续显示，直到**它们自己那一轮**结束才清。退化策略见 injectedGuidance.ts。
           if (s.injectedSteering.has(sessionId)) {
+            const settledEntries = settleInjectedGuidance(s.injectedSteering.get(sessionId), Date.now())
             const withoutInjected = new Map(s.injectedSteering)
-            withoutInjected.delete(sessionId)
+            if (settledEntries.length) withoutInjected.set(sessionId, settledEntries)
+            else withoutInjected.delete(sessionId)
             s.injectedSteering = withoutInjected
           }
           finishRun(sessionId)
