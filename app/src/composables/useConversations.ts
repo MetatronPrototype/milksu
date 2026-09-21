@@ -1194,43 +1194,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set pendingComposerDraft(value) { store.setState({ pendingComposerDraft: value }) },
   }
 
-  // TEMP DEBUG（临时打点，仅用于定性"同一条文本被写成两条"；查清后必须删除）：
-  // 拦截状态上 conversations 的**每一次赋值** ⇒ 无论第二条是"追加"还是"整体替换后变多"，
-  // 都能拿到：前后条数 + 新那条的 id/内容前 30 字 + **调用方那一层栈帧（文件名:行号）**。
-  try {
-    let debugShadow = s.conversations
-    Object.defineProperty(s, 'conversations', {
-      configurable: true,
-      get() { return debugShadow },
-      set(next: typeof debugShadow) {
-        try {
-          const before = new Map((debugShadow ?? []).map(c => [c.id, c.messages?.length ?? 0]))
-          const caller = String(new Error().stack ?? '').split('\n')[3]?.trim() ?? ''
-          for (const conversation of next ?? []) {
-            const was = before.get(conversation.id) ?? 0
-            const now = conversation.messages?.length ?? 0
-            if (now > was) {
-              const added = conversation.messages?.[now - 1]
-              const entry = {
-                at: Date.now(),
-                was,
-                now,
-                newId: String(added?.id ?? ''),
-                snippet: String(added?.content ?? '').slice(0, 30),
-                caller,
-              }
-              console.info('[milksu-conv]', conversation.id, `${was}→${now}`,
-                entry.newId, entry.snippet, caller)
-              // 同时落到全局数组：调试通道读不到控制台，只能从 globalThis 取（真机复现用）。
-              const holder = globalThis as unknown as { __milksuConvLog?: unknown[] }
-              ;(holder.__milksuConvLog ??= []).push({ ...entry, conversationId: conversation.id })
-            }
-          }
-        } catch { /* 打点绝不能影响状态 */ }
-        debugShadow = next
-      },
-    })
-  } catch { /* 打点失败也不影响功能 */ }
 
   const parkedPendingByHome: Partial<Record<WorkspaceHome, ParkedPendingCanvas>> = {}
   const pendingDshGoals = new Map<string, string>()
@@ -1503,6 +1466,20 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       { text: prompt, at: Date.now() },
     ])
     s.injectedSteering = injected
+    // 写入侧查重（真机数据定位的真因 ✓）：读者可能**刚刚直接把同一句话发出去了** ✓
+    // （`send()` 走的是直发 ✓），随后又点了「加入对话」✓ ⇒ 若这里再无脑追加一条 ✓，
+    // 同一段正文就会出现两条 ✗（引擎其实只收到一条 ✓ = 纯显示重复 ✗）。
+    // ⇒ 只对**注入这一条路径**查重：本会话最近 30 秒内已有同文本（trim 后相等）的 user 消息就不再追加。
+    // 注意 ✓：`injectedSteering` 的标记**照旧写入** ✓（那是"本轮已并入"的显示列表 ✓，与转录条目是两件事 ✓）
+    // ⇒「已加入本轮」提示的可见性不受影响 ✓。这**不是**全局/显示层去重 ✗（引擎真收到两遍仍会照旧暴露 ✓）。
+    const recentSameText = (s.conversations.find(item => item.id === conversationId)?.messages ?? [])
+      .some(message => (
+        message.role === 'user'
+        && typeof message.content === 'string'
+        && message.content.trim() === prompt.trim()
+        && Date.now() - Number(message.timestamp ?? 0) < 30_000
+      ))
+    if (!recentSameText) {
     // 显示在转写里：读者把它并进了本轮，它就该看得见，而不是只存在于 pi 内部。
     update(conversationId, current => ({
       ...current,
@@ -1515,6 +1492,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         fromQueuedGuidance: true,
       }],
     }))
+    }
     // 手动加入就是读者接管了：队列重新被信任。
     markQueueInterrupted(conversationId, false)
     return true
@@ -2782,7 +2760,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         }))
       }
       if (autoSend && !s.runningIds.has(existing.id)) {
-        await send(task.prompt, task.prompt, [], undefined, undefined, -1, undefined, undefined, 'task')
+        await send(task.prompt)
       }
       return
     }
@@ -2804,7 +2782,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.pendingWorkspacePath = ''
     persist(conversation)
     if (autoSend) {
-      await send(task.prompt, task.prompt, [], undefined, undefined, -1, undefined, undefined, 'task')
+      await send(task.prompt)
     }
   }
 
@@ -2819,20 +2797,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     // 两个参数都可选：不传时行为和以前完全一样（发给当前打开的对话、消息没有来源）。
     targetConversationId?: string,
     origin?: MessageOrigin,
-    // TEMP DEBUG（临时参数，仅用于定性；查清后删除）
-    debugOrigin = 'ui',
   ) {
     const prompt = text.trim()
     if (!prompt) return false
-    // TEMP DEBUG（临时打点，仅用于定性"同一条被派发两次"；查清后必须删除）：
-    // 记下每次调用的来源标签 + 调用栈里"调用方那一层"（UI 侧的调用者靠栈就能认出来）。
-    try {
-      const stackLine = String(new Error().stack ?? '').split('\n')[2]?.trim() ?? ''
-      const log = (globalThis as unknown as { __milksuSendLog?: unknown[] }).__milksuSendLog
-        ?? ((globalThis as unknown as { __milksuSendLog?: unknown[] }).__milksuSendLog = [])
-      log.push({ origin: debugOrigin, prompt: prompt.slice(0, 40), at: Date.now(), caller: stackLine })
-      console.info('[milksu-send]', debugOrigin, prompt.slice(0, 40), stackLine)
-    } catch { /* 打点本身绝不能影响发送 */ }
     let outboundPrompt = prompt
     let outboundVisible = visibleText.trim() || prompt
     const runningConversationId = targetConversationId ?? s.activeId
@@ -3182,7 +3149,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       ...current,
       messages: current.messages.slice(0, index),
     }))
-    return send(content, content, [], undefined, undefined, Math.max(0, occurrence), undefined, undefined, 'edit')
+    return send(content, content, [], undefined, undefined, Math.max(0, occurrence))
   }
 
   async function branchFromAssistant(messageId: string) {
@@ -4271,7 +4238,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           -1,
           targetId,
           origin,
-          'delivery',
         )
         if (!accepted) {
           settleAgentDelivery(sourceId, requestId, 'refused', t('投递没有被接受', 'The delivery was not accepted'))
