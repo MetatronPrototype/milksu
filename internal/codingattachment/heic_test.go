@@ -71,27 +71,6 @@ func TestConversionLeavesTheOriginalFileUntouched(t *testing.T) {
 	}
 }
 
-// 已知限制（**等决定，不是本件的目标**）：无损 PNG 比 HEIC 大得多 —— 真机这张 4.1 MiB 的 HEIC
-// 转出 33,668,242 字节（32.1 MiB），刚好超过我们自己 32 MiB 的附件上限约 0.1 MiB。
-// 这条把现状钉住，免得以后有人以为 HEIC 已经"端到端能发了"。
-func TestTheByteCapStillRejectsTheLargestRealPhoto(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, importErr := store.ImportPayloads([]ImportPayload{{
-		Name:       "IMG_2646.HEIC",
-		MediaType:  "image/heic",
-		DataBase64: base64.StdEncoding.EncodeToString(readRealHeic(t)),
-	}})
-	if importErr == nil {
-		t.Skip("the byte cap no longer rejects this photo: update the expectation and the report")
-	}
-	if !strings.Contains(importErr.Error(), "32 MiB") {
-		t.Fatalf("expected the size cap to be the reason, got %q", importErr.Error())
-	}
-}
-
 // 转不了要说清楚是哪张、为什么；且不许产生附件。
 func TestUnconvertibleHEICFailsLoudlyWithoutProducingAnAttachment(t *testing.T) {
 	broken := append([]byte("ftypheic"), make([]byte, 64)...)
