@@ -361,12 +361,19 @@
   /* 关掉运行中那种 650ms 快跳：待决策要"停下来等你"，不是"还在忙"。 */
   animation: none;
   opacity: 1;
+  /* 背景必须写在这里，不能只靠组件上的 bg-amber-500：
+     Tailwind 的工具类在 @layer utilities 里，而原版 `.agent-pixel__cell { background: var(--foreground) }`
+     是**未分层**的 —— 未分层样式优先于任何 @layer ⇒ 工具类会被盖成白/灰（用户真机反馈"怎么没有黄色"）。
+     这条是未分层的两个类选择器 ⇒ 稳定压过原版那条；色值用 Tailwind 主题变量，不自造色值。 */
+  background: var(--color-amber-500);
 }
 
 /* 中心留空：占位撑住网格，但不画格子。 */
 .agent-pixel__cell--hole {
   width: 4px;
   height: 4px;
+  /* 中心必须"空"：不带 .agent-pixel__cell 类，也不会被上面那条背景规则命中 —— 这里再显式写一次，免得后人给它加类时把中心填上。 */
+  background: transparent;
 }
 
 @keyframes agent-decision-breathe {

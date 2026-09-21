@@ -8,7 +8,9 @@ import AgentDecisionMark from '@/components/AgentDecisionMark'
 afterEach(cleanup)
 
 // 用工作目录相对路径读源文件：jsdom 环境里 import.meta.url 不是 file 协议。
-const css = readFileSync(resolve(process.cwd(), 'src/styles/agent-conversation.css'), 'utf8')
+const rawCss = readFileSync(resolve(process.cwd(), 'src/styles/agent-conversation.css'), 'utf8')
+// 先把注释剥掉：注释里出现的 `{` / `}` 会让朴素的规则解析提前截断（我第一版就栽在这）。
+const css = rawCss.replace(/\/\*[\s\S]*?\*\//g, '')
 
 function ruleBody(selector: string) {
   const start = css.indexOf(selector)
@@ -56,7 +58,8 @@ describe('needs-decision mark appearance', () => {
     const { container } = render(<AgentDecisionMark />)
     const cells = container.querySelectorAll('.agent-pixel__cell')
     expect(cells).toHaveLength(8)
-    for (const cell of cells) expect(cell.className).toMatch(/bg-amber-500\b/)
+    // 颜色由未分层的修饰规则给（见下面那条专门断言），组件上不挂会被层级盖掉的工具类。
+    for (const cell of cells) expect(cell.className).not.toMatch(/bg-amber-500/)
     const slots = container.querySelectorAll('.agent-pixel > *')
     expect(slots).toHaveLength(9)
     expect(slots[4]?.className).toContain('agent-pixel__cell--hole')
@@ -70,6 +73,41 @@ describe('needs-decision mark appearance', () => {
     expect(ruleBody('.agent-pixel--decision {')).toContain('agent-decision-breathe 2.4s')
     // 原版 loader 的动画定义保持不变（它仍然在转）。
     expect(ruleBody('.agent-pixel__cell {')).toContain('agent-pixel-on 650ms')
+  })
+
+  // 用户真机反馈"怎么没有黄色"：颜色曾写在组件的 bg-amber-500 上，而 Tailwind 工具类在 @layer utilities 里，
+  // 原版 `.agent-pixel__cell { background: var(--foreground) }` 是**未分层**的 ⇒ 未分层优先于任何 @layer ⇒ 被盖成白/灰。
+  // 所以背景必须写进**未分层的修饰规则**（两个类，稳定压过原版那条）。
+  it('paints the decision cells amber from the modifier rule, not from a layered utility', () => {
+    const decision = ruleBody('.agent-pixel--decision .agent-pixel__cell {')
+    expect(decision).toContain('background: var(--color-amber-500)')
+    // 组件上不许再挂 bg-amber-500 这种会被层级盖掉的工具类（避免两个真相来源）。
+    const { container } = render(<AgentDecisionMark />)
+    for (const cell of container.querySelectorAll('.agent-pixel__cell')) {
+      expect(cell.className).not.toMatch(/bg-amber-500/)
+    }
+    // 色值必须是主题变量（Tailwind 在构建产物里定义 --color-amber-500），不是自造字面色值。
+    const background = decision.match(/background:\s*([^;]+);/)?.[1]?.trim() ?? ''
+    expect(background).toBe('var(--color-amber-500)')
+    expect(background).not.toMatch(/#[0-9a-f]{3,8}|oklch\(|rgb\(/i)
+  })
+
+  // 原版 loader 必须仍然是白/灰：这条规则一个字都没改。
+  it('leaves the running loader grey', () => {
+    const base = ruleBody('.agent-pixel__cell {')
+    expect(base).toContain('background: var(--foreground)')
+    expect(base).not.toContain('amber')
+    expect(base).toContain('agent-pixel-on 650ms')
+  })
+
+  // 中心留空必须仍然是"空"：透明、且不带会被上色规则命中的类。
+  it('keeps the centre hole transparent', () => {
+    const hole = ruleBody('.agent-pixel__cell--hole {')
+    expect(hole).toContain('background: transparent')
+    const { container } = render(<AgentDecisionMark />)
+    const slots = container.querySelectorAll('.agent-pixel > *')
+    expect(slots[4]?.className).toContain('agent-pixel__cell--hole')
+    expect(slots[4]?.className).not.toContain('agent-pixel__cell--decision')
   })
 
   it('announces itself as a status with a bilingual label', () => {

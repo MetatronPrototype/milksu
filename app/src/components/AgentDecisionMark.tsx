@@ -27,7 +27,7 @@ export default function AgentDecisionMark({ label }: { label?: string }) {
           index === DECISION_RING_CENTER
             // 中心留空：占位但不画格子，所以"没有格子元素"是可断言的。
             ? <span key={index} className="agent-pixel__cell--hole" />
-            : <span key={index} className="agent-pixel__cell agent-pixel__cell--decision bg-amber-500" />
+            : <span key={index} className="agent-pixel__cell agent-pixel__cell--decision" />
         ))}
       </span>
     </span>
