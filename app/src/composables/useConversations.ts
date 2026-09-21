@@ -2743,7 +2743,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         }))
       }
       if (autoSend && !s.runningIds.has(existing.id)) {
-        await send(task.prompt)
+        await send(task.prompt, task.prompt, [], undefined, undefined, -1, undefined, undefined, 'task')
       }
       return
     }
@@ -2765,7 +2765,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.pendingWorkspacePath = ''
     persist(conversation)
     if (autoSend) {
-      await send(task.prompt)
+      await send(task.prompt, task.prompt, [], undefined, undefined, -1, undefined, undefined, 'task')
     }
   }
 
@@ -2780,9 +2780,20 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     // 两个参数都可选：不传时行为和以前完全一样（发给当前打开的对话、消息没有来源）。
     targetConversationId?: string,
     origin?: MessageOrigin,
+    // TEMP DEBUG（临时参数，仅用于定性；查清后删除）
+    debugOrigin = 'ui',
   ) {
     const prompt = text.trim()
     if (!prompt) return false
+    // TEMP DEBUG（临时打点，仅用于定性"同一条被派发两次"；查清后必须删除）：
+    // 记下每次调用的来源标签 + 调用栈里"调用方那一层"（UI 侧的调用者靠栈就能认出来）。
+    try {
+      const stackLine = String(new Error().stack ?? '').split('\n')[2]?.trim() ?? ''
+      const log = (globalThis as unknown as { __milksuSendLog?: unknown[] }).__milksuSendLog
+        ?? ((globalThis as unknown as { __milksuSendLog?: unknown[] }).__milksuSendLog = [])
+      log.push({ origin: debugOrigin, prompt: prompt.slice(0, 40), at: Date.now(), caller: stackLine })
+      console.info('[milksu-send]', debugOrigin, prompt.slice(0, 40), stackLine)
+    } catch { /* 打点本身绝不能影响发送 */ }
     let outboundPrompt = prompt
     let outboundVisible = visibleText.trim() || prompt
     const runningConversationId = targetConversationId ?? s.activeId
@@ -3132,7 +3143,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       ...current,
       messages: current.messages.slice(0, index),
     }))
-    return send(content, content, [], undefined, undefined, Math.max(0, occurrence))
+    return send(content, content, [], undefined, undefined, Math.max(0, occurrence), undefined, undefined, 'edit')
   }
 
   async function branchFromAssistant(messageId: string) {
@@ -4221,6 +4232,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           -1,
           targetId,
           origin,
+          'delivery',
         )
         if (!accepted) {
           settleAgentDelivery(sourceId, requestId, 'refused', t('投递没有被接受', 'The delivery was not accepted'))
