@@ -3552,7 +3552,7 @@ func TestNormalizeBridgeEventPassesStatusNoticesThrough(t *testing.T) {
 
 // 跨会话投递曾经静默断掉：桥接事件结构里少了 targetConversationId / deliveryOrigin，
 // 渲染层拿不到派发目标就不会回裁定，发送方只能等到超时（真机：投递全部 status=unknown
-// 并落进 delivery-spool）。这条锁住「这四个字段必须活到归一化之后」。
+// 并落进那句超时提示）。这条锁住「这四个字段必须活到归一化之后」。
 func TestNormalizeBridgeEventKeepsDeliveryFields(t *testing.T) {
 	delivery := normalizeBridgeEvent(bridgeEvent{
 		Type:                 "agent.delivery",

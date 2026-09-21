@@ -122,8 +122,7 @@ type Event struct {
 	Timestamp     string `json:"timestamp"`
 	Text          string `json:"text,omitempty"`
 	// 跨会话投递用：目标会话、正文、形态与来源必须一路带到渲染层。缺一个字段，渲染层就
-	// 拿不到派发目标、也就不会回裁定，发送方只能等到超时（真机：投递全部 status=unknown
-	// 并落进 delivery-spool）。
+	// 拿不到派发目标、也就不会回裁定，发送方只能等到超时（真机：投递全部 status=unknown）。
 	TargetConversationID string                   `json:"targetConversationId,omitempty"`
 	DeliveryOrigin       *DeliveryOrigin          `json:"deliveryOrigin,omitempty"`
 	Kind                 string                   `json:"kind,omitempty"`

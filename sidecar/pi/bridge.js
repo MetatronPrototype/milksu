@@ -40,7 +40,6 @@ import {
 } from "./bridge-policy.js";
 import { createApprovalBroker } from "./bridge-approval.js";
 import { createDeliveryBroker } from "./bridge-delivery.js";
-import { createDeliverySpool, shouldSpoolDelivery } from "./bridge-delivery-spool.js";
 import { isExternalMessagePrompt } from "./bridge-external-content.js";
 import { startTurnHeartbeat } from "./bridge-turn-heartbeat.js";
 import {
@@ -502,11 +501,6 @@ function protectedAlarmNotice(violation, locale) {
 }
 // Settles the delivery tool's own request/response round trip with the host.
 const deliveryBroker = createDeliveryBroker(emit);
-// 没送达的回执落到这里，下一次成功投递时自动前置（今天真发生过：一条回执没送到，
-// 对面看到的是"对方 5 小时没动"，于是重复派单）。没配目录就整个禁用。
-const deliverySpool = createDeliverySpool({
-  dir: process.env.MILKSU_DELIVERY_SPOOL_DIR,
-});
 const workspaceActionBroker = createWorkspaceActionBroker(emit);
 const pendingWorkspaceCompaction = new Set();
 const sessionContextUsage = new Map();
@@ -680,29 +674,12 @@ function createMilkSUWorkflowExtension(sessionRole, getPolicy, getSession, conve
           kind,
           origin: { conversationId: conversationId ?? "" },
         });
-        const status = String(outcome?.status ?? "").trim();
-        // 只有"真的没送达"才记进 spool；送达时把还没补投的条目前置一句再清掉，
-        // 免得它们在传输里凭空消失。排队（queued）是已被接收，不算失败。
-        let prefix = "";
-        if (shouldSpoolDelivery(status)) {
-          await deliverySpool.record({
-            targetConversationId: target,
-            text: body,
-            kind,
-            status,
-            detail: outcome?.detail ?? "",
-          });
-        } else {
-          const waiting = await deliverySpool.pending();
-          if (waiting.length) {
-            prefix = `${deliverySpool.formatPrefix(waiting, true)}\n\n`;
-            await deliverySpool.clear(waiting);
-          }
-        }
+        // 不再做"补投"：引擎自己会 settled 出确定状态（真机日志 `[delivery] settled …
+        // status=delivered`），而曾经的 spool 只会一直积文件 ⇒ 已整件摘掉。
         return {
           content: [{
             type: "text",
-            text: `${prefix}${formatDeliveryOutcome(outcome, target)}`,
+            text: formatDeliveryOutcome(outcome, target),
           }],
           details: {
             targetConversationId: target,
