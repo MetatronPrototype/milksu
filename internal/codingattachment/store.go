@@ -120,7 +120,8 @@ func (s *Store) ImportPayloads(payloads []ImportPayload) ([]Attachment, error) {
 				return nil, fmt.Errorf("附件 %q 是 HEIC/HEIF 照片，无法在本机转成 PNG：%v", payload.Name, convertErr)
 			}
 			// 受控例外（用户明确点头，适用范围极窄）：只对"我们自己刚转出来的这张 PNG"、
-			// 且**只在超过可发送体积**时压缩；读者自己上传的文件永远走不到这里。
+			// 且**只在超过可发送体积**时做**温和**压缩（质量 ≥ 90）；读者自己上传的文件永远走不到这里。
+			// 压不到目标体积则原样保留 PNG ⇒ 交给"超限未发送"那条提示链路，不假装压过。
 			fitted, fittedType, quality, fitErr := FitForSending(converted, nil)
 			if fitErr != nil {
 				return nil, fmt.Errorf("附件 %q 转成 PNG 后仍超过可发送体积：%v", payload.Name, fitErr)

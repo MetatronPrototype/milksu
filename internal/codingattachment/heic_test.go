@@ -3,6 +3,8 @@ package codingattachment
 import (
 	"encoding/base64"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -45,8 +47,11 @@ func TestConvertHEICToPNGKeepsTheRealDimensions(t *testing.T) {
 	if !ok {
 		t.Fatal("the conversion did not produce a readable PNG")
 	}
-	if width != 5712 || height != 4284 {
-		t.Fatalf("conversion rescaled the photo: got %dx%d, want 5712x4284", width, height)
+	// 基准取**源文件自己**的尺寸（由 sips 报），不写死任何数字。
+	if sourceWidth, sourceHeight, ok := sipsSize(t, realHeicPath); ok {
+		if width != sourceWidth || height != sourceHeight {
+			t.Fatalf("conversion rescaled the photo: %dx%d -> %dx%d", sourceWidth, sourceHeight, width, height)
+		}
 	}
 	if name := PNGNameFor("IMG_2646.HEIC"); name != "IMG_2646.png" {
 		t.Fatalf("stored name = %q, want IMG_2646.png", name)
@@ -100,4 +105,31 @@ func TestUnconvertibleHEICFailsLoudlyWithoutProducingAnAttachment(t *testing.T) 
 			t.Fatalf("a failed HEIC import left something behind: %s", entry.Name())
 		}
 	}
+}
+
+// sipsSize 问系统这张图的真实宽高（测试基准用它，而不是写死数字）。
+func sipsSize(t *testing.T, path string) (int, int, bool) {
+	t.Helper()
+	out, err := exec.Command("sips", "-g", "pixelWidth", "-g", "pixelHeight", path).Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	width, height := 0, 0
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.SplitN(line, ":", 2)
+		if len(fields) != 2 {
+			continue
+		}
+		value, convErr := strconv.Atoi(strings.TrimSpace(fields[1]))
+		if convErr != nil {
+			continue
+		}
+		switch strings.TrimSpace(fields[0]) {
+		case "pixelWidth":
+			width = value
+		case "pixelHeight":
+			height = value
+		}
+	}
+	return width, height, width > 0 && height > 0
 }

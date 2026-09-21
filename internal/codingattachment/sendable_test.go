@@ -76,7 +76,12 @@ func TestTheLargestRealPhotoBecomesSendableWithoutLosingResolution(t *testing.T)
 	if !strings.HasSuffix(attachment.Name, ".jpg") {
 		t.Fatalf("name = %q, want a .jpg name", attachment.Name)
 	}
-	// 硬要求：只降质量，**不降分辨率**。
+	// 硬要求：只降质量，**不降分辨率** —— 断言"压缩前后宽高一致"，**不写死任何数字**
+	// （那个 5712×4284 只是这次真机文件的观测值，不是约束）。
+	pngWidth, pngHeight, ok := PNGPixelSize(mustConvert(t, readSendableRealHeic(t)))
+	if !ok {
+		t.Fatal("the source png has no readable size")
+	}
 	stored, err := store.read(attachment)
 	if err != nil {
 		t.Fatal(err)
@@ -85,8 +90,8 @@ func TestTheLargestRealPhotoBecomesSendableWithoutLosingResolution(t *testing.T)
 	if !ok {
 		t.Fatal("the stored copy is not a readable JPEG")
 	}
-	if width != 5712 || height != 4284 {
-		t.Fatalf("compression rescaled the photo: got %dx%d, want 5712x4284", width, height)
+	if width != pngWidth || height != pngHeight {
+		t.Fatalf("compression rescaled the photo: %dx%d -> %dx%d", pngWidth, pngHeight, width, height)
 	}
 	// 不能静默压缩：必须有双语提示，并说明原图未改。
 	if attachment.Notice == "" || attachment.NoticeEnglish == "" {
@@ -186,4 +191,59 @@ func TestFitForSendingStopsAtTheFirstQualityThatFits(t *testing.T) {
 		t.Fatalf("small png should be returned untouched, got %q q=%d", mediaType, quality)
 	}
 	_ = source
+}
+
+func mustConvert(t *testing.T, heic []byte) []byte {
+	t.Helper()
+	png, err := ConvertHEICToPNG(heic, nil)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	return png
+}
+
+// 质量下限内压不到目标体积 ⇒ **放弃压缩**：原样返回无损 PNG、quality=0（界面因此不会显示"已压缩"），
+// 之后由原有"超限 ⇒ 本地扣下 + 点名告知"那条链路处理。
+func TestFitForSendingGivesUpInsteadOfOverCompressing(t *testing.T) {
+	oversized := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, maxSendableBytes/4+64)
+	// 注入的"压缩器"产出一张**真的 JPEG**、但补齐到仍然超标 ⇒ 模拟"压到下限还是压不下去"。
+	// （必须是真的 JPEG：FitForSending 会校验它确实拿到了可读图片，不读半成品。）
+	directory := t.TempDir()
+	base := filepath.Join(directory, "base.jpg")
+	sourcePNG := filepath.Join(directory, "source.png")
+	realPNG := mustConvert(t, readSendableRealHeic(t))
+	if err := os.WriteFile(sourcePNG, realPNG, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSipsToJPEG(sourcePNG, base, 92); err != nil {
+		t.Skipf("sips could not build the fixture: %v", err)
+	}
+	small, err := os.ReadFile(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 补齐到**超过**目标（24 MiB）才叫"压不下去"：这里加一整份目标大小。
+	padded := append(append([]byte{}, small...), make([]byte, maxSendableBytes)...)
+	run := func(_ string, target string, _ int) error {
+		return os.WriteFile(target, padded, 0o600)
+	}
+	data, mediaType, quality, err := FitForSending(oversized, run)
+	if err != nil {
+		t.Fatalf("giving up must not be an error: %v", err)
+	}
+	if quality != 0 || mediaType != "image/png" {
+		t.Fatalf("when the floor cannot reach the target we must keep the lossless png, got %q q=%d", mediaType, quality)
+	}
+	if !bytes.Equal(data, oversized) {
+		t.Fatal("giving up must return the untouched png")
+	}
+	// 质量下限：阶梯里不许出现低于 90 的档。
+	for _, step := range jpegQualityLadder {
+		if step < 90 {
+			t.Fatalf("the quality floor is 90, found %d in the ladder", step)
+		}
+	}
+	if len(jpegQualityLadder) == 0 || jpegQualityLadder[len(jpegQualityLadder)-1] != 90 {
+		t.Fatalf("the ladder must end at the floor 90, got %v", jpegQualityLadder)
+	}
 }
