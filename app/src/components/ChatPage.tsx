@@ -2889,13 +2889,14 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
           {/* 整窗拖拽加附件（监听在 window 上 ⇒ 拖到窗口任意处都生效；遮罩 fixed inset-0）。
               文件交给 composer 现成的 importCodingFiles（经 ref）⇒ 上限/体积/报错都由它负责。 */}
           <WindowFileDrop
-            onFiles={(files, overflow) => {
+            onFiles={(files, notices) => {
               if (files.length) composer.current?.addDroppedFiles(files)
-              if (overflow > 0) {
-                const message = t(
-                  `最多 8 个附件，已忽略多余的 ${overflow} 个。`,
-                  `At most 8 attachments; ${overflow} were ignored.`,
-                )
+              // 提示统一从纯模块给的 notices 出口出（**文案在这里用 t() 成对拼** ✓ —— 仓库约定：
+              // 面向用户的文字都要经 t(中文, English)，`uiLocaleCoverage` 会抓 ✗）⇒ 不会重复弹 ✗。
+              for (const notice of notices) {
+                const message = notice.kind === 'overflow'
+                  ? t(`最多 8 个附件，已忽略多余的 ${notice.count} 个。`, `At most 8 attachments; ${notice.count} were ignored.`)
+                  : t('暂不支持文件夹，请拖文件或压缩后再试。', 'Folders are not supported yet; drop files (or a zip) instead.')
                 toastError(message, message)
               }
             }}

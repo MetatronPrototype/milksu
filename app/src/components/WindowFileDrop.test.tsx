@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import WindowFileDrop from '@/components/WindowFileDrop'
+import WindowFileDrop, { countDroppedFolders } from '@/components/WindowFileDrop'
 
 afterEach(cleanup)
 
@@ -34,7 +34,7 @@ describe('window wide file drop', () => {
     window.dispatchEvent(dragEvent('drop', { files }))
     expect(onFiles).toHaveBeenCalledTimes(1)
     expect(onFiles.mock.calls[0]?.[0]).toHaveLength(2)
-    expect(onFiles.mock.calls[0]?.[1]).toBe(0)
+    expect(onFiles.mock.calls[0]?.[1]).toEqual([])
   })
 
   // ② 拖**文字**（没有 Files）⇒ 完全不接管（输入框原有行为不变）。
@@ -57,7 +57,9 @@ describe('window wide file drop', () => {
     window.dispatchEvent(dragEvent('drop', { files }))
     expect(onFiles).toHaveBeenCalledTimes(1)
     expect(onFiles.mock.calls[0]?.[0]).toHaveLength(8)
-    expect(onFiles.mock.calls[0]?.[1]).toBe(3)
+    // 多出来的 3 个要如实告诉读者（双语），不许静默。
+    const notices = onFiles.mock.calls[0]?.[1] as { kind: string; count: number }[]
+    expect(notices).toEqual([{ kind: 'overflow', count: 3 }])
   })
 
   // ④ dragleave / drop 之后高亮必须撤掉。
@@ -76,5 +78,28 @@ describe('window wide file drop', () => {
     expect(screen.getByRole('status')).not.toBeNull()
     act(() => { window.dispatchEvent(dragEvent('drop', { files })) })
     expect(screen.queryByRole('status')).toBeNull()
+  })
+})
+
+// 文件夹检测：真实环境才有 webkitGetAsEntry ⇒ 用**注入的假 items 对象**覆盖这条分支
+// （jsdom 里没有该 API，所以**不假装它存在**，而是直接测这个纯工具函数）。
+describe('folder detection', () => {
+  it('counts only items that report themselves as directories', () => {
+    const dataTransfer = {
+      items: {
+        length: 3,
+        0: { kind: 'file', webkitGetAsEntry: () => ({ isDirectory: true }) },
+        1: { kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) },
+        2: { kind: 'file', webkitGetAsEntry: () => ({ isDirectory: true }) },
+      },
+    }
+    expect(countDroppedFolders(dataTransfer)).toBe(2)
+  })
+
+  it('is zero when the environment has no entries, and never throws', () => {
+    expect(countDroppedFolders(undefined)).toBe(0)
+    expect(countDroppedFolders({})).toBe(0)
+    expect(countDroppedFolders({ items: { length: 1, 0: { kind: 'string' } } })).toBe(0)
+    expect(countDroppedFolders({ items: { length: 1, 0: { kind: 'file', webkitGetAsEntry: () => { throw new Error('nope') } } } })).toBe(0)
   })
 })
