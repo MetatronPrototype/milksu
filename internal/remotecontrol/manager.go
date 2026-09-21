@@ -327,6 +327,11 @@ type Manager struct {
 	port          int
 	lastError     string
 	loginFailures map[string][]time.Time
+
+	// subMu guards the change listeners. Each subscriber keeps at most one pending ping,
+	// because a ping only tells the page to re-read the whole projection.
+	subMu       sync.Mutex
+	subscribers map[chan struct{}]struct{}
 }
 
 type deviceRecord struct {
@@ -576,6 +581,78 @@ func (m *Manager) Close() error {
 	return nil
 }
 
+// Subscribe returns a channel that pings whenever something the page shows may have changed,
+// plus the cancel function the caller must run when it stops listening.
+func (m *Manager) Subscribe() (<-chan struct{}, func()) {
+	changes := make(chan struct{}, 1)
+	m.subMu.Lock()
+	if m.subscribers == nil {
+		m.subscribers = make(map[chan struct{}]struct{})
+	}
+	m.subscribers[changes] = struct{}{}
+	m.subMu.Unlock()
+	cancel := func() {
+		m.subMu.Lock()
+		delete(m.subscribers, changes)
+		m.subMu.Unlock()
+	}
+	return changes, cancel
+}
+
+// NotifyChange wakes every listener. It never blocks: a listener that is already behind keeps
+// a single pending ping, which is enough because the page re-reads the whole state.
+func (m *Manager) NotifyChange() {
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	for changes := range m.subscribers {
+		select {
+		case changes <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// handleEvents streams a ping whenever the projection changes, so the page stops polling on a
+// fixed timer. The stream carries no state on purpose: the page re-reads /api/state, which
+// keeps one source of truth and one authorisation path.
+func (m *Manager) handleEvents(writer http.ResponseWriter, request *http.Request) {
+	if _, auth := m.deviceForRequest(request); !auth.OK {
+		writeAuthFailure(writer, auth)
+		return
+	}
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		http.Error(writer, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	writer.Header().Set("Connection", "keep-alive")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte(": connected\n\n"))
+	flusher.Flush()
+
+	changes, cancel := m.Subscribe()
+	defer cancel()
+	keepalive := time.NewTicker(20 * time.Second)
+	defer keepalive.Stop()
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case <-keepalive.C:
+			if _, err := writer.Write([]byte(": keepalive\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-changes:
+			if _, err := writer.Write([]byte("event: changed\ndata: {}\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
 // Status reports the current listener, URL, pairing code and devices.
 func (m *Manager) Status() Status {
 	m.mu.Lock()
@@ -784,6 +861,7 @@ func (m *Manager) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", m.handlePage)
 	mux.HandleFunc("/api/state", m.handleState)
+	mux.HandleFunc("/api/events", m.handleEvents)
 	mux.HandleFunc("/api/mode", m.handleMode)
 	mux.HandleFunc("/api/audit", m.handleAudit)
 	mux.HandleFunc("/api/conversation", m.handleConversation)
@@ -1207,6 +1285,8 @@ func (m *Manager) writeAction(
 		Action: action, Detail: detail, OK: err == nil, Error: errorText(err),
 	})
 	m.mu.Unlock()
+	// Another device may be watching: wake it, whatever the outcome was.
+	m.NotifyChange()
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return

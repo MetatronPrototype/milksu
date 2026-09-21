@@ -181,13 +181,28 @@ func (a *App) trackRemoteViewEvent(event engine.Event) {
 		}
 		a.pendingApprovals[requestID] = approval
 		a.approvalMu.Unlock()
+		a.notifyRemoteChange()
 	case "session.queue_updated":
 		// The queue only exists as an event, so the remote page reads this cache.
 		a.rememberRemoteQueue(event.SessionID, event.Steering, event.FollowUp)
+		a.notifyRemoteChange()
 	case "approval.resolved":
 		a.approvalMu.Lock()
-		defer a.approvalMu.Unlock()
 		delete(a.pendingApprovals, strings.TrimSpace(event.RequestID))
+		a.approvalMu.Unlock()
+		a.notifyRemoteChange()
+	}
+}
+
+// notifyRemoteChange wakes the page whenever something it shows has changed. It never
+// creates the manager: a host that never enabled remote control gets no listener and no
+// state file from this path.
+func (a *App) notifyRemoteChange() {
+	a.remoteControlMu.Lock()
+	manager := a.remoteControls
+	a.remoteControlMu.Unlock()
+	if manager != nil {
+		manager.NotifyChange()
 	}
 }
 

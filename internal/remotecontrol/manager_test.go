@@ -966,3 +966,46 @@ func TestPageCarriesTheParityControls(t *testing.T) {
 		}
 	}
 }
+
+// The page learned to wait for a ping instead of polling on a timer, so the manager has to
+// wake every listener and stop waking one that unsubscribed.
+func TestChangeSubscriptionReceivesAPing(t *testing.T) {
+	manager, _, _ := startManager(t)
+
+	changes, cancel := manager.Subscribe()
+	manager.NotifyChange()
+	select {
+	case <-changes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a subscriber must be woken by NotifyChange")
+	}
+
+	cancel()
+	manager.NotifyChange()
+	select {
+	case <-changes:
+		t.Fatal("a cancelled subscriber must not be woken")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// The stream is the only push channel the page has, so its route and its client have to stay
+// wired in the page.
+func TestPageUsesTheHostPushStream(t *testing.T) {
+	_, status, _ := startManager(t)
+	response, err := http.Get(status.URL)
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	page := string(body)
+	for _, marker := range []string{"EventSource('/api/events')", "watchHostChanges()"} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("the page is missing %s", marker)
+		}
+	}
+	if strings.Contains(page, "}, 5000)") {
+		t.Fatal("the page must not keep the old five second poll")
+	}
+}

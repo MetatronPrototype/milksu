@@ -590,7 +590,37 @@ void fetch('/api/mode').then(r => r.ok ? r.json() : null)
   .then(mode => { if (mode && mode.local_only) $('passwordBlock').classList.remove('hidden') })
   .catch(() => {})
 void refreshAll()
-setInterval(() => { if (!$('app').classList.contains('hidden')) void refreshAll() }, 5000)
+
+// 主机在有变化时推一次；页面不再靠固定轮询。30 秒的慢轮询只做兜底，断线或事件丢失时
+// 仍能自愈。推送密集时合并刷新，避免一次风暴把状态接口打十遍。
+let refreshing = false
+let refreshQueued = false
+async function refreshSoon() {
+  if (refreshing) { refreshQueued = true; return }
+  refreshing = true
+  try {
+    await refreshAll()
+  } finally {
+    refreshing = false
+    if (refreshQueued) { refreshQueued = false; void refreshSoon() }
+  }
+}
+
+setInterval(() => { if (!$('app').classList.contains('hidden')) void refreshAll() }, 30000)
+
+function watchHostChanges() {
+  if (!window.EventSource) return
+  const source = new EventSource('/api/events')
+  source.addEventListener('changed', () => { void refreshSoon() })
+  source.addEventListener('error', () => {
+    // EventSource 自己会重连；慢轮询在这期间继续兜底。
+  })
+}
+
+watchHostChanges()
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) void refreshSoon()
+})
 </script>
 </body>
 </html>
