@@ -4,7 +4,7 @@ import {
   injectedGuidanceTexts,
   settleInjectedGuidance,
 } from '@/lib/injectedGuidance'
-import { settleConsumedQueuedMessages } from '@/lib/queuedGuidanceStatus'
+import { settleQueuedMessagesWhenQueueKnown } from '@/lib/queuedGuidanceStatus'
 import { invokeCommand, listenEvent } from '@/desktop'
 import type { CodingCompactionResult, CodingProjectMemory } from '@/codingEnvironmentTypes'
 import {
@@ -965,6 +965,8 @@ type ConversationsState = {
   runningIds: Set<string>
   abortingIds: Set<string>
   messageQueues: Map<string, CodingMessageQueue>
+  // 已经收到过引擎队列报告的会话：只有这些会话才允许做离队⇒转正的对账（防重启误判⇒重复）。
+  queueSyncedIds: Set<string>
   engineNotice: string
   engineNoticeRepeat: number
   engineNoticeAt: number
@@ -1094,6 +1096,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     runningIds: new Set<string>(),
     abortingIds: new Set<string>(),
     messageQueues: new Map<string, CodingMessageQueue>(),
+    queueSyncedIds: new Set<string>(),
     engineNotice: '',
     engineNoticeRepeat: 0,
     engineNoticeAt: 0,
@@ -1155,6 +1158,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set abortingIds(value) { store.setState({ abortingIds: value }) },
     get messageQueues() { return store.getState().messageQueues },
     set messageQueues(value) { store.setState({ messageQueues: value }) },
+    get queueSyncedIds() { return store.getState().queueSyncedIds },
+    set queueSyncedIds(value) { store.setState({ queueSyncedIds: value }) },
     get runningTools() { return store.getState().runningTools },
     set runningTools(value) { store.setState({ runningTools: value }) },
     get heartbeatTick() { return store.getState().heartbeatTick },
@@ -1885,6 +1890,25 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     } catch {
       if (!s.pendingWorkspacePath) s.pendingWorkspacePath = ''
     }
+    // 会话数据到位之后对账一次（安全门在函数里：队列未知的会话一条都不动）。
+    settleQueuedMessagesAfterLoad()
+  }
+
+  /**
+   * 载入会话数据之后跑一次对账（此前只在"队列事件"里跑 ⇒ 重启后 / 长期没有队列变化时，
+   * 那些已被消费的排队消息会永远卡在 queued、永远不显示）。
+   * **仍然带安全门**：队列未知（重启后还没拿到回声，且桥里没有"取队列快照"的现成命令 ⇒ 见回执）
+   * 的会话**一条都不动** —— 宁可暂时不显示，也不许把"引擎里还排着"的误判成已消费而制造重复。
+   */
+  function settleQueuedMessagesAfterLoad() {
+    const synced = s.queueSyncedIds ?? new Set<string>()
+    s.conversations = s.conversations.map(conversation => {
+      if (!(synced.has?.(conversation.id) ?? false)) return conversation
+      const pending = s.messageQueues?.get?.(conversation.id)?.steering ?? []
+      const messages = settleQueuedMessagesWhenQueueKnown(conversation.messages, pending, true)
+        ?? conversation.messages
+      return messages === conversation.messages ? conversation : { ...conversation, messages }
+    })
   }
 
   function update(id: string, updater: (conversation: Conversation) => Conversation) {
@@ -3781,6 +3805,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         return
       }
       if (type === 'session.queue_updated') {
+        // 这条事件就是"该会话的队列已经同步过一次"的凭据（重启后第一份可信队列信息）。
+        if (!(s.queueSyncedIds?.has?.(sessionId) ?? false)) {
+          s.queueSyncedIds = new Set(s.queueSyncedIds ?? []).add(sessionId)
+        }
         const engineQueue = projectCodingMessageQueue(steering, followUp)
         // 以本地为准：本会话已经"加入对话"（= 已注入本轮）的条目不接受引擎回声放回队列，
         // 否则读者会看到同一段正文既在「已加入本轮」又回到队列里（真机截图：⏱ …已并入本回合）。
@@ -3805,7 +3833,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           conversation.id === sessionId
             ? {
                 ...conversation,
-                messages: settleConsumedQueuedMessages(conversation.messages, nextQueue.steering),
+                messages: settleQueuedMessagesWhenQueueKnown(
+                  conversation.messages,
+                  nextQueue.steering,
+                  s.queueSyncedIds?.has?.(sessionId) ?? false,
+                ) ?? conversation.messages,
               }
             : conversation
         ))
@@ -4245,7 +4277,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get conversations() { return s.conversations },
     set conversations(value) { s.conversations = value },
     get activeId() { return s.activeId },
-    set activeId(value) { s.activeId = value },
+    set activeId(value) {
+      s.activeId = value
+      // 打开会话时也对账一次（覆盖"重启后打开会话、但还没有队列回声"的入口 —— 仍受安全门约束）。
+      settleQueuedMessagesAfterLoad()
+    },
     get active() { return active() },
     get workspacePath() { return workspacePath() },
     get activeRunning() { return activeRunning() },
