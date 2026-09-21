@@ -116,6 +116,8 @@ export interface DestructiveTargetInspection {
   emptyDirectory: boolean
   fileCount: number
   totalBytes: number
+  /** 删除**将释放**的空间（du 口径）；-1 表示该平台拿不到块数，渲染侧须回退为"内容大小"。 */
+  diskBytes: number
   sampled: boolean
   inGitRepository: boolean
   gitTracked: boolean

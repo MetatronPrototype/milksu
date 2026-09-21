@@ -14,7 +14,7 @@ describe('size line wording', () => {
     expect(source).not.toContain("'sampled'")
     // 与 verdict 一字不差的下限用词。
     expect(source).toContain('未扫完')
-    expect(source).toContain('at least')
+    expect(source).toContain('will free')
   })
 
   it('states the floor for a truncated measurement and nothing extra for a complete one', () => {

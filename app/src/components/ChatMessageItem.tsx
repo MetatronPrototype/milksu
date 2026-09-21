@@ -624,9 +624,10 @@ export default function ChatMessageItem({
                   {approvalMeasurement.fileCount !== undefined ? (
                     <p className="text-muted-foreground">
                       {t('规模', 'Size')}：{approvalMeasurement.sampled
-                        // 与 verdict 同一套用词：被上限截停的统计是**下限**（旧的那种把样本当总量的说法已去掉）。
-                        ? `${t('至少', 'at least')} ${approvalMeasurement.fileCount} ${t('个文件', 'files')} / ≥ ${formatBytesFloor(approvalMeasurement.totalBytes ?? 0)}${t('（未扫完）', ' (not fully scanned)')}`
-                        : `${approvalMeasurement.fileCount} ${t('个文件', 'files')}`}
+                        // 与 verdict 同一套用词与口径：主口径是"删除将释放的空间"（磁盘占用），拿不到块数
+                        // 时才说"内容大小"；被上限截停的统计是**下限**（至少/≥/未扫完）。
+                        ? `${(approvalMeasurement.diskBytes ?? -1) >= 0 ? t('将释放', 'will free') : t('内容大小', 'content size')} ≥ ${formatBytesFloor((approvalMeasurement.diskBytes ?? -1) >= 0 ? (approvalMeasurement.diskBytes ?? 0) : (approvalMeasurement.totalBytes ?? 0))}${t(`（至少 ${approvalMeasurement.fileCount} 个文件，未扫完）`, ` (at least ${approvalMeasurement.fileCount} files, not fully scanned)`)}`
+                        : `${(approvalMeasurement.diskBytes ?? -1) >= 0 ? t('将释放', 'will free') : t('内容大小', 'content size')} ${formatBytesFloor((approvalMeasurement.diskBytes ?? -1) >= 0 ? (approvalMeasurement.diskBytes ?? 0) : (approvalMeasurement.totalBytes ?? 0))}${t(`（${approvalMeasurement.fileCount} 个文件）`, ` (${approvalMeasurement.fileCount} files)`)}`}
                     </p>
                   ) : null}
                   {approvalMeasurement.inGitRepository !== undefined ? (
