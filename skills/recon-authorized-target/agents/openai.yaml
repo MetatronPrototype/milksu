@@ -1,0 +1,4 @@
+interface:
+  display_name: "Authorized Recon"
+  short_description: "Inventory one user-authorized host or lab target and keep the evidence in report.md"
+  default_prompt: "Use $recon-authorized-target to inventory this authorized target and record the findings in report.md."
