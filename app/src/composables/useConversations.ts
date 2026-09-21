@@ -1,4 +1,5 @@
 import { createStore, nextTick } from '@/lib/reactStore'
+import { backgroundTaskNotice } from '@/lib/backgroundTaskNotice'
 import { directSendDecision } from '@/lib/directSendGate'
 import {
   type InjectedGuidanceEntry,
@@ -1266,6 +1267,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   // 只守被强制停掉的“那个回合”：epoch 一变（新的一轮）立刻释放。
   const runEpochByConversation = new Map<string, number>()
   const forceStopGuard = new Map<string, { epoch: number; until: number }>()
+  // 后台任务可见性：每个会话"之前是否报过有后台任务在跑"（用来决定"跑完了"要不要说一声 ✓）。
+  // 放在 composable 本地即可 ⇒ 不动状态类型（本轮最小改动 ✓）。
+  const reportedBackgroundTasks = new Map<string, boolean>()
   function currentRunEpoch(id: string) {
     return runEpochByConversation.get(id) ?? 0
   }
@@ -3849,6 +3853,35 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         const chinese = String(payload?.notice ?? '').trim()
         const english = String(payload?.noticeEnglish ?? '').trim()
         if (chinese || english) pushEngineNotice(t(chinese || english, english || chinese))
+        return
+      }
+      if (type === 'background_tasks') {
+        // 后台任务（打包/verify 那类）**不在** runningIds/turnStatus 里 ⇒ 回合结束时界面会像"完事了" ✗。
+        // 这里订阅侧车已有的 `background_tasks` 事件 ✓（`bridge.js` 的 emitBackgroundTasks ✓），
+        // 用判定层决定说什么 ✓，再用现成通道把话说给读者 ✓ —— 文案在这里用 t() 成对拼 ✓（仓库硬约定 ✓）。
+        const tasks = Array.isArray((event.payload as unknown as { tasks?: unknown })?.tasks)
+          ? ((event.payload as unknown as { tasks: Array<{ name?: unknown; status?: unknown }> }).tasks)
+          : []
+        const running = tasks.filter(task => String(task?.status ?? '') === 'running')
+        const notice = backgroundTaskNotice({
+          // 回合是否已结束：这一轮没在跑 ⇒ 读者看到的"结束"更需要说明 ✓。
+          turnEnded: !s.runningIds.has(sessionId),
+          running,
+          hadRunning: reportedBackgroundTasks.get(sessionId) === true,
+        })
+        reportedBackgroundTasks.set(sessionId, running.length > 0)
+        if (notice?.kind === 'still-running') {
+          const name = String(notice.name)
+          const suffix = notice.count > 1
+            ? t(`（还有 ${notice.count - 1} 件）`, ` (${notice.count - 1} more)`)
+            : ''
+          pushEngineNotice(t(
+            `后台仍在运行：${name}${suffix} —— 请不要关机。`,
+            `Still running in the background: ${name}${suffix} - please do not shut down.`,
+          ))
+        } else if (notice?.kind === 'finished') {
+          pushEngineNotice(t('后台任务已完成。', 'Background work finished.'))
+        }
         return
       }
       if (type === 'session.queue_updated') {
