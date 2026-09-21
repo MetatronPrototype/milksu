@@ -1,4 +1,4 @@
-import { guidanceDisplayState } from '@/lib/guidanceDisplayState'
+import ComposerInjectedGuidance from '@/components/ComposerInjectedGuidance'
 import {
   forwardRef,
   useEffect,
@@ -1640,40 +1640,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
 
           {/* 搬运自本地分支（A 引导）：已经交给本轮的引导也要看得见，
               否则读者会以为它凭空消失了。 */}
-          {injectedGuidance?.length ? (() => {
-            // 两态（产品口径 ✓）：工具还在跑 ⇒ 引擎还没到下一个安全点 ⇒ 显示"等待中" ✓；
-            // 工具结束 ⇒ 真的加入了 ⇒ 才显示"已加入" ✓。**纯显示**，不动排队/steering ✓。
-            const guidanceState = guidanceDisplayState(queuedGuidanceAwaitingTool)
-            const waiting = guidanceState === 'waiting'
-            return (
-            <section
-              className="chat-composer__queued-guidance"
-              aria-label={waiting
-                ? t('等待加入本轮的引导', 'Steering waiting to join this turn')
-                : t('已加入本轮的引导', 'Steering merged into this turn')}
-            >
-              <div className="flex items-center gap-2 text-caption font-medium text-muted-foreground">
-                {waiting
-                  // 等待中：克制的小圆点（**不打勾** ✗），与"已加入"的 ✓ 明确区分。
-                  ? <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground" aria-hidden="true" />
-                  : <Check className="size-3.5" />}
-                <span>{waiting
-                  ? t(`${injectedGuidance.length} 条引导等待加入`, `${injectedGuidance.length} steering messages are waiting to join`)
-                  : t(`${injectedGuidance.length} 条引导已加入本轮`, `${injectedGuidance.length} steering messages joined this turn`)}</span>
-              </div>
-              {injectedGuidance.map((message, index) => (
-                <div key={`injected:${index}:${message}`} className="mt-1 flex items-center gap-2 rounded-xl border border-border/70 bg-background/55 px-2 py-1.5">
-                  <p className="min-w-0 flex-1 truncate text-caption text-muted-foreground" title={message}>{message}</p>
-                  <span className="shrink-0 text-caption text-muted-foreground">
-                    {waiting
-                      ? t('正在等待工具调用结束，结束后加入对话', 'Waiting for the running tool to finish; it will join the conversation after that')
-                      : t('已加入本轮', 'Joined this turn')}
-                  </span>
-                </div>
-              ))}
-            </section>
-            )
-          })() : null}
+          <ComposerInjectedGuidance messages={injectedGuidance} toolRunning={queuedGuidanceAwaitingTool} />
 
           {queuedGuidance?.length ? (
             <section className="chat-composer__queued-guidance" aria-label={t('待应用引导', 'Queued steering')}>
