@@ -407,6 +407,8 @@ const COMPOSER_STYLES = `
 `
 
 export type ChatComposerHandle = {
+  /** 整窗拖放：把窗口级 drop 收到的文件交进来（内部走现成的 importCodingFiles ✓）。 */
+  addDroppedFiles: (files: File[]) => void
   appendDraftText: (text: string) => void
   /** Quote material the reader selected in the transcript, shown above the input. */
   appendQuote: (text: string) => void
@@ -1589,6 +1591,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   useImperativeHandle(ref, () => ({
     appendDraftText,
     appendQuote,
+    // 整窗拖放接线用：外部（窗口级 drop ✓）把文件交进来 ⇒ **直接调现成的 importCodingFiles** ✓
+    // （不新造导入逻辑 ✗；上限/体积/错误提示都由它负责 ✓）。
+    addDroppedFiles: (files: File[]) => { void importCodingFiles(files) },
     openAddMenu,
     focusMessageInput,
   }), [])

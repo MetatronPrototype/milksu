@@ -1,3 +1,4 @@
+import WindowFileDrop from '@/components/WindowFileDrop'
 import {
   forwardRef,
   lazy,
@@ -2884,6 +2885,23 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
               </Button>
             </div>
           ) : null}
+
+          {/* 整窗拖拽加附件（监听在 window 上 ⇒ 拖到窗口任意处都生效；遮罩 fixed inset-0）。
+              文件交给 composer 现成的 importCodingFiles（经 ref）⇒ 上限/体积/报错都由它负责。 */}
+          <WindowFileDrop
+            onFiles={(files, overflow) => {
+              if (files.length) composer.current?.addDroppedFiles(files)
+              if (overflow > 0) {
+                const message = t(
+                  `最多 8 个附件，已忽略多余的 ${overflow} 个。`,
+                  `At most 8 attachments; ${overflow} were ignored.`,
+                )
+                toastError(message, message)
+              }
+            }}
+          >
+            <span className="hidden" aria-hidden="true" />
+          </WindowFileDrop>
 
           <ChatComposer
             // 按会话重挂载：输入框内部有多处"上一个会话"的 ref，若不重挂载，切换时
