@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useT } from '@/hooks/useUiLocale'
 import { ATTACHMENT_LIMIT, isFileDrag, nextDragDepth, planFileDrop } from '@/lib/composerFileDrop'
+import { windowFileDropOutcome, type WindowFileDropNotice } from '@/lib/windowFileDropOutcome'
 
 /**
  * 整窗拖拽加附件（**接线**那一半；判定在 `composerFileDrop.ts` ✓）。
@@ -23,8 +24,8 @@ export default function WindowFileDrop({
   /** 当前已有几个附件（用于算"还能收几个"✓）。 */
   pendingCount?: number
   limit?: number
-  /** 真正要导入的文件 + 因为超上限被忽略的数量（由调用方提示读者 ✓）。 */
-  onFiles: (files: File[], overflow: number) => void
+  /** 真正要导入的文件 + 要如实告诉读者的提示（双语 ✓，可能为空 ✓）。 */
+  onFiles: (files: File[], notices: WindowFileDropNotice[]) => void
 }) {
   const t = useT()
   const depth = useRef(0)
@@ -64,17 +65,22 @@ export default function WindowFileDrop({
       event.preventDefault()
       endDrag()
       const dropped = Array.from(event.dataTransfer?.files ?? [])
+      // 文件夹：真实环境（Electron）能用 webkitGetAsEntry 判出来 ✓；jsdom 里没有这个 API ⇒ 数到 0 ✓
+      // （**不假装它存在** ✗；测试要用"注入假 items"的方式才测得到 ✓）。
+      const folders = countDroppedFolders(event.dataTransfer as unknown as { items?: unknown })
       const plan = planFileDrop({
         fileCount: dropped.length,
         pendingCount: latest.current.pendingCount,
+        folderCount: folders,
         limit: latest.current.limit,
       })
-      if (!plan.accept) {
-        // 一个都收不下：仍然要告诉读者（不许静默）。
-        if (plan.overflow > 0 || dropped.length > 0) latest.current.onFiles([], plan.overflow || dropped.length)
-        return
-      }
-      latest.current.onFiles(dropped.slice(0, plan.accept), plan.overflow)
+      // 决策统一交给纯模块 ⇒ 组件与 ChatPage 都不各写一套（也不各弹一次 ✗）。
+      const outcome = windowFileDropOutcome({
+        accepted: dropped.slice(0, plan.accept),
+        overflow: plan.overflow,
+        folders,
+      })
+      latest.current.onFiles(outcome.transfer, outcome.notices)
     }
     window.addEventListener('dragenter', handleEnter)
     window.addEventListener('dragover', handleOver)
@@ -105,4 +111,25 @@ export default function WindowFileDrop({
       ) : null}
     </>
   )
+}
+
+/**
+ * 数出这次拖进来的**文件夹**个数。
+ * 只有真实环境才有 `webkitGetAsEntry` ✓（jsdom 没有 ⇒ 返回 0 ✓）：因此这条分支只在 Electron 里生效，
+ * 测试用"注入一个假 items 对象"来覆盖 ✓（而不是假装 jsdom 有这个 API ✗）。
+ */
+export function countDroppedFolders(dataTransfer: { items?: unknown } | undefined): number {
+  const items = (dataTransfer as { items?: unknown } | undefined)?.items
+  if (!items || typeof (items as { length?: unknown }).length !== 'number') return 0
+  let folders = 0
+  const list = items as { length: number; [index: number]: unknown }
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index] as { kind?: unknown; webkitGetAsEntry?: () => unknown } | undefined
+    if (!item || item.kind !== 'file' || typeof item.webkitGetAsEntry !== 'function') continue
+    try {
+      const entry = item.webkitGetAsEntry() as { isDirectory?: unknown } | null
+      if (entry?.isDirectory === true) folders += 1
+    } catch { /* 判不出来就不算文件夹（不外溢） */ }
+  }
+  return folders
 }
