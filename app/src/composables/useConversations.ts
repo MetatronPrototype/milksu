@@ -4463,6 +4463,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     forkConversation,
     abort,
     settleRunsForRuntimeRecovery,
+    // 状态区读它（事实层），不读会被后续状态行覆盖的短命 engineNotice。
+    get backgroundTasks() { return store.getState().backgroundTasks },
     compactContext,
     rewindContext,
     handoffContext,
