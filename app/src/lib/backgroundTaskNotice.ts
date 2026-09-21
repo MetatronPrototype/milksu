@@ -12,7 +12,8 @@
  */
 
 export type BackgroundTaskNotice =
-  | { kind: 'still-running'; name: string; count: number }
+  /** `turnEnded` 让调用方能把话说明白（"回合结束了，但仍在跑"比"仍在跑"更准确 ✓）。 */
+  | { kind: 'still-running'; name: string; count: number; turnEnded: boolean }
   | { kind: 'finished' }
 
 /**
@@ -35,7 +36,7 @@ export function backgroundTaskNotice({
     .filter(name => name.length > 0)
   if (names.length > 0) {
     // 仍在跑：**不管回合有没有结束**都该让读者看见（结束了更要紧：他会以为完事了 ✗）。
-    return { kind: 'still-running', name: names[0] as string, count: names.length }
+    return { kind: 'still-running', name: names[0] as string, count: names.length, turnEnded: Boolean(turnEnded) }
   }
   // 没有在跑的了：只在"之前报告过在跑"时才说一声"已完成"（否则会无中生有 ✗）。
   if (hadRunning) return { kind: 'finished' }
