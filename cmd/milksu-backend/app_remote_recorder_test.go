@@ -51,6 +51,11 @@ func TestRemoteTurnRecorderStoresPromptReplyAndTools(t *testing.T) {
 	if stored.Messages[0].Role != "user" || stored.Messages[0].Content != "跑一下测试" {
 		t.Fatalf("first message = %#v", stored.Messages[0])
 	}
+	// 后端自己写的用户消息要和渲染进程写的同形：转写只拦 status="queued"，
+	// 缺字段的旧记录曾经让远端那句话在主机侧看不见。
+	if stored.Messages[0].Status == nil || *stored.Messages[0].Status != "done" {
+		t.Fatalf("remote prompt status = %#v, want done", stored.Messages[0].Status)
+	}
 	if stored.Messages[1].Role != "assistant" || stored.Messages[1].Content != "好的，已经完成。" {
 		t.Fatalf("assistant message = %#v", stored.Messages[1])
 	}

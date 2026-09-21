@@ -90,6 +90,10 @@ func (a *App) recordRemoteTurnStart(conversationID, prompt string) {
 		Role:      "user",
 		Content:   prompt,
 		Timestamp: uint64(time.Now().UnixMilli()),
+		// The renderer writes user turns with a status, and the transcript reads it (only
+		// "queued" is held back). A backend-written prompt must look the same, otherwise
+		// the stored record differs depending on who typed it.
+		Status: stringPointer("done"),
 	}
 	stored.Messages = append(stored.Messages, message)
 	if err := a.conversations.Save(stored); err != nil {

@@ -1875,6 +1875,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   let disposeEvents: (() => void) | undefined
   let disposeDelivery: (() => void) | undefined
   let disposeConversationList: (() => void) | undefined
+  let disposeRemoteTurn: (() => void) | undefined
   let unknownSessionReloadAt = 0
 
   function persist(conversation: Conversation) {
@@ -4508,6 +4509,32 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         })
       })()
     })
+
+    // 远端设备发起的回合：后端把提示词写进对话存档，并广播这个事件，因为渲染进程不是
+    // 这句话的作者。没有这个订阅，打开的对话只会显示回复（读者看不到远端刚发的那句话），
+    // 而且渲染进程下一次防抖保存会用它自己那份消息列表整体覆盖存档、把提示词删掉；
+    // 存档一丢，远端页面轮询刷新时那条用户气泡也跟着消失。
+    disposeRemoteTurn = await listenEvent<RemoteTurnStartedPayload>('remote-turn-started', event => {
+      const conversationId = String(event.payload?.conversationId ?? '').trim()
+      const raw = event.payload?.message
+      if (!conversationId || !raw || typeof raw !== 'object') return
+      if (!s.conversations.some(item => item.id === conversationId)) return
+      const prompt = normalizeStoredMessage(raw as Record<string, unknown>)
+      if (prompt.role !== 'user') return
+      update(conversationId, current => {
+        if (current.messages.some(message => message.id === prompt.id)) return current
+        // 后端是在回合开始时就存下这句话的，所以它应该排在所有时间戳不晚于它的消息
+        // 之后、本轮已经在内存里的输出之前。用时间戳定位而不是简单地追加，事件迟到
+        // 时顺序也不会错位。
+        const messages = [...current.messages]
+        let insertAt = 0
+        for (let index = 0; index < messages.length; index += 1) {
+          if (Number(messages[index]!.timestamp) <= prompt.timestamp) insertAt = index + 1
+        }
+        messages.splice(insertAt, 0, prompt)
+        return { ...current, messages }
+      })
+    })
   }
 
   function dispose() {
@@ -4519,6 +4546,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     disposeDelivery = undefined
     disposeConversationList?.()
     disposeConversationList = undefined
+    disposeRemoteTurn?.()
+    disposeRemoteTurn = undefined
     activeTurnPolicies.clear()
     for (const timer of saveTimers.values()) window.clearTimeout(timer)
     saveTimers.clear()
