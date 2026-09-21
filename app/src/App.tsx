@@ -1545,6 +1545,7 @@ export default function App() {
           activeConversationId={conv.activeId}
           conversations={conv.rows}
           runningConversationIds={conv.runningIds}
+          backgroundTasks={conversations.backgroundTasks}
           conversationActionError={conv.actionError}
           agentCollaboration={settings?.agent_collaboration ?? null}
           onUpdateCollaboration={updateAgentCollaboration}

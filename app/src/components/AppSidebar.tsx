@@ -13,6 +13,7 @@ export default function AppSidebar({
   activeConversationId,
   conversations,
   runningConversationIds,
+  backgroundTasks,
   conversationActionError,
   ctfSection,
   codingContextOpen,
@@ -50,6 +51,7 @@ export default function AppSidebar({
   activeConversationId: string | null
   conversations: Conversation[]
   runningConversationIds?: string[]
+  backgroundTasks?: Record<string, { id?: string; name?: string; status?: string }[]>
   conversationActionError?: string
   ctfSection: CTFWorkspaceSection
   codingContextOpen?: boolean
@@ -99,6 +101,7 @@ export default function AppSidebar({
         activeConversationId={activeConversationId}
         conversations={conversations}
         runningConversationIds={runningConversationIds}
+        backgroundTasks={backgroundTasks}
         actionError={conversationActionError}
         ctfSection={ctfSection}
         accountStatus={accountStatus}
