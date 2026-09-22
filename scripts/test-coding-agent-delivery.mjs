@@ -451,6 +451,11 @@ function startBridge({ bundlePath, workspace, agentDirectory, baseURL }) {
         `--allow-fs-read=${dirname(executable)}`,
         `--allow-fs-read=${workspace}`,
         `--allow-fs-read=${agentDirectory}`,
+        // Node 在 `--permission` 下会 realpath 临时根（TMPDIR）——不放开它就直接
+        // `ERR_ACCESS_DENIED: resource '/tmp'`（真事：自检用 TMPDIR=/tmp 跑，这一步就死在这 ✗）。
+        `--allow-fs-read=${process.env.TMPDIR ?? '/tmp'}`,
+        `--allow-fs-read=/private${process.env.TMPDIR ?? '/tmp'}`,
+        `--allow-fs-read=/private/tmp`,
         `--allow-fs-write=${workspace}`,
         `--allow-fs-write=${agentDirectory}`,
         '--allow-child-process',
