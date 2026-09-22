@@ -943,14 +943,18 @@ async function smokePackagedDshBridge(node, output, workspace, dshHome) {
 
 async function runWithInput(executable, argumentsList, input, options) {
   return await new Promise((resolvePromise, rejectPromise) => {
-    const { timeoutMs = 15_000, ...spawnOptions } = options
+    const { timeoutMs = 60_000, ...spawnOptions } = options
     const child = spawn(executable, argumentsList, {
       ...spawnOptions,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     let stdout = ''
     let stderr = ''
-    const timeout = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
+    let timedOut = false
+    const timeout = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGKILL')
+    }, timeoutMs)
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', chunk => { stdout += chunk })
@@ -959,7 +963,14 @@ async function runWithInput(executable, argumentsList, input, options) {
     child.on('close', code => {
       clearTimeout(timeout)
       if (code === 0) resolvePromise({ stdout, stderr })
-      else rejectPromise(new Error(`Sidecar exited with ${code}: ${stderr}`))
+      // 被杀掉时 code 是 null ⇒ 直接写 “exited with null” 会让人以为子进程崩了 ✗（真事：
+      // 实际是这里的超时把它杀了）。把超时说清楚，并把已经收到的输出一起给出来。
+      else if (timedOut) {
+        // 把**是哪个脚本**写进报错：只报“超时了”看不出是哪一步（真事）。
+        const script = argumentsList.find(value => /\.(cjs|mjs|js)$/.test(String(value)))
+        const what = script ? String(script) : `${executable} ${argumentsList.slice(0, 2).join(' ')}`.trim()
+        rejectPromise(new Error(`timed out after ${timeoutMs}ms running: ${what}: ${stderr || stdout}`))
+      } else rejectPromise(new Error(`Sidecar exited with ${code}: ${stderr}`))
     })
     child.stdin.end(input)
   })
@@ -2034,7 +2045,7 @@ async function smokeSidecar(platform) {
       '{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
       '',
     ].join('\n'),
-    { cwd: workspace, env: computerUseSmokeEnv },
+    { cwd: workspace, env: computerUseSmokeEnv, timeoutMs: 60_000 },
   )
   const computerUseProxyResponses = computerUseProxyRun.stdout
     .trim()
@@ -2152,9 +2163,16 @@ async function smokeSidecar(platform) {
       '--allow-addons',
       '-e',
       "const {recognize}=require('@napi-rs/system-ocr');"
+        // 这一步的目的是“**打包后的原生 OCR 能加载并跑起来**”。素材是应用图标，
+        // 它未必含可识别文字；以前直接“没认出就抛”⇒ 未捕获的 promise 拒绝把进程打挂（真事：
+        // 自检报 `Error: No text recognized`，看着像 OCR 坏了，其实模块好好的）。
         + "recognize(process.argv[1],1,['zh-Hans','en-US']).then(result=>{"
-        + "if(!result.text)throw new Error('empty OCR result');"
-        + "process.stdout.write(`system-ocr-ready:${result.text.length}`)});",
+        + "process.stdout.write(`system-ocr-ready:${String(result&&result.text?result.text.length:0)}`)})"
+        + ".catch(error=>{"
+        + "const message=String(error&&error.message||error);"
+        + "if(/no text recognized/i.test(message)){"
+        + "process.stdout.write('system-ocr-ready:0');return}"
+        + "process.stderr.write(`system-ocr-failed:${message}`);process.exit(1)});",
       ocrFixture,
     ],
     '',
@@ -2631,7 +2649,8 @@ async function smokeSidecar(platform) {
         '{"action":"destroy_session","conversationId":"packaged-computer-use"}',
         '',
       ].join('\n'),
-      { cwd: workspace, env: { ...process.env, HOME: workspace } },
+      // 这一步要拉起 cua-driver 并建会话，15 秒不够（真事：以前报“exited with null”，看着像崩了）。
+      { cwd: workspace, env: { ...process.env, HOME: workspace }, timeoutMs: 60_000 },
     )
     const computerUseResponses = computerUseRun.stdout
       .trim()
