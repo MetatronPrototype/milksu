@@ -151,11 +151,15 @@ const skillIcons: Record<string, LucideIcon> = {
 
 const COMPOSER_STYLES = `
 .chat-composer { position: relative; z-index: 2; }
-/* 「跳到最新」：放在输入框**里面、发送键右侧**（读者要求 ✓）。
-   早前试过浮在输入框上方右侧 ⇒ 运行时**压住正文** ✗（读者截图证实 ✓）⇒ 改成行内 ✓。 */
+/* 「跳到最新」：贴在输入框**右边缘外面**、与发送键同高（读者要的位置 ✓）。
+   锚点是 .chat-composer__frame（position: relative ✓），而按钮就是它的子节点 ✓ ⇒
+   left:100% = 框的右边缘 ✓（实测框右边缘 1097 而窗口宽 1233 ⇒ 外侧有 136px 空间 ✓）。
+   ⚠️ 早前我误把外层 .chat-composer（右边缘 = 窗口宽 1233）当成输入框 ⇒ 错判“右侧没空间”✗。
+   ⚠️ 这段是模板字符串：注释里**不能写反引号**✗（会把字符串截断 ⇒ TS1005）。 */
 .chat-composer__jump-latest {
-  margin-left: 0.25rem;
-  flex: 0 0 auto;
+  position: absolute;
+  left: calc(100% + 0.5rem);
+  bottom: 0.5rem;
   width: 30px;
   height: 30px;
   display: inline-flex;
@@ -2077,9 +2081,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                   <ArrowUp className="size-4" />
                 </Button>
               ) : null}
-              {/* 「跳到最新」：**输入框里面、发送键右侧**（读者要求 ✓）。
+              {/* 「跳到最新」：**输入框右边缘外面**、与发送键同高（读者要的位置 ✓）。
                   图标复用发送键那个 ArrowUp 转 180° ⇒ 不新增依赖 ✓。
-                  `type="button"` ⇒ 在 form 里也不会误触发送 ✓。 */}
+                  `type="button"` ⇒ 在 form 里也不会误触发送 ✓（绝对定位 ⇒ 不挤占按钮行 ✓）。 */}
               {props.onJumpToLatest ? (
                 <button
                   type="button"
