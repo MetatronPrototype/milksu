@@ -543,6 +543,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   // 显示窗口从尾巴往回挪了多少段（读者点「更早的 N 段」时增加）⇒ 更早的内容仍然看得到 ✓
   const [transcriptWindowShift, setTranscriptWindowShift] = useState(0)
   const transcriptWindowShiftRef = useRef(0)
+  // 「回到最新」按钮的显隐：由“是否还贴着底部”驱动 ✓（那个判断本身是 ref ✗ ⇒ 不触发重渲染 ⇒ 另设一个 state ✓）。
+  const [jumpToLatestVisible, setJumpToLatestVisible] = useState(false)
 
   const conversationRef = useRef(conversation)
   const workspacePathRef = useRef(workspacePath)
@@ -2294,6 +2296,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
         element.scrollHeight,
       )
     }
+    // 只有读者真的往上翻了才露出「回到最新」✓；贴着底部时它不该站位置 ✗（读者要求 ✓）。
+    setJumpToLatestVisible(!chatAutoScrollPinned.current)
     lastChatScrollTop.current = element.scrollTop
   }
 
@@ -2301,6 +2305,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     if (!force && !chatAutoScrollPinned.current) return
     // 正在看历史（窗口往回挪过）时，只要回到“贴底”就把窗口挪回最新 ✓，否则新消息会被挡在窗口外 ✗
     if (transcriptWindowShiftRef.current > 0) setTranscriptWindowShift(0)
+    // 点了「回到最新」就是要回到底部 ⇒ 按钮随之收起 ✓
+    setJumpToLatestVisible(false)
     // 长内容会在滚动之后继续变高（markdown、代码块、图片、分批挂载）——
     // 只转两帧就收手会停在半路，之后就被判成“离底部太远”而不再跟随。
     // 所以少量重试，直到真的贴到底（最多 6 帧）。
@@ -2553,6 +2559,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     setComputerUsePermissionRequesting(null)
     setComputerUsePermissionError('')
     chatAutoScrollPinned.current = true
+    setJumpToLatestVisible(false)
     lastChatScrollTop.current = 0
     void scrollChatToBottom(true)
     if (conversation?.id && !running) void refreshBrowserPanel()
@@ -3100,6 +3107,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             onOpenChanges={openChanges}
             onAbort={() => onAbort?.()}
             onJumpToLatest={() => void scrollChatToBottom(true)}
+            jumpToLatestVisible={jumpToLatestVisible}
             onChangeExecutionMode={changeExecutionMode}
             onChangeApprovalPolicy={changeApprovalPolicy}
             onChangeModel={changeModel}

@@ -160,11 +160,14 @@ const COMPOSER_STYLES = `
   position: absolute;
   left: calc(100% + 0.5rem);
   bottom: 0.5rem;
-  width: 30px;
   height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 0.25rem;
+  padding: 0 0.625rem;
+  white-space: nowrap;
+  font-size: 12px;
   border-radius: 999px;
   border: 0;
   background: var(--muted);
@@ -489,8 +492,10 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   abortStalled?: boolean
   onSend?: (text: string, visibleText?: string, attachments?: CodingAttachment[], scopeToken?: ComposerScopeToken) => void
   onAbort?: () => void
-  /** 「跳到最新」：放在**输入框外面、发送键右侧**（绝对定位贴在容器右缘外）✓。 */
+  /** 「回到最新」：放在**输入框外面、发送键右侧**，绝对定位贴在容器右缘外 ✓。 */
   onJumpToLatest?: () => void
+  /** 这个按钮当前该不该露出来（贴底时藏起来 ✓，读者要求）。 */
+  jumpToLatestVisible?: boolean
   onOpenChanges?: (path?: string) => void
   onChangeExecutionMode?: (value: string) => void
   onChangeApprovalPolicy?: (value: string) => void
@@ -2084,15 +2089,17 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
               {/* 「跳到最新」：**输入框右边缘外面**、与发送键同高（读者要的位置 ✓）。
                   图标复用发送键那个 ArrowUp 转 180° ⇒ 不新增依赖 ✓。
                   `type="button"` ⇒ 在 form 里也不会误触发送 ✓（绝对定位 ⇒ 不挤占按钮行 ✓）。 */}
-              {props.onJumpToLatest ? (
+              {props.onJumpToLatest && props.jumpToLatestVisible ? (
                 <button
                   type="button"
                   className="chat-composer__jump-latest"
-                  aria-label={t('跳到最新', 'Jump to latest')}
-                  title={t('跳到最新', 'Jump to latest')}
+                  aria-label={t('回到最新', 'Jump to latest')}
+                  title={t('回到最新', 'Jump to latest')}
                   onClick={() => props.onJumpToLatest?.()}
                 >
                   <ArrowUp className="size-4 rotate-180" />
+                  {/* 带文字：光一个箭头容易认错（读者要求 ✓）。 */}
+                  <span>{t('回到最新', 'Jump to latest')}</span>
                 </button>
               ) : null}
             </div>
