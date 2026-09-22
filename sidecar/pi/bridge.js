@@ -204,6 +204,7 @@ import {
   projectAssistantUsage,
   projectToolModelUsage,
 } from "./bridge-usage-view.js";
+import { assistantFailureText } from "./bridge-model-failure.js";
 import { projectSessionContextComposition } from "./bridge-context-composition.js";
 import { withTokenFluxModelCompat } from "./tokenflux-model-compat.js";
 
@@ -1591,6 +1592,11 @@ function subscribeSession(
         provider: sessionConfiguredProviders.get(conversationId),
         source: sessionModelSources.get(conversationId),
       });
+      // 模型调用失败（如 429）时 pi 会给出 stopReason:"error" + errorMessage ✗ —— 以前这里只取 usage
+      // ⇒ 失败被整条丢掉 ⇒ 引擎收不到、界面也收不到 ⇒ 读者只能对着空回合（真事：tokenflux 回 429）。
+      // 走**现成的 `error` 事件**（引擎已有 `case "error"` ⇒ `engine.error` ✓，前端也已认它 ✓）。
+      const failure = assistantFailureText(event.message);
+      if (failure) emit(conversationId, "error", { error: failure });
       if (usage) {
         recordSessionContextUsage(conversationId, usage, session.model?.contextWindow);
         emit(conversationId, "usage_recorded", { usage, module: usageModule });
