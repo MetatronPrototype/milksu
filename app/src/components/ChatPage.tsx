@@ -63,6 +63,11 @@ import { isAskMessage } from '@/lib/agentAsk'
 import { chatNeedsAnotherFollowScroll, nextChatAutoScrollPinned } from '@/lib/chatAutoScroll'
 import { assessApprovalRequest } from '@/lib/destructiveTarget'
 import { isGeneratedScratchWorkspace } from '@/lib/codingConversationGroups'
+import {
+  computeTranscriptWindow,
+  TRANSCRIPT_MOUNT_CAP,
+  TRANSCRIPT_OLDER_CHUNK,
+} from '@/lib/transcriptWindow'
 import AgentPixelLoader from '@/components/AgentPixelLoader'
 import AkLoadingMark from '@/components/AkLoadingMark'
 import ChatActivityGroup from '@/components/ChatActivityGroup'
@@ -228,6 +233,12 @@ type ContextPanel = typeof contextPanelValues[number]
 const TRANSCRIPT_INITIAL_BLOCKS = 60
 const TRANSCRIPT_REFILL_CHUNK = 150
 const TRANSCRIPT_TOP_REFILL_CHUNK = 300
+
+// 同屏最多摊开多少段（超出的收成一行「更早的 N 段」）。
+// 实测：不设上限时，一个 3781 轮的对话会挂 224,550 个节点 ⇒ 输出/滚动时每秒 2~3 次 50ms 级长任务。
+function transcriptMountLimit(total: number) {
+  return Math.min(total, TRANSCRIPT_MOUNT_CAP)
+}
 const emptyActivityExpansion = createChatActivityExpansionState()
 
 export type ChatPageProps = {
@@ -529,6 +540,9 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   )
   const [activityExpansionRev, setActivityExpansionRev] = useState(0)
   const [mountedTranscriptBlocks, setMountedTranscriptBlocks] = useState(0)
+  // 显示窗口从尾巴往回挪了多少段（读者点「更早的 N 段」时增加）⇒ 更早的内容仍然看得到 ✓
+  const [transcriptWindowShift, setTranscriptWindowShift] = useState(0)
+  const transcriptWindowShiftRef = useRef(0)
 
   const conversationRef = useRef(conversation)
   const workspacePathRef = useRef(workspacePath)
@@ -579,6 +593,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   ctfProjectionRef.current = ctfProjection
   codingEnvironmentRef.current = codingEnvironment
   mountedTranscriptBlocksRef.current = mountedTranscriptBlocks
+  transcriptWindowShiftRef.current = transcriptWindowShift
 
   const terminalDockStyle = useMemo<CSSProperties>(() => ({ height: `${terminalHeight}px` }), [terminalHeight])
   const automaticModel = useMemo(() => {
@@ -1082,20 +1097,31 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       ? t(`${workshopState.toolCount} 个本题工具已保存在工作区`, `${workshopState.toolCount} challenge tools saved in the workspace`)
       : t('当前没有工具请求', 'No tool requests')
   }, [workshopState, t])
-  const visibleTranscript = useMemo(() => {
-    if (chatTranscript.length <= mountedTranscriptBlocks) return chatTranscript
-    return chatTranscript.slice(chatTranscript.length - mountedTranscriptBlocks)
-  }, [chatTranscript, mountedTranscriptBlocks])
-  const hiddenTranscriptBlocks = Math.max(0, chatTranscript.length - visibleTranscript.length)
+  // 窗口 = 有上限的滑动窗口：长度 ≤ TRANSCRIPT_MOUNT_CAP，可整体往回挪（更早的内容够得到 ✓）。
+  // 只是“画哪一段”⇒ chatTranscript 本身不动 ✓（模型上下文、别的对话来读，都不受影响 ✓）。
+  const transcriptWindow = useMemo(
+    () => computeTranscriptWindow({
+      length: chatTranscript.length,
+      mounted: mountedTranscriptBlocks,
+      shift: transcriptWindowShift,
+    }),
+    [chatTranscript.length, mountedTranscriptBlocks, transcriptWindowShift],
+  )
+  const visibleTranscript = useMemo(
+    () => chatTranscript.slice(transcriptWindow.start, transcriptWindow.end),
+    [chatTranscript, transcriptWindow.start, transcriptWindow.end],
+  )
+  const hiddenTranscriptBlocks = transcriptWindow.hidden
 
   async function revealTranscriptMessage(messageId: string) {
     const index = chatTranscript.findIndex(block => block.kind === 'message' && block.message.id === messageId)
     if (index < 0) return false
     const needed = chatTranscript.length - index
-    if (needed > mountedTranscriptBlocks) {
-      setMountedTranscriptBlocks(needed)
-      await new Promise<void>(resolve => { queueMicrotask(resolve) })
-    }
+    // 跨越的段数可能超过上限 ⇒ 那就不是“多挂”，而是把窗口整体挪过去 ✓（否则目标还在窗口外 ✗）
+    const target = Math.min(Math.max(needed, 1), TRANSCRIPT_MOUNT_CAP)
+    setMountedTranscriptBlocks(current => Math.max(current, target))
+    setTranscriptWindowShift(Math.max(0, chatTranscript.length - index - target))
+    await new Promise<void>(resolve => { queueMicrotask(resolve) })
     return true
   }
 
@@ -2204,10 +2230,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
 
   const scheduleTranscriptRefill = useCallback((delay = 64) => {
     if (transcriptRefillTimer.current) return
-    if (mountedTranscriptBlocksRef.current >= chatTranscriptLengthRef.current) return
+    if (mountedTranscriptBlocksRef.current >= transcriptMountLimit(chatTranscriptLengthRef.current)) return
     transcriptRefillTimer.current = window.setTimeout(() => {
       transcriptRefillTimer.current = 0
-      if (mountedTranscriptBlocksRef.current >= chatTranscriptLengthRef.current) return
+      if (mountedTranscriptBlocksRef.current >= transcriptMountLimit(chatTranscriptLengthRef.current)) return
       if (Date.now() < transcriptInteractionUntil.current) {
         scheduleTranscriptRefill(160)
         return
@@ -2231,10 +2257,25 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       height: element?.scrollHeight ?? 0,
       top: element?.scrollTop ?? 0,
     }
+    // 上限内照旧扩窗 ✓；到上限就**不再多挂**（再多挂 = 页面变重 ✗）
     setMountedTranscriptBlocks(current => Math.min(
-      chatTranscript.length,
+      transcriptMountLimit(chatTranscript.length),
       current + count,
     ))
+  }
+
+  // 读者点「更早的 N 段」：窗口整体往回挪（不是多挂 ✗）⇒ 更早的内容看得到 ✓、页面不变重 ✓
+  function showEarlierTranscript() {
+    const limit = transcriptMountLimit(chatTranscriptLengthRef.current)
+    setTranscriptWindowShift(current => Math.min(
+      current + TRANSCRIPT_OLDER_CHUNK,
+      Math.max(0, chatTranscriptLengthRef.current - limit),
+    ))
+    const element = scrollArea.current
+    if (element) {
+      pendingTranscriptRestore.current = null
+      element.scrollTop = 0
+    }
   }
 
   function handleChatScroll() {
@@ -2258,6 +2299,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
 
   async function scrollChatToBottom(force = false) {
     if (!force && !chatAutoScrollPinned.current) return
+    // 正在看历史（窗口往回挪过）时，只要回到“贴底”就把窗口挪回最新 ✓，否则新消息会被挡在窗口外 ✗
+    if (transcriptWindowShiftRef.current > 0) setTranscriptWindowShift(0)
     // 长内容会在滚动之后继续变高（markdown、代码块、图片、分批挂载）——
     // 只转两帧就收手会停在半路，之后就被判成“离底部太远”而不再跟随。
     // 所以少量重试，直到真的贴到底（最多 6 帧）。
@@ -2430,10 +2473,15 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       lastConversationIdForTranscript.current = conversationId
       previousTranscriptLength.current = length
       setMountedTranscriptBlocks(Math.min(length, TRANSCRIPT_INITIAL_BLOCKS))
+      setTranscriptWindowShift(0)
     } else {
       const delta = Math.max(0, length - previousTranscriptLength.current)
       previousTranscriptLength.current = length
-      setMountedTranscriptBlocks(current => Math.min(length, current + delta))
+      // 读者正在看历史（窗口挪过）⇒ 窗口跟着一起挪，别把他推走 ✓
+      if (delta > 0 && transcriptWindowShiftRef.current > 0) {
+        setTranscriptWindowShift(current => current + delta)
+      }
+      setMountedTranscriptBlocks(current => Math.min(transcriptMountLimit(length), current + delta))
     }
     chatTranscriptLengthRef.current = length
     scheduleTranscriptRefill()
@@ -2753,6 +2801,20 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                     }}
                     onDismiss={() => setQuoteSelection(null)}
                   />
+                ) : null}
+                {hiddenTranscriptBlocks > 0 && transcriptWindow.atCap ? (
+                  <div className="flex justify-center py-2" data-testid="transcript-earlier">
+                    <button
+                      type="button"
+                      className="rounded-full border px-3 py-1 text-xs opacity-70 hover:opacity-100"
+                      onClick={showEarlierTranscript}
+                    >
+                      {t(
+                        `更早的 ${hiddenTranscriptBlocks} 段内容 · 点开看`,
+                        `${hiddenTranscriptBlocks} earlier blocks · open`,
+                      )}
+                    </button>
+                  </div>
                 ) : null}
                 {visibleTranscript.map(item => (
                   item.kind === 'process' ? (
