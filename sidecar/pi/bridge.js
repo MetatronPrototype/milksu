@@ -1596,7 +1596,13 @@ function subscribeSession(
       // ⇒ 失败被整条丢掉 ⇒ 引擎收不到、界面也收不到 ⇒ 读者只能对着空回合（真事：tokenflux 回 429）。
       // 走**现成的 `error` 事件**（引擎已有 `case "error"` ⇒ `engine.error` ✓，前端也已认它 ✓）。
       const failure = assistantFailureText(event.message);
-      if (failure) emit(conversationId, "error", { error: failure });
+      if (failure) {
+        emit(conversationId, "error", { error: failure });
+        // 光"报告"不够 ✗：pi 把失败当成一步、循环继续 ⇒ 同一轮里反复重试（真事：429 连试 3 次，
+        // 界面上一串失败气泡 + 停止按钮亮着，只有按停止才停 ✗，而且还一直在烧额度 ✗）。
+        // 这里直接**停掉本轮**，把控制权还给读者 ✓（下一轮由读者自己决定要不要再来一次）。
+        void session.abort().catch(() => undefined);
+      }
       if (usage) {
         recordSessionContextUsage(conversationId, usage, session.model?.contextWindow);
         emit(conversationId, "usage_recorded", { usage, module: usageModule });

@@ -42,4 +42,9 @@ test("the message_end handler forwards a failed call through the error event", a
     /emit\(conversationId, "error", \{ error: failure \}\)/.test(source),
     "the failure must be emitted as the engine's error event",
   );
+  // 光报告不够：不停本轮 ⇒ pi 会继续跑、同一轮反复重试（真事：429 连试 3 次 + 烧额度 ✗）。
+  assert.ok(
+    /if \(failure\) \{[\s\S]{0,400}session\.abort\(\)/.test(source),
+    "a failed model call must stop the turn instead of letting the loop retry",
+  );
 });
