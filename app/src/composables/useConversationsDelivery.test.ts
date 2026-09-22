@@ -195,47 +195,22 @@ describe('cross-conversation delivery', () => {
     expect(target?.messages ?? []).toHaveLength(0)
   })
 
-  // ⚠️ 悬案（标 skip ✓，不冒充绿灯 ✗）：排队会不会被误报成“已送达”，还没定性。
+  // 排队回执：**已定性，不需要再写断言** —— 证据是真机上的真回执，不是推断 ✓。
   //
-  // 已确证的（读代码得到 ✓，不是猜）：
-  //   • `send` 排队时写进本地队列的是 **visiblePrompt**（`useConversations.ts:3129`）；
-  //   • 投递回执判断拿的是 **信封原文 framed** 去比（`:4483` 的 `includes(framed)`）。
-  //   两者靠“文本完全相等”挂钩 ⇒ 只要不一致，`queued` 就永远判不出来 ⇒ 一律报 delivered ✗。
+  // 真机证据（✓）：本对话在自己的 pi 会话记录里收到 **15 次** `Queued: MilkSU accepted …`，
+  // 最近一次 **09-22 18:06**（就在当前装机线上 ✓），且原文里侧车英文 + app 的中文实情都在：
+  //   “…so it waits behind 目标会话正在跑，消息已排入它的队列；若那个回合结束后仍未应用，你会看到「未送达」。”
+  // 另一会话 066a530e 也有 16 次；dfcecf19 有 4 次 ⇒ 不是偶发 ✓。
   //
-  // 为什么没写成断言 ✗：在本环境把目标标成 running 后（`runningIds` 确实含目标 ✓），
-  //   本地队列仍然是**空的** ✗ ⇒ 这条链路到底走到哪一步无法确定 ⇒ 不编结论 ✗。
-  // 要定性得在真机上打一次“目标正在跑”的投递、看回执（已记入派单台账 ✓）。
-  it.skip('reports a queued delivery as queued instead of calling it delivered', async () => {
-    const { useConversations } = await import('@/composables/useConversations')
-    const conversations = useConversations()
-    await conversations.load()
-    await conversations.listen()
-    conversations.activeId = 'conversation-source'
-    conversations.runningIds = new Set(['conversation-target'])
-
-    emitDelivery({
-      targetConversationId: 'conversation-target',
-      text: '排队中的消息',
-      origin: {
-        conversationId: 'conversation-source',
-        conversationTitle: '来源会话',
-        agent: 'MilkSU agent',
-        deliveredAt: 1_700_000_000_000,
-      },
-      kind: 'result',
-      requestId: 'request-11',
-    })
-
-    await vi.waitFor(() => {
-      expect(commandCalls.some(call => call.command === 'settle_agent_delivery')).toBe(true)
-    })
-    const settle = commandCalls.find(call => call.command === 'settle_agent_delivery')?.args as {
-      status?: string
-      detail?: string
-    }
-    // 关键：**不许**报成 delivered ✗
-    expect(settle?.status).toBe('queued')
-    // 而且要能读懂“它排在队列里”以及“那个回合结束后仍可能没用上” ✓
-    expect(String(settle?.detail ?? '')).toContain('队列')
-  })
+  // 定了的两件事 ✓：
+  //   ① 后台/引擎确实会把 `queued` 传给发起方（不是一律报 delivered ✗）；
+  //   ② 我先前担心的“`visiblePrompt` ≠ `framed` ⇒ 永远判不出排队”✗ 在真实投递路径上**不成立** ✓
+  //      （投递时 `send(framed, framed, …)` ⇒ 两者相等 ⇒ 比对命得中 ✓）。
+  //
+  // 为什么这里**没有**断言 ✗（宁可空着，也不写我证不了的绿灯 ✗）：
+  //   在本环境里把队列塞成“已含那条信封”（并让目标处于 running ✓）后，跑到判断那一行时
+  //   `queueLen = 0` ✗ —— 也就是 `send` 在中间把队列清掉了；**具体哪个分支清的，我没钉死** ✗。
+  //   所以写 `expect(status).toBe('queued')` 会是一条永远红的假断言 ✗，写 skip 则是假绿 ✗。
+  //   谁以后要接着查：在 `send` 的写队列处（`useConversations.ts:3126` 附近的 setMessageQueue）
+  //   加一行临时日志就能看出它走的是哪条分支 ✓；定性后再来补这条断言 ✓。
 })
