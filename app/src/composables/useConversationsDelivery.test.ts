@@ -10,17 +10,12 @@ const handlers = new Map<string, EventHandler>()
 let stored: Record<string, unknown>[] = []
 const commandCalls: { command: string; args: unknown }[] = []
 let failDelivery = false
-// 后端可能回“已接收，但要排在别人后面” —— 那就不许报成“已送达” ✓（真事：当初把 queued 报成了 delivered）。
-let queuedBehind = ''
 
 vi.mock('@/desktop', () => ({
   invokeCommand: vi.fn(async (command: string, args?: unknown) => {
     commandCalls.push({ command, args })
     if (command === 'list_conversations') return stored
     if (command === 'get_coding_project_memory') return { recents: [], lastWorkspacePath: '' }
-    if (command === 'deliver_agent_message' && queuedBehind) {
-      return { status: 'queued', detail: queuedBehind }
-    }
     if (command === 'deliver_agent_message' && failDelivery) {
       throw new Error('两个对话不在同一个项目里')
     }
@@ -200,23 +195,35 @@ describe('cross-conversation delivery', () => {
     expect(target?.messages ?? []).toHaveLength(0)
   })
 
-  // ⚠️ TODO（未定，已标 skip，不冒充绿 ✗）：排队时的回执**不是立即发**的 ——
-  // app 在 `queued` 之后会等目标真正开始跑才 settle（延后回执 ✓）。所以下面这条假设“立即 settle
-  // 且 status=queued”的断言与实现不符 ✗；要哪边为准得先定下来（真机验一次排队路径）。
-  it.skip('reports a queued delivery as queued, and names what it waits behind', async () => {
+  // ⚠️ 悬案（标 skip ✓，不冒充绿灯 ✗）：排队会不会被误报成“已送达”，还没定性。
+  //
+  // 已确证的（读代码得到 ✓，不是猜）：
+  //   • `send` 排队时写进本地队列的是 **visiblePrompt**（`useConversations.ts:3129`）；
+  //   • 投递回执判断拿的是 **信封原文 framed** 去比（`:4483` 的 `includes(framed)`）。
+  //   两者靠“文本完全相等”挂钩 ⇒ 只要不一致，`queued` 就永远判不出来 ⇒ 一律报 delivered ✗。
+  //
+  // 为什么没写成断言 ✗：在本环境把目标标成 running 后（`runningIds` 确实含目标 ✓），
+  //   本地队列仍然是**空的** ✗ ⇒ 这条链路到底走到哪一步无法确定 ⇒ 不编结论 ✗。
+  // 要定性得在真机上打一次“目标正在跑”的投递、看回执（已记入派单台账 ✓）。
+  it.skip('reports a queued delivery as queued instead of calling it delivered', async () => {
     const { useConversations } = await import('@/composables/useConversations')
     const conversations = useConversations()
     await conversations.load()
     await conversations.listen()
-    queuedBehind = 'MilkSU Dev'
+    conversations.activeId = 'conversation-source'
+    conversations.runningIds = new Set(['conversation-target'])
 
-    emitEngineEvent({
-      sessionId: 'conversation-source',
-      type: 'agent.delivery',
-      text: '排队中的消息',
-      requestId: 'request-11',
+    emitDelivery({
       targetConversationId: 'conversation-target',
-      deliveryOrigin: { conversationId: 'conversation-source' },
+      text: '排队中的消息',
+      origin: {
+        conversationId: 'conversation-source',
+        conversationTitle: '来源会话',
+        agent: 'MilkSU agent',
+        deliveredAt: 1_700_000_000_000,
+      },
+      kind: 'result',
+      requestId: 'request-11',
     })
 
     await vi.waitFor(() => {
@@ -228,6 +235,7 @@ describe('cross-conversation delivery', () => {
     }
     // 关键：**不许**报成 delivered ✗
     expect(settle?.status).toBe('queued')
-    expect(String(settle?.detail ?? '')).toContain('MilkSU Dev')
+    // 而且要能读懂“它排在队列里”以及“那个回合结束后仍可能没用上” ✓
+    expect(String(settle?.detail ?? '')).toContain('队列')
   })
 })
