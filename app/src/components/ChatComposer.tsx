@@ -151,11 +151,13 @@ const skillIcons: Record<string, LucideIcon> = {
 
 const COMPOSER_STYLES = `
 .chat-composer { position: relative; z-index: 2; }
-/* 「跳到最新」：输入框**外面**、发送键**右侧**（贴容器右缘外，与发送键同一水平线 ✓）。 */
+/* 「跳到最新」：浮在输入框**上方右侧**（在框外 ✓、压在对话区上 ✓）。
+   ⚠️ 不能放“发送键右侧”：实测输入框右边缘 = 窗口宽度（1233 = 1233）✗ ⇒ 右侧没有空间 ✗。 */
 .chat-composer__jump-latest {
   position: absolute;
-  right: -2.75rem;
-  bottom: 0.9rem;
+  right: 0.75rem;
+  bottom: calc(100% + 0.5rem);
+  top: auto;
   width: 30px;
   height: 30px;
   display: inline-flex;
