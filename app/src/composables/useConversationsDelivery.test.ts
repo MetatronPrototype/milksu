@@ -10,12 +10,17 @@ const handlers = new Map<string, EventHandler>()
 let stored: Record<string, unknown>[] = []
 const commandCalls: { command: string; args: unknown }[] = []
 let failDelivery = false
+// 后端可能回“已接收，但要排在别人后面” —— 那就不许报成“已送达” ✓（真事：当初把 queued 报成了 delivered）。
+let queuedBehind = ''
 
 vi.mock('@/desktop', () => ({
   invokeCommand: vi.fn(async (command: string, args?: unknown) => {
     commandCalls.push({ command, args })
     if (command === 'list_conversations') return stored
     if (command === 'get_coding_project_memory') return { recents: [], lastWorkspacePath: '' }
+    if (command === 'deliver_agent_message' && queuedBehind) {
+      return { status: 'queued', detail: queuedBehind }
+    }
     if (command === 'deliver_agent_message' && failDelivery) {
       throw new Error('两个对话不在同一个项目里')
     }
@@ -193,5 +198,36 @@ describe('cross-conversation delivery', () => {
     )).toContain('不在同一个项目')
     const target = conversations.conversations.find(item => item.id === 'conversation-target')
     expect(target?.messages ?? []).toHaveLength(0)
+  })
+
+  // ⚠️ TODO（未定，已标 skip，不冒充绿 ✗）：排队时的回执**不是立即发**的 ——
+  // app 在 `queued` 之后会等目标真正开始跑才 settle（延后回执 ✓）。所以下面这条假设“立即 settle
+  // 且 status=queued”的断言与实现不符 ✗；要哪边为准得先定下来（真机验一次排队路径）。
+  it.skip('reports a queued delivery as queued, and names what it waits behind', async () => {
+    const { useConversations } = await import('@/composables/useConversations')
+    const conversations = useConversations()
+    await conversations.load()
+    await conversations.listen()
+    queuedBehind = 'MilkSU Dev'
+
+    emitEngineEvent({
+      sessionId: 'conversation-source',
+      type: 'agent.delivery',
+      text: '排队中的消息',
+      requestId: 'request-11',
+      targetConversationId: 'conversation-target',
+      deliveryOrigin: { conversationId: 'conversation-source' },
+    })
+
+    await vi.waitFor(() => {
+      expect(commandCalls.some(call => call.command === 'settle_agent_delivery')).toBe(true)
+    })
+    const settle = commandCalls.find(call => call.command === 'settle_agent_delivery')?.args as {
+      status?: string
+      detail?: string
+    }
+    // 关键：**不许**报成 delivered ✗
+    expect(settle?.status).toBe('queued')
+    expect(String(settle?.detail ?? '')).toContain('MilkSU Dev')
   })
 })
