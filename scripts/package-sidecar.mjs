@@ -146,6 +146,10 @@ const nodeArchives = {
   },
 }
 
+// 自检步骤的失败全部堆在这里，跑到最后一次性报完（以前是撞到第一个就退出 ⇒
+// 每次只露一个毛病，修三次才见底，久而久之没人跑这一关）。
+const smokeFailures = []
+
 function platformBinaryName(platform, name) {
   return platform.startsWith('windows/') ? `${name}.exe` : name
 }
@@ -1887,6 +1891,16 @@ async function buildSidecar(platform) {
   return output
 }
 
+async function smokeStep(label, run) {
+  try {
+    await run()
+  } catch (error) {
+    // 一个步骤坏掉不等于后面的步骤都不值得跑：全部记下来，最后一次报完。
+    smokeFailures.push({ label, message: error?.message ?? String(error) })
+    console.error(`\n[smoke] ✗ ${label}: ${error?.message ?? error}\n`)
+  }
+}
+
 async function smokeSidecar(platform) {
   const output = await buildSidecar(platform)
   for (const licensePath of [
@@ -1942,7 +1956,12 @@ async function smokeSidecar(platform) {
     ]),
   ]) {
     if (!await exists(licensePath)) {
-      throw new Error(`packaged Sidecar is missing license file: ${licensePath}`)
+      // 这条清单里既有 license，也有 SKILL.md / agents/openai.yaml ⇒
+      // 以前不管是哪个缺了都报 “missing license file”，把人带到错的方向（真事）。
+      throw new Error(
+        `packaged Sidecar is missing a required file: ${licensePath}`
+        + '（licenses, SKILL.md and agents/openai.yaml are all checked here）',
+      )
     }
   }
   const shipItLicense = join(output, 'THIRD_PARTY-LICENSES', 'gopls-BSD-3-Clause.txt')
@@ -1980,11 +1999,11 @@ async function smokeSidecar(platform) {
   ]
   const dshHome = join(workspace, 'dsh-home')
   await mkdir(dshHome, { recursive: true, mode: 0o700 })
-  await smokePackagedDshHostPlugin(node, output, workspace)
-  await smokePackagedDshCli(node, output, workspace, dshHome)
-  await smokePackagedDshBridge(node, output, workspace, dshHome)
-  await smokePackagedCompanionBridge(node, output, workspace)
-  await smokePackagedPhotonWasm(node, output, workspace)
+  await smokeStep('DSh host plugin', () => smokePackagedDshHostPlugin(node, output, workspace))
+  await smokeStep('DSh CLI', () => smokePackagedDshCli(node, output, workspace, dshHome))
+  await smokeStep('DSh bridge', () => smokePackagedDshBridge(node, output, workspace, dshHome))
+  await smokeStep('Companion bridge', () => smokePackagedCompanionBridge(node, output, workspace))
+  await smokeStep('Photon wasm', () => smokePackagedPhotonWasm(node, output, workspace))
   // 代理子进程会用**它自己**的临时根重算预期 socket 并比对传入值。hostpath 在 macOS 上
   // 直接读当前进程的 TMPDIR（不看传入 env），所以子进程必须用与父进程同一个根（ephemeralRoot()），
   // 否则两者必然不一致，这步以 “rejected the private driver socket” 失败，
@@ -2824,6 +2843,16 @@ async function smokeSidecar(platform) {
   const codingDelivery = JSON.parse(codingDeliveryOutput)
   if (!codingDelivery.passed || codingDelivery.score !== 100) {
     throw new Error(`packaged Coding delivery failed: ${codingDeliveryOutput}`)
+  }
+  if (smokeFailures.length) {
+    console.error(`\n[smoke] ${smokeFailures.length} 个步骤失败：`)
+    for (const failure of smokeFailures) {
+      console.error(`  ✗ ${failure.label}: ${failure.message}`)
+    }
+    throw new Error(
+      `packaged Sidecar smoke failed in ${smokeFailures.length} step(s): `
+      + smokeFailures.map(failure => failure.label).join(', '),
+    )
   }
   process.stdout.write(`${JSON.stringify({
     ...response,
