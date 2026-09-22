@@ -2266,7 +2266,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       if (!force && !chatAutoScrollPinned.current) return
       const element = scrollArea.current
       if (!element) return
-      if (!chatNeedsAnotherFollowScroll(element.scrollTop, element.clientHeight, element.scrollHeight)) return
+      // force 时**不看**这个判断：首屏时屏幕外内容用的是**估算高度**（`content-visibility` 的
+      // `contain-intrinsic-size`）⇒ “已经到底”会看走眼 ⇒ 视图停在对话**中部**（真事：每次重开
+      // 都要手动拖回底部 ✗）。强制时把这几帧走完（上限 6 帧 ⇒ 有界、代价极小 ✓）。
+      if (!force && !chatNeedsAnotherFollowScroll(element.scrollTop, element.clientHeight, element.scrollHeight)) return
       programmaticScrollUntil.current = Date.now() + 200
       element.scrollTop = element.scrollHeight
       lastChatScrollTop.current = element.scrollTop
@@ -2417,6 +2420,9 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   }, [waitingForModel, compacting, running])
 
   const previousTranscriptLength = useRef(0)
+  // 上一次“打开的对话”——用来区分“刚打开/切换对话”（要无条件贴底 ✓）与“同一对话里内容增长”
+  // （按读者的意愿跟随 ✓）。
+  const openedConversationId = useRef('')
   useEffect(() => {
     const conversationId = conversation?.id ?? ''
     const length = chatTranscript.length
@@ -2442,7 +2448,11 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   }, [environmentOpen, contextPanel])
 
   useEffect(() => {
-    void scrollChatToBottom()
+    // 刚打开/切换对话时**无条件**贴到底：首屏内容还没量完，“已经到底”的判断靠不住 ✓。
+    const nextId = conversation?.id ?? ''
+    const justOpened = openedConversationId.current !== nextId
+    openedConversationId.current = nextId
+    void scrollChatToBottom(justOpened)
   }, [conversation?.messages.length, conversation?.id, ctfSession, vulnerabilitySession])
 
   // 内容增长（不只是消息条数变化）也要跟随。不跟随的话，输出在往下长、视图不动，
