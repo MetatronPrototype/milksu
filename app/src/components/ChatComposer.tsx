@@ -151,6 +151,22 @@ const skillIcons: Record<string, LucideIcon> = {
 
 const COMPOSER_STYLES = `
 .chat-composer { position: relative; z-index: 2; }
+/* 「跳到最新」：输入框**外面**、发送键**右侧**（贴容器右缘外，与发送键同一水平线 ✓）。 */
+.chat-composer__jump-latest {
+  position: absolute;
+  right: -2.75rem;
+  bottom: 0.9rem;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 0;
+  background: var(--muted);
+  color: var(--foreground);
+}
+.chat-composer__jump-latest:hover { background: var(--hover-2); }
 .chat-composer__frame { position: relative; }
 .chat-composer__queued-guidance {
   margin: 0 0.25rem 0.5rem;
@@ -469,6 +485,8 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   abortStalled?: boolean
   onSend?: (text: string, visibleText?: string, attachments?: CodingAttachment[], scopeToken?: ComposerScopeToken) => void
   onAbort?: () => void
+  /** 「跳到最新」：放在**输入框外面、发送键右侧**（绝对定位贴在容器右缘外）✓。 */
+  onJumpToLatest?: () => void
   onOpenChanges?: (path?: string) => void
   onChangeExecutionMode?: (value: string) => void
   onChangeApprovalPolicy?: (value: string) => void
@@ -2061,6 +2079,18 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
               ) : null}
             </div>
           </form>
+          {/* 「跳到最新」：**输入框外面、发送键右侧** —— 绝对定位贴在容器右缘外、与发送键同高。
+              长对话首屏内容还没量完时滚动位置偶尔会漂（`contain-intrinsic-size` 的估算）✗，
+              有这个按钮，读者一键就回到最新 ✓。（图标复用发送键那个 ArrowUp，转 180° ⇒ 不新增依赖 ✓） */}
+          <button
+            type="button"
+            className="chat-composer__jump-latest"
+            aria-label={t('跳到最新', 'Jump to latest')}
+            title={t('跳到最新', 'Jump to latest')}
+            onClick={() => props.onJumpToLatest?.()}
+          >
+            <ArrowUp className="size-4 rotate-180" />
+          </button>
           {attachmentError ? <p className="px-2 pt-1.5 text-caption text-destructive">{attachmentError}</p> : attachmentImporting ? (
             <p className="chat-model-loading px-2 pt-1.5">
               <AkLoadingMark label={t('正在加入附件', 'Adding attachments')} showLabel />

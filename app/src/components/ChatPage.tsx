@@ -3037,6 +3037,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             onSend={sendComposerMessage}
             onOpenChanges={openChanges}
             onAbort={() => onAbort?.()}
+            onJumpToLatest={() => void scrollChatToBottom(true)}
             onChangeExecutionMode={changeExecutionMode}
             onChangeApprovalPolicy={changeApprovalPolicy}
             onChangeModel={changeModel}
