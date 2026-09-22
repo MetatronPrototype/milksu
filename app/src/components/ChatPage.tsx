@@ -113,7 +113,7 @@ import {
   LOCAL_CODING_SHELL_ID,
   shouldRememberCodingProject,
 } from '@/lib/codingProjectMemory'
-import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, type ChatTranscriptBlock, latestFinishedThinkingId, thinkingStaysOpen } from '@/lib/chatActivity'
+import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, type ChatTranscriptBlock, latestFinishedThinkingId } from '@/lib/chatActivity'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
 import { latestCodingPlan } from '@/lib/codingPlan'
 import {
@@ -2786,7 +2786,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       rewindDisabled={rewindUnavailable}
                       kernel={agentKernel}
                       {...transcriptHandlers}
-                      thinkingDefaultOpen={thinkingStaysOpen(item.message.id, chatTranscript)}
+                      // 本机偏好（**故意不上游**）：思考段**默认收起**，包括「刚结束的那一段」。
+                      // 以前是「最新一段思考自动展开」（`thinkingStaysOpen`）⇒ 每轮思考一完就撑开一次，
+                      // 观感上就是页面一直在跳（用户原话）。点击仍可展开/收起 ✓。
+                      thinkingDefaultOpen={false}
                       thinkingFoldKey={thinkingFoldKey}
                     />
                   )
