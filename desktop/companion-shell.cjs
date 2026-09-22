@@ -174,7 +174,9 @@ function createCompanionShell(options) {
   let unitLayout = null
   let tray = null
   let shuttingDown = false
-  let enabled = !wayland
+  // 初值从**落盘设置**来（`createCompanionShell({ floatEnabled })`）：以前这里写死 `!wayland` ✗
+  // ⇒ 用户关掉桌宠、重启后它又出现（真事）。未传时保持老行为（开）✓。
+  let enabled = !wayland && options.floatEnabled !== false
   let petHidden = false
   let lastMenuPopup = null
   let petDrag = null

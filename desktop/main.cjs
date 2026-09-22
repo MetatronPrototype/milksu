@@ -7,6 +7,7 @@ const { execFileSync, spawn } = require('node:child_process')
 const { randomUUID } = require('node:crypto')
 const { promises: fs } = require('node:fs')
 const path = require('node:path')
+const nodeFs = require('node:fs')
 const {
   app,
   BrowserWindow,
@@ -1053,7 +1054,28 @@ app.whenReady().then(async () => {
   }
   const upstreamEndpoint = await waitForDevTools()
   createWindow()
+  // 桌宠是否显示，**启动时**就必须看落盘设置：以前壳里 `enabled` 默认 true ⇒ 用户关掉桌宠、
+  // 一重启它又出现（真事：用户手动关掉后重启，桌宠又回来了）。
+  // 读不到设置就按老行为（显示）—— 宁可按老样子，也不能把桌宠弄丢 ✗。
+  const companionFloatWanted = () => {
+    try {
+      const candidates = [
+        process.env.MILKSU_APPDATA_DIR ? path.join(process.env.MILKSU_APPDATA_DIR, 'settings.json') : '',
+        process.env.MILKSU_APPDATA_DIR ? path.join(process.env.MILKSU_APPDATA_DIR, 'runtime-data', 'settings.json') : '',
+        path.join(app.getPath('userData'), 'runtime-data', 'settings.json'),
+        path.join(app.getPath('userData'), 'settings.json'),
+      ].filter(Boolean)
+      for (const file of candidates) {
+        if (!nodeFs.existsSync(file)) continue
+        const parsed = JSON.parse(nodeFs.readFileSync(file, 'utf8'))
+        return parsed?.companion_float_enabled !== false
+      }
+    } catch { /* 读不到就保持老行为 ✓ */ }
+    return true
+  }
   companionShell = createCompanionShell({
+    // 关掉桌宠后重启不该再出现 ✓；这个值进壳当 `enabled` 的初值（创建入口都受它管 ✓）。
+    floatEnabled: companionFloatWanted(),
     app,
     BrowserWindow,
     Tray,

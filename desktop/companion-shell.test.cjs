@@ -632,3 +632,21 @@ test('ParkCompanionMainWindow is the same path as closing the main window', () =
   assert.equal(restored.parked, false)
   assert.equal(main.showCalls >= 1, true)
 })
+
+// 真事：用户关掉桌宠、重启后它又出现 —— 因为壳里 `enabled` 的初值写死成 true ✗。
+// 启动时必须按**落盘设置**（`main.cjs` 读 settings.json ⇒ 传 `floatEnabled`）✓。
+test('a shell told not to float never creates the pet window', () => {
+  const { shell, created } = createShell({ floatEnabled: false })
+  shell.createFloat()
+  assert.equal(created.length, 0)
+  assert.equal(shell.status().floating, false)
+  // 设置成开后仍然能出来（不影响手动打开 ✓）。
+  assert.equal(shell.setFloatEnabled(true).floating, true)
+  assert.equal(created.length, 1)
+})
+
+test('a shell without the option keeps the old behaviour', () => {
+  const { shell, created } = createShell()
+  shell.createFloat()
+  assert.equal(created.length, 1)
+})
