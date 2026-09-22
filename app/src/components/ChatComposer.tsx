@@ -151,13 +151,11 @@ const skillIcons: Record<string, LucideIcon> = {
 
 const COMPOSER_STYLES = `
 .chat-composer { position: relative; z-index: 2; }
-/* 「跳到最新」：浮在输入框**上方右侧**（在框外 ✓、压在对话区上 ✓）。
-   ⚠️ 不能放“发送键右侧”：实测输入框右边缘 = 窗口宽度（1233 = 1233）✗ ⇒ 右侧没有空间 ✗。 */
+/* 「跳到最新」：放在输入框**里面、发送键右侧**（读者要求 ✓）。
+   早前试过浮在输入框上方右侧 ⇒ 运行时**压住正文** ✗（读者截图证实 ✓）⇒ 改成行内 ✓。 */
 .chat-composer__jump-latest {
-  position: absolute;
-  right: 0.75rem;
-  bottom: calc(100% + 0.5rem);
-  top: auto;
+  margin-left: 0.25rem;
+  flex: 0 0 auto;
   width: 30px;
   height: 30px;
   display: inline-flex;
@@ -2079,20 +2077,22 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                   <ArrowUp className="size-4" />
                 </Button>
               ) : null}
+              {/* 「跳到最新」：**输入框里面、发送键右侧**（读者要求 ✓）。
+                  图标复用发送键那个 ArrowUp 转 180° ⇒ 不新增依赖 ✓。
+                  `type="button"` ⇒ 在 form 里也不会误触发送 ✓。 */}
+              {props.onJumpToLatest ? (
+                <button
+                  type="button"
+                  className="chat-composer__jump-latest"
+                  aria-label={t('跳到最新', 'Jump to latest')}
+                  title={t('跳到最新', 'Jump to latest')}
+                  onClick={() => props.onJumpToLatest?.()}
+                >
+                  <ArrowUp className="size-4 rotate-180" />
+                </button>
+              ) : null}
             </div>
           </form>
-          {/* 「跳到最新」：**输入框外面、发送键右侧** —— 绝对定位贴在容器右缘外、与发送键同高。
-              长对话首屏内容还没量完时滚动位置偶尔会漂（`contain-intrinsic-size` 的估算）✗，
-              有这个按钮，读者一键就回到最新 ✓。（图标复用发送键那个 ArrowUp，转 180° ⇒ 不新增依赖 ✓） */}
-          <button
-            type="button"
-            className="chat-composer__jump-latest"
-            aria-label={t('跳到最新', 'Jump to latest')}
-            title={t('跳到最新', 'Jump to latest')}
-            onClick={() => props.onJumpToLatest?.()}
-          >
-            <ArrowUp className="size-4 rotate-180" />
-          </button>
           {attachmentError ? <p className="px-2 pt-1.5 text-caption text-destructive">{attachmentError}</p> : attachmentImporting ? (
             <p className="chat-model-loading px-2 pt-1.5">
               <AkLoadingMark label={t('正在加入附件', 'Adding attachments')} showLabel />
