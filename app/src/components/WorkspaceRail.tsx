@@ -98,6 +98,16 @@ export default function WorkspaceRail({
     onSettings?.()
   }
 
+  // 「门铃没接线」护栏（审计实据：Lab 环境预览里这个菜单四项全是死的 ✗ ——
+  // `LabEnvironmentPreview.tsx:405` 只传了 onNavigate / onToggleTheme ⇒ 另外四个永远是 undefined）。
+  // 规矩：干不了事的东西不画 ✗ —— 没有处理函数就不渲染；四者全无则连头像按钮也不画 ✓。
+  const showProfile = Boolean(onProfile)
+  const showSettings = Boolean(onSettings)
+  const showSignOut = accountStatus.state === 'active' && Boolean(onAccountLogout)
+  const showSignIn = accountStatus.state !== 'active' && accountStatus.configured && Boolean(onAccountLogin)
+  const showUnconfigured = accountStatus.state !== 'active' && !accountStatus.configured
+  const hasUserMenu = showProfile || showSettings || showSignOut || showSignIn
+
   return (
     <div
       className={`app-drag workspace-rail relative flex w-[4.75rem] shrink-0 flex-col${collapsed !== false ? ' workspace-rail--collapsed' : ''}`}
@@ -108,6 +118,7 @@ export default function WorkspaceRail({
         className="workspace-rail-traffic-safe relative flex items-end justify-center px-1"
         onKeyDown={event => { if (event.key === 'Escape') setMenuOpen(false) }}
       >
+        {hasUserMenu ? (
         <button
           type="button"
           className="app-no-drag workspace-rail-profile"
@@ -131,21 +142,26 @@ export default function WorkspaceRail({
             ) : null}
           </span>
         </button>
+        ) : null}
 
-        {menuOpen ? (
+        {menuOpen && hasUserMenu ? (
           <section
             className="app-no-drag absolute left-[4.6rem] top-10 z-50 w-52 overflow-hidden border border-border bg-popover p-1.5 text-popover-foreground shadow-xl"
             aria-label={t('用户菜单', 'User menu')}
           >
-            <button className="user-menu-item" onClick={openProfile}><UserRound className="size-4" />{t('个人资料', 'Profile')}</button>
-            <button className="user-menu-item" onClick={openSettings}><Settings className="size-4" />{t('设置', 'Settings')}</button>
-            {accountStatus.state === 'active' ? (
+            {showProfile ? (
+              <button className="user-menu-item" onClick={openProfile}><UserRound className="size-4" />{t('个人资料', 'Profile')}</button>
+            ) : null}
+            {showSettings ? (
+              <button className="user-menu-item" onClick={openSettings}><Settings className="size-4" />{t('设置', 'Settings')}</button>
+            ) : null}
+            {showSignOut ? (
               <button className="user-menu-item" onClick={() => { setMenuOpen(false); onAccountLogout?.() }}><LogOut className="size-4" />{t('退出登录', 'Sign out')}</button>
-            ) : accountStatus.configured ? (
+            ) : showSignIn ? (
               <button className="user-menu-item" onClick={() => { setMenuOpen(false); onAccountLogin?.() }}><LogOut className="size-4 rotate-180" />{t('使用 GitHub 登录', 'Sign in with GitHub')}</button>
-            ) : (
+            ) : showUnconfigured ? (
               <button className="user-menu-item text-muted-foreground" disabled><LogOut className="size-4" />{t('账户未配置', 'Account not configured')}</button>
-            )}
+            ) : null}
           </section>
         ) : null}
       </div>
