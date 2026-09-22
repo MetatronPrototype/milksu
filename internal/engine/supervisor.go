@@ -3542,6 +3542,11 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		event.Type = "session.model_source"
 		event.ModelSource = raw.To
 		event.Reason = raw.Reason
+	case "model_source_unavailable":
+		// 以前改名表里**没有**这一条 ✗ ⇒ 它落到 default 变成 `engine.raw.model_source_unavailable`，
+		// 界面没有对应分支 ⇒ 模型来源失败（“它不说话”）的根本原因永远到不了读者眼前（真事）。
+		event.Type = "session.model_source_unavailable"
+		event.Reason = raw.Reason
 	case "turn_started":
 		event.Type = "assistant.started"
 	case "goal_state":

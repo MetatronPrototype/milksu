@@ -303,6 +303,26 @@ func TestNormalizeToolError(t *testing.T) {
 	}
 }
 
+// 模型来源不可用的事件名以前**不在改名表里** ✗ ⇒ 它落到 default 变成
+// `engine.raw.model_source_unavailable` ✗、界面没分支 ⇒ 失败原因永远到不了读者眼前（真事）。
+func TestNormalizeModelSourceUnavailableKeepsItsOwnEventName(t *testing.T) {
+	event := normalizeBridgeEvent(bridgeEvent{
+		Type:   "model_source_unavailable",
+		ID:     "session-1",
+		Reason: "selected-source-unavailable",
+		Notice: "账号来源不可用：请检查该来源的设置后重试。",
+	})
+	if event.Type != "session.model_source_unavailable" {
+		t.Fatalf("the failure must keep its own name, got %q", event.Type)
+	}
+	if event.Reason != "selected-source-unavailable" {
+		t.Fatalf("the reason must survive normalization, got %q", event.Reason)
+	}
+	if event.Notice == "" {
+		t.Fatalf("the reader-facing sentence must survive normalization: %#v", event)
+	}
+}
+
 func TestNormalizeAndCacheBackgroundTasks(t *testing.T) {
 	exitCode := 0
 	event := normalizeBridgeEvent(bridgeEvent{

@@ -4000,6 +4000,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         if (chinese || english) pushEngineNotice(t(chinese || english, english || chinese))
         return
       }
+      if (type === 'session.model_source_unavailable') {
+        // 模型来源失败：侧车已经按界面语言拼好了整句（含来源、供应商、模型与服务端原文）
+        // ⇒ 这里**原样显示** ✓（不再套一层 t() ✗，免得中英混排）。
+        // 以前引擎把它改名成 `engine.raw.…` ✗、界面没有对应分支 ⇒ 读者只看到“它不说话”（真事）。
+        const payload = event.payload as unknown as { notice?: string; message?: string }
+        const text = String(payload?.notice ?? payload?.message ?? '').trim()
+        if (text) pushEngineNotice(text)
+        return
+      }
       if (type === 'attachment.held') {
         // 有一张附件没有发出去（例如图片超过尺寸上限）。读者必须看到是哪一张、多大、为什么，
         // 否则他只会反复重试上传 —— 引擎已把中英两句都给了我们，这里按界面语言选一句。

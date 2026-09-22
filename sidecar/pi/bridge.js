@@ -1399,6 +1399,10 @@ function configureRuntimeModel(
       requestedOrder,
       reason: selection.failure.reason,
       message,
+      // 引擎会原样转发 `notice`（其它事件就是这么带文案的 ✓）。以前只发 `message` ✗，
+      // 而且引擎改名表里没有这个事件名 ✗ ⇒ 它变成 `engine.raw.…` ✗ ⇒ 界面**一个字都不显示** ✗，
+      // 读者只看到“它不说话”（真事）。
+      notice: message,
     });
     throw new Error(message);
   }
