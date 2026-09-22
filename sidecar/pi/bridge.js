@@ -6,7 +6,7 @@ import {
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { basename, dirname, join, resolve } from "node:path";
-import { readFile, rm, unlink } from "node:fs/promises";
+import { readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import {
@@ -205,6 +205,7 @@ import {
   projectToolModelUsage,
 } from "./bridge-usage-view.js";
 import { assistantFailureText } from "./bridge-model-failure.js";
+import { withNoProviderRetry } from "./bridge-provider-retry.js";
 import { projectSessionContextComposition } from "./bridge-context-composition.js";
 import { withTokenFluxModelCompat } from "./tokenflux-model-compat.js";
 
@@ -2023,6 +2024,27 @@ function configureSubagentRuntime(cwd, collaboration) {
   process.env.MILKSU_PI_SUBAGENT_BUNDLED_ONLY = "1";
 }
 
+// 限流（429）不要自动重试：pi-ai 默认重试 3 次 ⇒ 同一轮连打 3~4 次、越打越被限流（真事）。
+// pi 从 `<agentDir>/settings.json` 读这个值 ⇒ 建会话前把它补上（幂等 ✓、保留其它键 ✓、
+// 内容没变不写盘 ✓；任何失败都吞掉 ✓ —— 设置写不进去也不该拦住会话 ✗）。
+async function ensureNoProviderRetry(agentDir) {
+  try {
+    const file = join(String(agentDir ?? ""), "settings.json");
+    if (!file) return;
+    let current = "";
+    try {
+      current = await readFile(file, "utf8");
+    } catch {
+      current = "";
+    }
+    const next = withNoProviderRetry(current);
+    if (next === null) return;
+    await writeFile(file, next, { mode: 0o600 });
+  } catch {
+    /* 设置补不上也不能拦住会话 ✓ */
+  }
+}
+
 async function createSession(command) {
   const conversationId = command.conversationId;
   if (!conversationId) throw new Error("conversationId is required");
@@ -2079,6 +2101,7 @@ async function createSession(command) {
     resolveProjectTrust: async () => false,
   });
 
+  await ensureNoProviderRetry(agentDir);
   try {
     ({ session } = await createAgentSession({
       cwd,
