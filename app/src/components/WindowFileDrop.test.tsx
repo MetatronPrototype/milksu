@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import WindowFileDrop, { countDroppedFolders } from '@/components/WindowFileDrop'
+import WindowFileDrop from '@/components/WindowFileDrop'
 
 afterEach(cleanup)
 
@@ -81,25 +81,5 @@ describe('window wide file drop', () => {
   })
 })
 
-// 文件夹检测：真实环境才有 webkitGetAsEntry ⇒ 用**注入的假 items 对象**覆盖这条分支
-// （jsdom 里没有该 API，所以**不假装它存在**，而是直接测这个纯工具函数）。
-describe('folder detection', () => {
-  it('counts only items that report themselves as directories', () => {
-    const dataTransfer = {
-      items: {
-        length: 3,
-        0: { kind: 'file', webkitGetAsEntry: () => ({ isDirectory: true }) },
-        1: { kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) },
-        2: { kind: 'file', webkitGetAsEntry: () => ({ isDirectory: true }) },
-      },
-    }
-    expect(countDroppedFolders(dataTransfer)).toBe(2)
-  })
-
-  it('is zero when the environment has no entries, and never throws', () => {
-    expect(countDroppedFolders(undefined)).toBe(0)
-    expect(countDroppedFolders({})).toBe(0)
-    expect(countDroppedFolders({ items: { length: 1, 0: { kind: 'string' } } })).toBe(0)
-    expect(countDroppedFolders({ items: { length: 1, 0: { kind: 'file', webkitGetAsEntry: () => { throw new Error('nope') } } } })).toBe(0)
-  })
-})
+// 文件夹检测已改由 lib 的 selectableDropFiles 负责（上游 0ee93024 的设计）；
+// 那条纯函数的用例在 app/src/lib/composerFileDrop.test.ts 里，这里不再重复。

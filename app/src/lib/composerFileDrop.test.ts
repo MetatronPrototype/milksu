@@ -4,6 +4,8 @@ import {
   isFileDrag,
   nextDragDepth,
   planFileDrop,
+  selectableDropFiles,
+  type DropFileItem,
 } from '@/lib/composerFileDrop'
 
 describe('window file drop', () => {
@@ -60,5 +62,66 @@ describe('window file drop', () => {
       overflow: 2,
       folders: 1,
     })
+  })
+})
+
+function named(name: string): File {
+  return { name } as File
+}
+
+describe('selectableDropFiles', () => {
+  it('keeps files and drops directories before the accept slice', () => {
+    const folder = named('dir')
+    const first = named('a.txt')
+    const second = named('b.txt')
+    const items: { length: number; [index: number]: DropFileItem } = {
+      length: 3,
+      0: { kind: 'file', getAsFile: () => folder, webkitGetAsEntry: () => ({ isDirectory: true }) },
+      1: { kind: 'file', getAsFile: () => first, webkitGetAsEntry: () => ({ isDirectory: false }) },
+      2: { kind: 'file', getAsFile: () => second, webkitGetAsEntry: () => ({ isDirectory: false }) },
+    }
+    const selected = selectableDropFiles([folder, first, second], items)
+    expect(selected.folders).toBe(1)
+    expect(selected.files.map(file => file.name)).toEqual(['a.txt', 'b.txt'])
+    const plan = planFileDrop({
+      fileCount: selected.files.length + selected.folders,
+      pendingCount: 7,
+      folderCount: selected.folders,
+    })
+    expect(plan).toMatchObject({ accept: 1, overflow: 1, folders: 1 })
+    expect(selected.files.slice(0, plan.accept).map(file => file.name)).toEqual(['a.txt'])
+  })
+
+  // 环境没有条目（items 缺失 / 不是条目表 / 长度为 0）⇒ 认为没有文件夹，也不崩。
+  it('reports no folders when the environment has no drop entries at all', () => {
+    const noEntries = {} as { length: number }
+    expect(selectableDropFiles(undefined, undefined)).toEqual({ files: [], folders: 0 })
+    expect(selectableDropFiles(undefined, noEntries)).toEqual({ files: [], folders: 0 })
+    expect(selectableDropFiles([], { length: 0 })).toEqual({ files: [], folders: 0 })
+  })
+
+  // 探测文件夹的 API 抛异常 ⇒ 当作"不是文件夹"，**绝不向外抛**（旧用例的边界契约，改在新助手上）。
+  it('treats a throwing folder probe as a file-ish item and never throws', () => {
+    const file = named('a.txt')
+    const selected = selectableDropFiles([file], {
+      length: 1,
+      0: {
+        kind: 'file',
+        getAsFile: () => file,
+        webkitGetAsEntry: () => { throw new Error('nope') },
+      },
+    })
+    expect(selected.folders).toBe(0)
+    expect(selected.files).toEqual([file])
+  })
+
+  it('returns the raw file list when entries cannot be classified', () => {
+    const file = named('a.txt')
+    const selected = selectableDropFiles([file], {
+      length: 1,
+      0: { kind: 'file', getAsFile: () => file },
+    })
+    expect(selected.folders).toBe(0)
+    expect(selected.files).toEqual([file])
   })
 })
