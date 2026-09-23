@@ -73,7 +73,7 @@ import AkLoadingMark from '@/components/AkLoadingMark'
 import ChatActivityGroup from '@/components/ChatActivityGroup'
 import ChatProcessFold from '@/components/ChatProcessFold'
 import ChatComposer, { type ChatComposerHandle } from '@/components/ChatComposer'
-import AgentBackgroundTaskMark from '@/components/AgentBackgroundTaskMark'
+import { BackgroundTaskStrip } from '@/components/BackgroundTaskStrip'
 import AgentDecisionMark from '@/components/AgentDecisionMark'
 import { ConversationQuoteMenu, selectedTextIn } from '@/components/ConversationQuoteMenu'
 import WorkingTray from '@/components/WorkingTray'
@@ -256,9 +256,11 @@ export type ChatPageProps = {
   compactedAt?: number
   compactionError?: string
   turnStatus?: SessionTurnSnapshot
-  /** 后台任务**是否有在跑的**（事实层，由持有 runtime 的那一层经 props 传进来 —— 与 `running` 同一条路线）。
+  /** 后台任务的事实（由持有 runtime 的那一层经 props 传进来 —— 与 `running` 同一条路线）。
       不要在这里调 `useConversations()` 工厂：那会拿到**另一份新 store**，事实永远是空的 ✗（真机教训 ✓）。 */
-  backgroundTaskRunning?: boolean
+  backgroundTasks?: Array<{ id?: unknown; name?: unknown; status?: unknown }>
+  /** 窄带专用的终态（只增不改）：跑完那一刻算出来，窄带据此显示 10 秒。 */
+  backgroundTaskOutcome?: { kind: 'failed' | 'cancelled' | 'completed'; count: number; firstName: string; at: number } | null
   ctfSession: boolean
   vulnerabilitySession?: boolean
   ctfMode?: 'coach' | 'copilot' | 'delegate'
@@ -346,7 +348,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   compactedAt,
   compactionError,
   turnStatus,
-  backgroundTaskRunning,
+  backgroundTasks,
+  backgroundTaskOutcome,
   ctfSession,
   vulnerabilitySession,
   ctfMode,
@@ -3026,17 +3029,9 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
               <span>{t('等待你选择', 'Waiting for your choice')}</span>
             </div>
           ) : null}
-          {/* 对话里的"后台任务进行中"：同一枚蓝色九格标记、**不带详情**（读者要的是事实，不是清单）。
-              放在输入框上方的窄带里 ⇒ 不打断阅读、也不挤掉消息流。 */}
-          {backgroundTaskRunning ? (
-            <div
-              className="chat-composer__background-strip flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground"
-              data-testid="background-task-strip"
-            >
-              <AgentBackgroundTaskMark />
-              <span>{t('后台任务进行中', 'Background task running')}</span>
-            </div>
-          ) : null}
+          {/* 后台任务窄带：在跑时四行（进行中 + 件数/名字 + 状态 + 请不要关机），
+              跑完显示终态并在 10 秒后收起。口径在 lib/backgroundStripDigest（纯函数、有测试）。 */}
+          <BackgroundTaskStrip running={backgroundTasks} outcome={backgroundTaskOutcome} />
           <ChatComposer
             // 按会话重挂载：输入框内部有多处"上一个会话"的 ref，若不重挂载，切换时
             // 它们会互相滞后，把草稿记到别的会话名下（已在装机版复现串稿）。
