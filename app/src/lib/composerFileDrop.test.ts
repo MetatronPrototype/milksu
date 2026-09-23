@@ -92,6 +92,29 @@ describe('selectableDropFiles', () => {
     expect(selected.files.slice(0, plan.accept).map(file => file.name)).toEqual(['a.txt'])
   })
 
+  // 环境没有条目（items 缺失 / 不是条目表 / 长度为 0）⇒ 认为没有文件夹，也不崩。
+  it('reports no folders when the environment has no drop entries at all', () => {
+    const noEntries = {} as { length: number }
+    expect(selectableDropFiles(undefined, undefined)).toEqual({ files: [], folders: 0 })
+    expect(selectableDropFiles(undefined, noEntries)).toEqual({ files: [], folders: 0 })
+    expect(selectableDropFiles([], { length: 0 })).toEqual({ files: [], folders: 0 })
+  })
+
+  // 探测文件夹的 API 抛异常 ⇒ 当作"不是文件夹"，**绝不向外抛**（旧用例的边界契约，改在新助手上）。
+  it('treats a throwing folder probe as a file-ish item and never throws', () => {
+    const file = named('a.txt')
+    const selected = selectableDropFiles([file], {
+      length: 1,
+      0: {
+        kind: 'file',
+        getAsFile: () => file,
+        webkitGetAsEntry: () => { throw new Error('nope') },
+      },
+    })
+    expect(selected.folders).toBe(0)
+    expect(selected.files).toEqual([file])
+  })
+
   it('returns the raw file list when entries cannot be classified', () => {
     const file = named('a.txt')
     const selected = selectableDropFiles([file], {
