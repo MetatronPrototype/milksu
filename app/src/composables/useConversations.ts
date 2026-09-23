@@ -1310,8 +1310,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   // 侧车**只在任务开始时**发事件（bridge.js 的 tool_execution_end 里 bg_task/bg_status），
   // 任务结束没有事件 ⇒ 终态只能靠轮询发现 ⇒ 15 秒太慢，用户要求收紧到 4 秒。
   // "连续两次空才停"的语义不变（首次仍是 2 秒）。
-  const BACKGROUND_TASK_REFRESH_MS = 4000
-  // 任务刚结束时最容易被看到"还挂着" ✗（读者看到的是上一秒的事实）⇒ 先**快查一次**，再按 15 秒兜底。
+  // 轮询**每次都会触发整树重渲染**（App 把 backgroundTasks 传给 ChatPage）⇒ 既要"没变就不写"，
+  // 又要保守的间隔：10 秒 + 终态停 30 秒 ⇒ 终态照样看得见，重渲染频率降到 4 秒那版的 1/2.5。
+  const BACKGROUND_TASK_REFRESH_MS = 10000
+  // 任务刚结束时最容易被看到"还挂着" ✗（读者看到的是上一秒的事实）⇒ 先**快查一次**，再按上面的间隔兜底。
   const BACKGROUND_TASK_REFRESH_FIRST_MS = 2000
   let backgroundTaskRefreshTimer: ReturnType<typeof setInterval> | undefined
   let backgroundTaskRefreshFirst: ReturnType<typeof setTimeout> | undefined
@@ -1354,14 +1356,26 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         // 同一条口径：这一次查完，在跑集合**从非空变空** ⇒ 用完整列表算终态（窄带据此显示 30 秒）。
         const hadRunning = (store.getState().backgroundTasks[sessionId] ?? []).length > 0
         const settled = hadRunning && running.length === 0 ? outcomeForTasks(all, Date.now()) : null
-        // 直接拿**返回值**更新事实层：不依赖侧车回发事件 ⇒ 侧车没起或刚被回收时也能清零 ✓。
-        store.setState(state => ({
-          ...state,
-          backgroundTasks: { ...state.backgroundTasks, [sessionId]: running },
-          ...(settled
-            ? { backgroundTaskOutcome: { ...state.backgroundTaskOutcome, [sessionId]: settled } }
-            : {}),
-        }))
+        // **没变就不写**：之前这里每 4 秒无条件写一次，而每次写都会换掉 backgroundTasks 的对象身份
+        // ⇒ App 把它传给 ChatPage ⇒ 整棵树每 4 秒重渲染一次 ⇒ 流式输出"吐不全 / 思考阶段卡死"（真机回归）。
+        // 逐项比较（长度、顺序、id/name/status）完全一致、且没有新终态要写 ⇒ **连一次写都不做**。
+        const current = store.getState().backgroundTasks[sessionId] ?? []
+        const unchanged = current.length === running.length
+          && current.every((task, index) => (
+            task.id === running[index]?.id
+            && task.name === running[index]?.name
+            && task.status === running[index]?.status
+          ))
+        if (!unchanged || settled) {
+          // 有变化才写；语义不变（只增不改：终态仍写进 backgroundTaskOutcome）。
+          store.setState(state => ({
+            ...state,
+            backgroundTasks: { ...state.backgroundTasks, [sessionId]: running },
+            ...(settled
+              ? { backgroundTaskOutcome: { ...state.backgroundTaskOutcome, [sessionId]: settled } }
+              : {}),
+          }))
+        }
         if (running.length === 0) {
           // 连续两次空才清零 ⇒ 既不误擦刚起来的任务，真结束了也只需约 6 秒 ✓。
           backgroundRefreshEmptyStreak += 1

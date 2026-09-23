@@ -2,10 +2,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 type Handler = (event: { payload: unknown }) => void
+let refreshOverride: Array<{ id: string; name: string; kind: string; status: string; startedAt: number }> | null = null
 const handlers = new Map<string, Handler>()
 
 vi.mock('@/desktop', () => ({
   invokeCommand: vi.fn(async (command: string) => {
+    if (command === 'refresh_coding_background_tasks' && refreshOverride) return { backgroundTasks: refreshOverride }
     if (command === 'list_conversations') return []
     if (command === 'get_coding_project_memory') return { recents: [], lastWorkspacePath: '' }
     return null
@@ -152,6 +154,63 @@ describe('background task survives the turn end', () => {
       expect(calls()).toBe(afterFirst)
       conversations.dispose()
     } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 回归：轮询返回与现状**完全相同**的列表 ⇒ **一次 store 写都不许发生**
+  //（每 4 秒无条件写 ⇒ 对象身份变化 ⇒ 整树重渲染 ⇒ 流式输出被拖慢）。
+  it('does not write the store when a refresh returns exactly what is already known', async () => {
+    const conversations = await loadRuntime()
+    vi.useFakeTimers()
+    try {
+      const runningList = [{ id: 't1', name: '打包', kind: 'process', status: 'running', startedAt: 1 }]
+      refreshOverride = runningList
+      emitEngineEvent({ sessionId: 'conversation-1', type: 'background_tasks', tasks: runningList })
+      await vi.advanceTimersByTimeAsync(2000)
+      const before = conversations.store.getState().backgroundTasks
+      const identities: unknown[] = []
+      const original = conversations.store.setState.bind(conversations.store)
+      conversations.store.setState = ((...args: Parameters<typeof original>) => {
+        identities.push(conversations.store.getState().backgroundTasks)
+        return original(...args)
+      }) as typeof conversations.store.setState
+      try {
+        await vi.advanceTimersByTimeAsync(20000)
+      } finally {
+        conversations.store.setState = original as typeof conversations.store.setState
+      }
+      // 不但"看起来没变"，而是**对象身份与写入次数**都没变。
+      expect(conversations.store.getState().backgroundTasks).toBe(before)
+      expect(identities).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 闸门不能变成"永远不写"：真有变化时仍要写进去。
+  it('still writes when a refresh changes the running list', async () => {
+    const conversations = await loadRuntime()
+    vi.useFakeTimers()
+    try {
+      emitEngineEvent({ sessionId: 'conversation-1', type: 'background_tasks', tasks: [
+        { id: 't1', name: '打包', kind: 'process', status: 'running', startedAt: 1 },
+      ] })
+      await vi.advanceTimersByTimeAsync(2000)
+      const before = conversations.store.getState().backgroundTasks
+      // 让下一次查询返回"任务已结束"⇒ 列表变化 ⇒ 必须写（并记终态）。
+      refreshOverride = [{ id: 't1', name: '打包', kind: 'process', status: 'succeeded', startedAt: 1 }]
+      // 多推一个间隔并冲刷微任务：轮询是 promise 链 ⇒ 只推一次可能还没落到 .then 里。
+      await vi.advanceTimersByTimeAsync(10000)
+      await vi.advanceTimersByTimeAsync(10000)
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(conversations.store.getState().backgroundTasks).not.toBe(before)
+      expect(conversations.store.getState().backgroundTasks['conversation-1'] ?? []).toHaveLength(0)
+      expect(conversations.store.getState().backgroundTaskOutcome['conversation-1'])
+        .toMatchObject({ kind: 'completed' })
+    } finally {
+      refreshOverride = null
       vi.useRealTimers()
     }
   })
