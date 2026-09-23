@@ -63,7 +63,7 @@ export function outcomeForTasks(
   return { kind: 'completed', count: list.length, firstName: nameOf(list[0]), at }
 }
 
-/** 窄带该显示什么：在跑优先；否则看终态是否还在 10 秒窗口内。 */
+/** 窄带该显示什么：在跑优先；否则看终态是否还在 30 秒窗口内。 */
 export function backgroundStripDigest({
   running,
   outcome,

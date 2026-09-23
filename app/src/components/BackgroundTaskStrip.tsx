@@ -38,7 +38,7 @@ export function BackgroundTaskStrip({
   const [now, setNow] = useState(() => Date.now())
   const digest = useMemo(() => backgroundStripDigest({ running, outcome, now }), [running, outcome, now])
 
-  // 终态要在 10 秒后自己收起；定时器在卸载、切换会话（props 变化）时都必须清掉，不许泄漏。
+  // 终态要在 30 秒后自己收起；定时器在卸载、切换会话（props 变化）时都必须清掉，不许泄漏。
   useEffect(() => {
     if (digest.mode !== 'settled' || !digest.visible) return undefined
     setNow(Date.now())

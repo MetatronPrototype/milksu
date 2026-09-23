@@ -1351,7 +1351,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
             name: String(task?.name ?? ''),
             status: String(task?.status ?? ''),
           }))
-        // 同一条口径：这一次查完，在跑集合**从非空变空** ⇒ 用完整列表算终态（窄带据此显示 10 秒）。
+        // 同一条口径：这一次查完，在跑集合**从非空变空** ⇒ 用完整列表算终态（窄带据此显示 30 秒）。
         const hadRunning = (store.getState().backgroundTasks[sessionId] ?? []).length > 0
         const settled = hadRunning && running.length === 0 ? outcomeForTasks(all, Date.now()) : null
         // 直接拿**返回值**更新事实层：不依赖侧车回发事件 ⇒ 侧车没起或刚被回收时也能清零 ✓。

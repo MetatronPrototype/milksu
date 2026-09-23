@@ -69,7 +69,7 @@ describe('background task visibility', () => {
     const conversations = await loadRuntime()
     conversations.store.setState({ runningIds: new Set(), engineNotice: '' })
     emitEngineEvent({ sessionId: 'conversation-1', type: 'background_tasks', tasks: [runningTask('打包')] })
-    // 跑完（终态 succeeded）⇒ 在跑集合从非空变空 ⇒ 按**完整列表**记终态（窄带据此显示 10 秒）。
+    // 跑完（终态 succeeded）⇒ 在跑集合从非空变空 ⇒ 按**完整列表**记终态（窄带据此显示 30 秒）。
     emitEngineEvent({ sessionId: 'conversation-1', type: 'background_tasks', tasks: [
       { id: 't1', name: '打包', kind: 'process', status: 'succeeded', startedAt: 1 },
     ] })
