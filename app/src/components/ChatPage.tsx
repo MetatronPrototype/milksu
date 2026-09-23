@@ -3030,9 +3030,34 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
               <span>{t('等待你选择', 'Waiting for your choice')}</span>
             </div>
           ) : null}
-          {/* 后台任务窄带：在跑时四行（进行中 + 件数/名字 + 状态 + 请不要关机），
-              跑完显示终态并在 10 秒后收起。口径在 lib/backgroundStripDigest（纯函数、有测试）。 */}
-          <BackgroundTaskStrip running={backgroundTasks} outcome={backgroundTaskOutcome} />
+          {/* 后台任务窄带：在跑时三行（进行中 + 件数/名字 + 状态）并带「停止全部」，
+              跑完显示终态并在 30 秒后收起。口径在 lib/backgroundStripDigest（纯函数、有测试）。 */}
+          <BackgroundTaskStrip
+            running={backgroundTasks}
+            outcome={backgroundTaskOutcome}
+            conversationId={conversation?.id}
+            onStopped={(taskIds) => {
+              // 乐观更新：立刻把这几件从"在跑"里移除；再触发一次 refresh 让引擎侧确认（终态由引擎报 cancelled）。
+              const active = conversation?.id ?? ''
+              if (!active) return
+              const remaining = (backgroundTasks ?? [])
+                .filter(task => !taskIds.includes(String(task?.id ?? '')))
+                .map(task => ({
+                  id: String(task?.id ?? ''),
+                  name: String(task?.name ?? ''),
+                  status: String(task?.status ?? ''),
+                }))
+              // 公开运行时对象上 backgroundTasks 是只读（只有 getter）⇒ 走 store 写入。
+              conversations.store.setState(state => ({
+                ...state,
+                backgroundTasks: { ...state.backgroundTasks, [active]: remaining },
+              }))
+              void invokeCommand('refresh_coding_background_tasks', {
+                conversationId: active,
+                workspacePath: conversation?.workspacePath ?? '',
+              }).catch(() => undefined)
+            }}
+          />
           <ChatComposer
             // 按会话重挂载：输入框内部有多处"上一个会话"的 ref，若不重挂载，切换时
             // 它们会互相滞后，把草稿记到别的会话名下（已在装机版复现串稿）。

@@ -1307,7 +1307,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   // 上一次的「仍在运行」✗（真机读数：任务已结束、事件列表里仍是 count 1）。有任务在跑时
   // **轻量轮询**现成的刷新命令（15 秒一次、清零即停 ⇒ 有界 ✓）：刷新让侧车重读 pi 的登记表
   // 并回发同一个事件 ✓，那行就会自己消失 ✓。
-  const BACKGROUND_TASK_REFRESH_MS = 15000
+  // 侧车**只在任务开始时**发事件（bridge.js 的 tool_execution_end 里 bg_task/bg_status），
+  // 任务结束没有事件 ⇒ 终态只能靠轮询发现 ⇒ 15 秒太慢，用户要求收紧到 4 秒。
+  // "连续两次空才停"的语义不变（首次仍是 2 秒）。
+  const BACKGROUND_TASK_REFRESH_MS = 4000
   // 任务刚结束时最容易被看到"还挂着" ✗（读者看到的是上一秒的事实）⇒ 先**快查一次**，再按 15 秒兜底。
   const BACKGROUND_TASK_REFRESH_FIRST_MS = 2000
   let backgroundTaskRefreshTimer: ReturnType<typeof setInterval> | undefined
