@@ -5,7 +5,7 @@
 //   （app/src/codingEnvironmentTypes.ts:72；侧车遇未知值降级 `failed`，bridge-background-view.js:71）。
 // - 终态的判定**必须用过滤前的完整任务列表**，优先级从上到下：
 //     有 failed / timed_out ⇒ failed；否则有 cancelled ⇒ cancelled；否则有 running ⇒ 还在跑；否则 ⇒ completed。
-// - 终态只在"在跑集合**从非空变空**"那一刻形成，之后在窄带里**停 10 秒**自动收起。
+// - 终态只在"在跑集合**从非空变空**"那一刻形成，之后在窄带里**停 30 秒**自动收起。
 // - ⚠️ 窄带**没有**百分比可言：数据里只有 status，没有进度数字 —— 不要编（范围外）。
 
 export type BackgroundTaskLike = { id?: unknown; name?: unknown; status?: unknown }
@@ -28,8 +28,8 @@ export type BackgroundStripDigest = {
   statusKind: BackgroundStripStatusKind
 }
 
-/** 终态在窄带里停留多久（用户拍：10 秒）。 */
-export const BACKGROUND_STRIP_SETTLED_MS = 10_000
+/** 终态在窄带里停留多久（用户拍：30 秒）。 */
+export const BACKGROUND_STRIP_SETTLED_MS = 30_000
 
 function statusOf(task: BackgroundTaskLike | undefined): string {
   return String(task?.status ?? '')

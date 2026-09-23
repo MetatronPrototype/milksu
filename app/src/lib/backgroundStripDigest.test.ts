@@ -38,12 +38,14 @@ describe('background strip digest', () => {
       .toMatchObject({ count: 1, moreCount: 0, mode: 'running' })
   })
 
-  // 终态只停 10 秒；过期后 visible 变 false（收起）。
+  // 终态停 30 秒（用户拍）；过期后 visible 变 false（收起）。
   it('shows a settled outcome for ten seconds and then hides it', () => {
     const outcome = { kind: 'failed' as const, count: 3, firstName: '打包', at: 1_000 }
-    const fresh = backgroundStripDigest({ running: [], outcome, now: 1_000 + BACKGROUND_STRIP_SETTLED_MS - 1 })
+    expect(BACKGROUND_STRIP_SETTLED_MS).toBe(30_000)
+    // 29.9 秒仍可见；30.1 秒收起（窗口整数边界写清，避免下次又被读错）。
+    const fresh = backgroundStripDigest({ running: [], outcome, now: 1_000 + 29_900 })
     expect(fresh).toMatchObject({ visible: true, mode: 'settled', count: 3, firstName: '打包', statusKind: 'failed' })
-    expect(backgroundStripDigest({ running: [], outcome, now: 1_000 + BACKGROUND_STRIP_SETTLED_MS }).visible).toBe(false)
+    expect(backgroundStripDigest({ running: [], outcome, now: 1_000 + 30_100 }).visible).toBe(false)
     expect(backgroundStripDigest({ running: [], outcome: null, now: 99_999 }).visible).toBe(false)
   })
 
