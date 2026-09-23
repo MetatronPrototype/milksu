@@ -65,9 +65,9 @@ describe('background task survives the turn end', () => {
 
     // —— 第 2 步：再断言提示 ——
     const notice = conversations.store.getState().engineNotice
-    expect(notice).toContain('后台仍在运行')
-    expect(notice).toContain(TASK_NAME)
-    expect(notice).toContain('请不要关机')
+    expect(notice ?? '').not.toContain('后台仍在运行')
+    expect(conversations.store.getState().backgroundTasks['conversation-1'] ?? []).toHaveLength(1)
+    expect(notice ?? '').not.toContain('请不要关机')
   })
 
   it('says the same in English, with the count', async () => {
@@ -83,8 +83,8 @@ describe('background task survives the turn end', () => {
     conversations.settleRunsForRuntimeRecovery()
     expect(conversations.store.getState().runningIds.has('conversation-1')).toBe(false)
     const notice = conversations.store.getState().engineNotice
-    expect(notice).toContain('Still running in the background')
-    expect(notice).toContain('2 ·')
+    expect(notice ?? '').not.toContain('Still running in the background')
+    expect(conversations.store.getState().backgroundTasks['conversation-1'] ?? []).toHaveLength(2)
   })
 
   // 跨层名字：侧车发 `background_tasks`，但引擎在 `internal/engine/supervisor.go` 的改名表里
@@ -101,8 +101,8 @@ describe('background task survives the turn end', () => {
     conversations.settleRunsForRuntimeRecovery()
     expect(conversations.store.getState().runningIds.has('conversation-1')).toBe(false)
     const notice = conversations.store.getState().engineNotice
-    expect(notice).toContain('后台仍在运行')
-    expect(notice).toContain(TASK_NAME)
+    expect(notice ?? '').not.toContain('后台仍在运行')
+    expect(conversations.store.getState().backgroundTasks['conversation-1'] ?? []).toHaveLength(1)
   })
 
   // 真机形状：引擎把侧车的 `tasks` 解进 `Event.BackgroundTasks`（json 标签 `backgroundTasks`）
@@ -117,8 +117,8 @@ describe('background task survives the turn end', () => {
     conversations.store.setState({ engineNotice: '' })
     conversations.settleRunsForRuntimeRecovery()
     const notice = conversations.store.getState().engineNotice
-    expect(notice).toContain('后台仍在运行')
-    expect(notice).toContain(TASK_NAME)
+    expect(notice ?? '').not.toContain('后台仍在运行')
+    expect(conversations.store.getState().backgroundTasks['conversation-1'] ?? []).toHaveLength(1)
   })
 
   // 任务**自己结束**时不会再有 `bg_task` 工具调用 ⇒ 侧车不发事件 ⇒ 那行会粘住 ✗。

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { backgroundStripDigest } from '@/lib/backgroundStripDigest'
 
 type Handler = (event: { payload: unknown }) => void
 const handlers = new Map<string, Handler>()
@@ -47,23 +48,35 @@ describe('background task visibility', () => {
   })
 
   // (a) 回合已结束 + 仍有后台任务 ⇒ 必须**说清在跑什么**、并提醒别关机。
-  it('names the task that is still running once the turn has ended', async () => {
+  it('keeps the running fact for the strip and no longer repeats it in the engine notice', async () => {
     const conversations = await loadRuntime()
-    // 回合没在跑（= 界面显示已结束）⇒ 这时最需要提示。
-    conversations.store.setState({ runningIds: new Set() })
+    conversations.store.setState({ runningIds: new Set(), engineNotice: '' })
     emitEngineEvent({ sessionId: 'conversation-1', type: 'background_tasks', tasks: [runningTask('打包')] })
+    // 窄带的事实：在跑那一件被留下了。
+    const facts = conversations.store.getState().backgroundTasks['conversation-1'] ?? []
+    expect(facts).toHaveLength(1)
+    // 窄带口径（纯模块）：件数 1、名字、moreCount 0、进行中。
+    expect(backgroundStripDigest({ running: facts, outcome: null, now: Date.now() }))
+      .toMatchObject({ visible: true, mode: 'running', count: 1, firstName: '打包', moreCount: 0, statusKind: 'running' })
+    // 窄带是唯一出口 ⇒ 引擎状态行不再重复这件事（去重由本件负责）。
     const notice = conversations.store.getState().engineNotice ?? ''
-    expect(notice).toContain('后台仍在运行：打包')
-    expect(notice).toContain('请不要关机')
+    expect(notice).not.toContain('后台仍在运行')
+    expect(notice).not.toContain('请不要关机')
   })
 
   // (b) 任务清空 ⇒ 说一声"已完成"（否则读者一直以为还在跑）。
-  it('says the background work finished once nothing is running', async () => {
+  it('records a completed outcome when the running set empties', async () => {
     const conversations = await loadRuntime()
-    conversations.store.setState({ runningIds: new Set() })
+    conversations.store.setState({ runningIds: new Set(), engineNotice: '' })
     emitEngineEvent({ sessionId: 'conversation-1', type: 'background_tasks', tasks: [runningTask('打包')] })
-    emitEngineEvent({ sessionId: 'conversation-1', type: 'background_tasks', tasks: [] })
-    expect(conversations.store.getState().engineNotice ?? '').toContain('后台任务已完成')
+    // 跑完（终态 succeeded）⇒ 在跑集合从非空变空 ⇒ 按**完整列表**记终态（窄带据此显示 10 秒）。
+    emitEngineEvent({ sessionId: 'conversation-1', type: 'background_tasks', tasks: [
+      { id: 't1', name: '打包', kind: 'process', status: 'succeeded', startedAt: 1 },
+    ] })
+    expect(conversations.store.getState().backgroundTaskOutcome['conversation-1'])
+      .toMatchObject({ kind: 'completed', count: 1, firstName: '打包' })
+    // 提示不再走引擎状态行（窄带自己会说"已完成"）。
+    expect(conversations.store.getState().engineNotice ?? '').not.toContain('后台任务已完成')
   })
 
   // (c) 没有后台任务 ⇒ 不许无中生有（既不出现"仍在运行"，也不出现"已完成"）。
