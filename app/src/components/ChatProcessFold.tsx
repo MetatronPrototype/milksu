@@ -12,6 +12,7 @@ import { useT } from '@/hooks/useUiLocale'
 import type { SubagentTask } from '@/types'
 
 export default function ChatProcessFold({
+  protectedFolders,
   process,
   recoverableFailureId,
   recoveryContext,
@@ -35,6 +36,8 @@ export default function ChatProcessFold({
   rewindableUserMessageId?: string
   rewindDisabled?: boolean
   kernel?: 'pi' | 'dsh'
+  /** 受限文件夹的**生效列表**（总开关关掉时为空）：折叠里的审批卡也用同一份事实。 */
+  protectedFolders?: string[]
   activityOpen: (activityId: string) => boolean
   activityOpenEntries: (activityId: string) => ReadonlySet<string>
   subagentTasks?: readonly SubagentTask[]
@@ -66,6 +69,7 @@ export default function ChatProcessFold({
       <div className="agent-process__body">
         {foldedThinking ? (
           <ChatMessageItem
+            protectedFolders={protectedFolders}
             message={foldedThinking}
             thinkingTotal
           />
@@ -84,6 +88,7 @@ export default function ChatProcessFold({
             />
           ) : (
             <ChatMessageItem
+              protectedFolders={protectedFolders}
               key={item.id}
               message={item.message}
               recoverable={item.message.id === recoverableFailureId}

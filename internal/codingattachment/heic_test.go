@@ -10,7 +10,8 @@ import (
 )
 
 // 真机那张 iPhone 照片：5712×4284（`sips -g pixelWidth` 实测）。读者就是用这张被服务端拒过。
-const realHeicPath = "/Users/xiaoxingjiang/Downloads/IMG_2646.HEIC"
+// 真机素材走环境变量：取不到就 skip（仓库规则，代码里不留个人路径）。
+var realHeicPath = os.Getenv("MILKSU_TEST_HEIC_PATH")
 
 func readRealHeic(t *testing.T) []byte {
 	t.Helper()
@@ -22,6 +23,17 @@ func readRealHeic(t *testing.T) []byte {
 }
 
 // HEIC 必须能被认出来 —— 不能只信扩展名（用户可能把 HEIC 改名成 .jpg）。
+// 真机素材取不到就 skip（不放宽任何断言：有素材时照旧执行）。
+func requireRealHeic(t *testing.T) {
+	t.Helper()
+	if realHeicPath == "" {
+		t.Skip("set MILKSU_TEST_HEIC_PATH to run this case")
+	}
+	if _, err := os.Stat(realHeicPath); err != nil {
+		t.Skipf("real HEIC not on this machine: %v", err)
+	}
+}
+
 func TestLooksLikeHEIC(t *testing.T) {
 	if !LooksLikeHEIC(readRealHeic(t)) {
 		t.Fatal("the real iPhone photo must be recognised as HEIC")
@@ -60,6 +72,7 @@ func TestConvertHEICToPNGKeepsTheRealDimensions(t *testing.T) {
 
 // 读者的原图必须原封不动：我们只是复制进库并转换。
 func TestConversionLeavesTheOriginalFileUntouched(t *testing.T) {
+	requireRealHeic(t)
 	before, err := os.Stat(realHeicPath)
 	if err != nil {
 		t.Fatal(err)

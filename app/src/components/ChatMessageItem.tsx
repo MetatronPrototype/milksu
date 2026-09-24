@@ -40,6 +40,7 @@ import { useT } from '@/hooks/useUiLocale'
 import type { CodingAttachment, CodingAttachmentPreview, Message } from '@/types'
 
 export default function ChatMessageItem({
+  protectedFolders,
   message,
   recoverable,
   recoveryContext,
@@ -65,6 +66,8 @@ export default function ChatMessageItem({
   thinkingDefaultOpen?: boolean
   thinkingFoldKey?: string
   onRespondApproval?: (requestId: string, approved: boolean, scope?: 'once' | 'conversation', choice?: string) => void
+  /** 受限文件夹的**生效列表**（总开关关掉时为空）—— 由持有设置的那一层算好传进来。 */
+  protectedFolders?: string[],
   onRetry?: () => void
   onEditUser?: (messageId: string, content: string) => void
   onRewindContext?: () => void
@@ -409,7 +412,7 @@ export default function ChatMessageItem({
   const approvalVerification = destructiveAssessment ?? assessApprovalRequest({
     content: message.content ?? '',
     approvalInput: message.approvalInput ?? '',
-  })
+  }, [], { effectiveProtectedFolders: protectedFolders })
   const approvalIsDestructive = (
     /(^|\s)(rm|find|unlink|shred)\b/.test(`${approvalCommand}\n${message.approvalInput ?? ''}`)
     || /\bxargs\b/.test(`${approvalCommand}\n${message.approvalInput ?? ''}`)
@@ -427,7 +430,7 @@ export default function ChatMessageItem({
       const base = assessApprovalRequest({
         content: approvalCommand,
         approvalInput: message.approvalInput ?? '',
-      })
+      }, [], { effectiveProtectedFolders: protectedFolders })
       if (!approvalCommand) {
         if (!cancelled) {
           setDestructiveAssessment(base)
@@ -451,13 +454,13 @@ export default function ChatMessageItem({
       setDestructiveAssessment(assessApprovalRequest({
         content: approvalCommand,
         approvalInput: message.approvalInput ?? '',
-      }, facts))
+      }, facts, { effectiveProtectedFolders: protectedFolders }))
       setMeasuredFacts(facts)
     })()
     return () => {
       cancelled = true
     }
-  }, [approvalCommand, message.approvalInput, message.approvalRequestId])
+  }, [approvalCommand, message.approvalInput, message.approvalRequestId, protectedFolders])
 
   async function openSource(href: string, event: React.MouseEvent) {
     event.preventDefault()

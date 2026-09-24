@@ -3,11 +3,11 @@ import {
 
 
   assessApprovalRequest,
+  effectiveProtectedFolders,
   assessDestructiveRequest,
   parseDestructiveTargets,
   protectedMatch,
 } from './destructiveTarget'
-import { writeProtectProjectPaths } from './approvalGuardsPreference'
 
 // The renderer is sandboxed and has no `process`, so tests pin a literal home directory.
 const testHome = '/Users/probe'
@@ -62,9 +62,10 @@ describe('protected rules and user data', () => {
       protected: true,
       rule: '/private/tmp/milksu-*',
     })
-    expect(protectedMatch('/private/tmp/mairecord-backup')).toEqual({
+    // 受限文件夹不是产品里写死的规则：**只有读者列出的那条路径**才受保护。
+    expect(protectedMatch('/tmp/example-project/out', { effectiveFolders: ['/tmp/example-project/out'] })).toEqual({
       protected: true,
-      rule: '/private/tmp/mairecord-*',
+      rule: '/tmp/example-project/out',
     })
   })
 
@@ -75,22 +76,37 @@ describe('protected rules and user data', () => {
     expect(protectedMatch('/Users/me/Documents/report.pdf').protected).toBe(true)
   })
 
-  // 读者被卡住的现场：自己的项目目录（maiRecord 等）也进了受保护清单，于是审批只能拒绝。
-  // 设置里关掉「项目目录保护」后必须能批准，而系统级保护不受这个偏好影响。
-  it('lets the reader approve their own project paths once the project protection is off', () => {
-    writeProtectProjectPaths(false)
-    try {
-      const own = assessDestructiveRequest(`rm -rf ${testHome}/mairecord-trainer/out`, [])
-      expect(own.protections).not.toContain('maiRecord 记录')
+  // 读者列出的路径进了保护清单 ⇒ 审批只能拒绝；总开关关掉（= 空列表）⇒ 可以批准。
+  // 系统级保护与这个开关无关，一条都不许松。
+  it('lets the reader approve their own listed paths once the master switch is off', () => {
+    const listed = ['/tmp/example-project/out']
+    const on = assessDestructiveRequest('rm -rf /tmp/example-project/out', [], '/', {
+      effectiveProtectedFolders: listed,
+    })
+    expect(on.protections).toContain('/tmp/example-project/out')
+    const off = assessDestructiveRequest('rm -rf /tmp/example-project/out', [], '/', {
+      effectiveProtectedFolders: [],
+    })
+    expect(off.protections).not.toContain('/tmp/example-project/out')
 
-      // 系统级保护与这个偏好无关：关掉后照样拦。
-      const documents = assessDestructiveRequest(`rm -rf ${testHome}/Documents/report.pdf`, [])
-      expect(documents.protections).toContain('~/Documents')
-      const caches = assessDestructiveRequest('rm -rf /private/tmp/milksu-restore-check-XYZ', [])
-      expect(caches.protections).toContain('/private/tmp/milksu-*')
-    } finally {
-      writeProtectProjectPaths(true)
-    }
+    const documents = assessDestructiveRequest(`rm -rf ${testHome}/Documents/report.pdf`, [], '/', {
+      effectiveProtectedFolders: [],
+    })
+    expect(documents.protections).toContain('~/Documents')
+    const caches = assessDestructiveRequest('rm -rf /private/tmp/milksu-restore-check-XYZ', [], '/', {
+      effectiveProtectedFolders: [],
+    })
+    expect(caches.protections).toContain('/private/tmp/milksu-*')
+  })
+
+  // 跨层一致性：渲染层的"生效列表"与下发给侧车的列表是**同一个口径**（关掉 ⇒ 空列表）。
+  it('hands the same effective list to both halves', () => {
+    const settings = { protected_folders: ['/tmp/example-project/out'] }
+    expect(effectiveProtectedFolders(settings)).toEqual(['/tmp/example-project/out'])
+    expect(effectiveProtectedFolders({ ...settings, protected_folders_enabled: false })).toEqual([])
+    expect(protectedMatch('/tmp/example-project/out', {
+      effectiveFolders: effectiveProtectedFolders({ ...settings, protected_folders_enabled: false }),
+    }).protected).toBe(false)
   })
 })
 
@@ -374,24 +390,22 @@ describe("evidence: prose and structured input agree on the target", () => {
 
 // "同时保护我的项目目录"关掉之后：自己的项目文件可以批准删除，系统级保护一条都不许松。
 describe('project protection is optional', () => {
-  // 默认（没有第二个参数）必须与以前完全一致：maiRecord 那条老规则自带 record，
-  // 任何含 mairecord 的路径都会命中，所以它必须先被锁死。
-  it('keeps protecting maiRecord project paths by default', () => {
-    expect(protectedMatch('/private/tmp/mairecord-backup')).toEqual({
+  it('protects exactly the folders the reader listed', () => {
+    const listed = ['/tmp/example-project/out', '/tmp/example-backup']
+    expect(protectedMatch('/tmp/example-project/out', { effectiveFolders: listed })).toEqual({
       protected: true,
-      rule: '/private/tmp/mairecord-*',
+      rule: '/tmp/example-project/out',
     })
-    expect(protectedMatch(`${testHome}/mairecord-trainer/x`)).toEqual({
-      protected: true,
-      rule: 'maiRecord 记录',
-    })
-    // 显式传 true 与不传等价
-    expect(protectedMatch('/private/tmp/mairecord-backup', { protectProjectPaths: true }).protected).toBe(true)
+    // 目录**下面**的东西同样受保护（规则名仍是那条路径）。
+    expect(protectedMatch('/tmp/example-project/out/report.bin', { effectiveFolders: listed }).rule)
+      .toBe('/tmp/example-project/out')
+    // 没列出来的路径 ⇒ 不受保护：产品里不再有任何写死的项目特征。
+    expect(protectedMatch('/tmp/example-project/other', { effectiveFolders: listed }).protected).toBe(false)
+    expect(protectedMatch('/tmp/example-project/out').protected).toBe(false)
   })
 
-  it('lets the reader approve their own project paths when it is off', () => {
-    expect(protectedMatch('/private/tmp/mairecord-backup', { protectProjectPaths: false }).protected).toBe(false)
-    expect(protectedMatch(`${testHome}/mairecord-trainer/x`, { protectProjectPaths: false }).protected).toBe(false)
+  it('lets the reader approve their own listed paths when the switch is off', () => {
+    expect(protectedMatch('/tmp/example-project/out', { effectiveFolders: [] }).protected).toBe(false)
   })
 
   it('never relaxes the system-level protection', () => {
@@ -403,7 +417,7 @@ describe('project protection is optional', () => {
       '/private/tmp/milksu-restore-check-oWZogJ',
       `${testHome}/Library/Application Support/com.milksu.app.beta/runtime-data`,
     ]) {
-      const off = protectedMatch(path, { protectProjectPaths: false })
+      const off = protectedMatch(path, { effectiveFolders: [] })
       expect(off.protected).toBe(true)
       expect(off).toEqual(protectedMatch(path))
     }
