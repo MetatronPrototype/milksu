@@ -1929,6 +1929,16 @@ async function loadRuntimeSessionPolicy(cwd, command) {
     computerUse: selectedMcp.computerUse,
     browserUse: selectedMcp.browserUse,
     codingCollaboration,
+    // The reader's "agents may not write" list has to travel with the policy we store for this
+    // session: the write guard reads that stored policy (`getPolicy()`), not the raw command.
+    // Dropping it here is what made the list inert (the host sent it, the guard never saw it).
+    protectedFolders: Array.isArray(command.protectedFolders)
+      ? [...new Set(
+          command.protectedFolders
+            .map(value => String(value ?? "").trim())
+            .filter(Boolean),
+        )]
+      : [],
     imageGenConfigured: Boolean(String(process.env.OPENAI_API_KEY ?? "").trim()),
   });
   const effectiveSessionRole = resolveWorkflowSessionRole(
