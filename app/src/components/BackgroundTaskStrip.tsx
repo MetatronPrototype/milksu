@@ -14,7 +14,7 @@ import { t } from '@/lib/uiLocale'
  *
  * - 有在跑 ⇒ 三行：①标记 +「后台任务进行中」 ②「N 件 · 名字（还有 M 件）」 ③「进行中」，并带「停止全部」按钮
  *   （用户拍：删掉「请不要关机」那一行 ✗ —— 它已经不再显示）
- * - 没有在跑但有终态 ⇒ ①标记 +「N 件 · 名字（还有 M 件）」+ 终态那行，**30 秒后自动收起**
+ * - 没有在跑但有终态 ⇒ ①标记 +「N 件 · 名字（还有 M 件）」+ 终态那行，**15 秒后自动收起**
  * - 终态显示期间又开始新任务 ⇒ 立刻切回"进行中"，并清掉收起定时器
  * - 数据显示的是**事实**：件数与名字来自任务列表本身；**没有百分比**（数据里没有），不许编。
  *
@@ -38,7 +38,7 @@ export function BackgroundTaskStrip({
   const [now, setNow] = useState(() => Date.now())
   const digest = useMemo(() => backgroundStripDigest({ running, outcome, now }), [running, outcome, now])
 
-  // 终态要在 30 秒后自己收起；定时器在卸载、切换会话（props 变化）时都必须清掉，不许泄漏。
+  // 终态要在 15 秒后自己收起；定时器在卸载、切换会话（props 变化）时都必须清掉，不许泄漏。
   useEffect(() => {
     if (digest.mode !== 'settled' || !digest.visible) return undefined
     setNow(Date.now())

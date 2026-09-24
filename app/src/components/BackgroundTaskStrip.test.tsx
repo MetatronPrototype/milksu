@@ -108,7 +108,7 @@ describe('background task strip', () => {
     expect(screen.getByTestId('background-task-strip').textContent).toContain('已取消')
   })
 
-  // 终态：显示状态那行、不显示"请不要关机"，并在 30 秒后自动收起（假定时器）。
+  // 终态：显示状态那行、不显示"请不要关机"，并在 15 秒后自动收起（假定时器）。
   it('shows a settled outcome and hides it after thirty seconds', () => {
     vi.useFakeTimers()
     render(<BackgroundTaskStrip running={[]} outcome={{ kind: 'completed', count: 1, firstName: '打包', at: Date.now() }} />)
@@ -117,7 +117,7 @@ describe('background task strip', () => {
     expect(strip.textContent).toContain('已完成')
     expect(strip.textContent).toContain('1 件 · 打包')
     expect(strip.textContent).not.toContain('请不要关机')
-    act(() => { vi.advanceTimersByTime(30_000 + 100) })
+    act(() => { vi.advanceTimersByTime(15_000 + 100) })
     expect(screen.queryByTestId('background-task-strip')).toBeNull()
   })
 
@@ -132,7 +132,7 @@ describe('background task strip', () => {
     const strip = screen.getByTestId('background-task-strip')
     expect(strip.getAttribute('data-mode')).toBe('running')
     expect(strip.textContent).toContain('新打包')
-    act(() => { vi.advanceTimersByTime(30_000 + 100) })
+    act(() => { vi.advanceTimersByTime(15_000 + 100) })
     // 新任务还在跑 ⇒ 不许被旧定时器收起。
     expect(screen.getByTestId('background-task-strip')).not.toBeNull()
   })

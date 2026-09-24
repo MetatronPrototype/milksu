@@ -5,7 +5,7 @@
 //   （app/src/codingEnvironmentTypes.ts:72；侧车遇未知值降级 `failed`，bridge-background-view.js:71）。
 // - 终态的判定**必须用过滤前的完整任务列表**，优先级从上到下：
 //     有 failed / timed_out ⇒ failed；否则有 cancelled ⇒ cancelled；否则有 running ⇒ 还在跑；否则 ⇒ completed。
-// - 终态只在"在跑集合**从非空变空**"那一刻形成，之后在窄带里**停 30 秒**自动收起。
+// - 终态只在"在跑集合**从非空变空**"那一刻形成，之后在窄带里**停 15 秒**自动收起。
 // - ⚠️ 窄带**没有**百分比可言：数据里只有 status，没有进度数字 —— 不要编（范围外）。
 
 export type BackgroundTaskLike = { id?: unknown; name?: unknown; status?: unknown }
@@ -28,8 +28,8 @@ export type BackgroundStripDigest = {
   statusKind: BackgroundStripStatusKind
 }
 
-/** 终态在窄带里停留多久（用户拍：30 秒）。 */
-export const BACKGROUND_STRIP_SETTLED_MS = 30_000
+/** 终态在窄带里停留多久（用户拍：15 秒）。 */
+export const BACKGROUND_STRIP_SETTLED_MS = 15_000
 
 function statusOf(task: BackgroundTaskLike | undefined): string {
   return String(task?.status ?? '')
@@ -63,7 +63,7 @@ export function outcomeForTasks(
   return { kind: 'completed', count: list.length, firstName: nameOf(list[0]), at }
 }
 
-/** 窄带该显示什么：在跑优先；否则看终态是否还在 30 秒窗口内。 */
+/** 窄带该显示什么：在跑优先；否则看终态是否还在 15 秒窗口内。 */
 export function backgroundStripDigest({
   running,
   outcome,

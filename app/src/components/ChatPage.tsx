@@ -259,7 +259,7 @@ export type ChatPageProps = {
   /** 后台任务的事实（由持有 runtime 的那一层经 props 传进来 —— 与 `running` 同一条路线）。
       不要在这里调 `useConversations()` 工厂：那会拿到**另一份新 store**，事实永远是空的 ✗（真机教训 ✓）。 */
   backgroundTasks?: Array<{ id?: unknown; name?: unknown; status?: unknown }>
-  /** 窄带专用的终态（只增不改）：跑完那一刻算出来，窄带据此显示 30 秒。 */
+  /** 窄带专用的终态（只增不改）：跑完那一刻算出来，窄带据此显示 15 秒。 */
   backgroundTaskOutcome?: { kind: 'failed' | 'cancelled' | 'completed'; count: number; firstName: string; at: number } | null
   ctfSession: boolean
   vulnerabilitySession?: boolean
@@ -3031,7 +3031,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             </div>
           ) : null}
           {/* 后台任务窄带：在跑时三行（进行中 + 件数/名字 + 状态）并带「停止全部」，
-              跑完显示终态并在 30 秒后收起。口径在 lib/backgroundStripDigest（纯函数、有测试）。 */}
+              跑完显示终态并在 15 秒后收起。口径在 lib/backgroundStripDigest（纯函数、有测试）。 */}
           <BackgroundTaskStrip
             running={backgroundTasks}
             outcome={backgroundTaskOutcome}
