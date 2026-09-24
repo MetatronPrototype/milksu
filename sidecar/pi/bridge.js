@@ -37,6 +37,7 @@ import {
 import {
   loadSessionPolicy,
   normalizeCodingProductAction,
+  normalizeProtectedFolders,
 } from "./bridge-policy.js";
 import { createApprovalBroker } from "./bridge-approval.js";
 import { createDeliveryBroker } from "./bridge-delivery.js";
@@ -1929,16 +1930,10 @@ async function loadRuntimeSessionPolicy(cwd, command) {
     computerUse: selectedMcp.computerUse,
     browserUse: selectedMcp.browserUse,
     codingCollaboration,
-    // The reader's "agents may not write" list has to travel with the policy we store for this
-    // session: the write guard reads that stored policy (`getPolicy()`), not the raw command.
-    // Dropping it here is what made the list inert (the host sent it, the guard never saw it).
-    protectedFolders: Array.isArray(command.protectedFolders)
-      ? [...new Set(
-          command.protectedFolders
-            .map(value => String(value ?? "").trim())
-            .filter(Boolean),
-        )]
-      : [],
+    // 读者的受限文件夹必须随策略一起存下来：写入守卫读的是存进 sessionPolicies 的那份策略
+    // （getPolicy()），不是原始 command。当初漏掉这处转发 ⇒ 列表形同不存在 ⇒ 真机上往
+    // 受限目录写文件竟然成功。
+    protectedFolders: normalizeProtectedFolders(command.protectedFolders),
     imageGenConfigured: Boolean(String(process.env.OPENAI_API_KEY ?? "").trim()),
   });
   const effectiveSessionRole = resolveWorkflowSessionRole(
@@ -1971,6 +1966,8 @@ async function loadRuntimeSessionPolicy(cwd, command) {
       computerUse: selectedMcp.computerUse,
       browserUse: selectedMcp.browserUse,
       codingCollaboration,
+      // 第二处会**整个替换** policy，所以同一份列表必须再带一次（否则这里一覆盖又丢）。
+      protectedFolders: normalizeProtectedFolders(command.protectedFolders),
       imageGenConfigured: Boolean(String(process.env.OPENAI_API_KEY ?? "").trim()),
       readOnlyResourceRoots: codingResourceRoots,
     });

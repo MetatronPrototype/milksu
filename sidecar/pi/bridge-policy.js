@@ -1628,13 +1628,7 @@ async function loadCodingSessionPolicy(workspace, codingPolicy = {}, sessionRole
             }
           : capability
   ));
-  const protectedFolders = Array.isArray(codingPolicy.protectedFolders)
-    ? [...new Set(
-        codingPolicy.protectedFolders
-          .map(value => String(value ?? "").trim())
-          .filter(Boolean),
-      )]
-    : [];
+  const protectedFolders = normalizeProtectedFolders(codingPolicy.protectedFolders);
   const result = {
     ctf: false,
     ...normalized,
@@ -1665,6 +1659,20 @@ async function loadCodingSessionPolicy(workspace, codingPolicy = {}, sessionRole
     result.activeTools = [...new Set([...result.activeTools, ...envToolNames])];
   }
   return result;
+}
+
+/**
+ * 读者在设置里列的「agent 不可改写」文件夹：**唯一**的归一化口径（去空白、去空项、去重）。
+ * 宿主下发的原始数组、侧车构造策略时的选项、以及策略本身，三处都走这一个函数，
+ * 免得各写一套口径导致"列表在某一步悄悄变空"。
+ */
+export function normalizeProtectedFolders(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(
+    value
+      .map(item => String(item ?? "").trim())
+      .filter(Boolean),
+  )];
 }
 
 export async function loadSessionPolicy(
