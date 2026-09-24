@@ -49,6 +49,7 @@ import {
   derivedProtectedRoots,
   mergeProtectedRoots,
   parseProtectedRoots,
+  protectedAgentNotice,
   protectedCommandViolation,
   protectedWriteViolation,
 } from "./bridge-protected-paths.js";
@@ -842,7 +843,10 @@ function createCodingPermissionExtension(
       const protectedViolation = protectedViolationFor(event, policy);
       if (protectedViolation) {
         const reason = `MilkSU blocked a write to a protected path (${protectedViolation.label}): `
-          + protectedViolation.path;
+          + protectedViolation.path
+          // 给 agent 的提示与给读者的提示分开：读者看到"被拦了"，agent 必须看到
+          // "此路不通、别再换写法试"（不然它会一直找突破口）。
+          + "\n\n" + protectedAgentNotice(protectedViolation, policy.uiLocale);
         // 载荷与别处的 guard.alarm 统一成对双语（前端按界面语言选一句）。
         let englishNotice = protectedAlarmNotice(protectedViolation, "en");
         if (!String(englishNotice ?? "").trim()) englishNotice = protectedAlarmNotice(protectedViolation, policy.uiLocale);
@@ -851,6 +855,9 @@ function createCodingPermissionExtension(
           reason,
           notice: protectedAlarmNotice(protectedViolation, "zh"),
           noticeEnglish: englishNotice,
+          // agent 侧单独一条（前端/宿主不展示给读者）。
+          agentNotice: protectedAgentNotice(protectedViolation, "zh"),
+          agentNoticeEnglish: protectedAgentNotice(protectedViolation, "en"),
         });
         abortedSessions.add(conversationId);
         return { block: true, terminate: true, reason };

@@ -185,42 +185,62 @@ function segmentTokens(segment) {
 
 // The concrete paths a shell command can write to. Relative targets resolve against the
 // command's own working directory, exactly as the shell would.
-function shellWriteTargets(command) {
+function shellWriteTargets(command, { env = process.env, bindings = new Map(), cwd = "" } = {}) {
   const targets = new Set();
+  let currentCwd = String(cwd ?? "");
+  // Judge a relative write target by where the shell would really put it: `cd <dir> && ... > f`
+  // writes inside <dir>, not inside the session workspace.
+  const resolveTarget = (target) => {
+    const expanded = expandShellTarget(target, env, bindings);
+    if (!expanded) return "";
+    if (expanded.startsWith("/")) return expanded;
+    if (expanded.startsWith("~")) return expandShellTarget(expanded, env, bindings);
+    return currentCwd ? join(currentCwd, expanded) : expanded;
+  };
   for (const segment of commandSegments(command)) {
     const tokens = segmentTokens(segment);
     if (!tokens.length) continue;
+    const leadingName = String(tokens[0] ?? "").split("/").pop();
+    if (leadingName === "cd") {
+      const destination = tokens.slice(1).find(token => !token.startsWith("-"));
+      if (destination) {
+        const resolved = expandShellTarget(destination, env, bindings);
+        if (resolved.startsWith("/")) currentCwd = resolved;
+        else if (currentCwd) currentCwd = join(currentCwd, resolved);
+      }
+      continue;
+    }
     for (let index = 0; index < tokens.length; index += 1) {
       const token = tokens[index];
       if ((token === ">" || token === ">>") && tokens[index + 1]) {
-        targets.add(tokens[index + 1]);
+        targets.add(resolveTarget(tokens[index + 1]));
       }
     }
     const commandName = String(tokens[0] ?? "").split("/").pop();
     const args = tokens.slice(1).filter(token => token !== ">" && token !== ">>");
     const plain = args.filter(token => !token.startsWith("-"));
     if (commandName === "tee") {
-      for (const token of plain) targets.add(token);
+      for (const token of plain) targets.add(resolveTarget(token));
       continue;
     }
     if (commandName === "dd") {
       for (const token of args) {
-        if (token.startsWith("of=")) targets.add(token.slice(3));
+        if (token.startsWith("of=")) targets.add(resolveTarget(token.slice(3)));
       }
       continue;
     }
     if (commandName === "sed") {
       if (args.some(token => token.startsWith("-i")) && plain.length) {
-        targets.add(plain[plain.length - 1]);
+        targets.add(resolveTarget(plain[plain.length - 1]));
       }
       continue;
     }
     if (SINGLE_TARGET_COMMANDS.has(commandName)) {
-      if (plain.length) targets.add(plain[plain.length - 1]);
+      if (plain.length) targets.add(resolveTarget(plain[plain.length - 1]));
       continue;
     }
     if (ALL_TARGET_COMMANDS.has(commandName)) {
-      for (const token of plain) targets.add(token);
+      for (const token of plain) targets.add(resolveTarget(token));
     }
     // `git config`/`hook` style commands write inside `.git`; the resolved path check below
     // covers them through the `.git/hooks` shape and the protected roots.
@@ -230,7 +250,7 @@ function shellWriteTargets(command) {
 
 // Expand the variables a shell would expand, so `$HOME/...` is judged by where it really
 // points rather than by its text.
-function expandShellTarget(target, env = process.env) {
+function expandShellTarget(target, env = process.env, bindings = new Map()) {
   let value = String(target ?? "").trim();
   if (!value) return "";
   if (value === "~" || value.startsWith("~/")) {
@@ -242,6 +262,7 @@ function expandShellTarget(target, env = process.env) {
     if (name === "HOME") return String(env.HOME ?? homedir());
     if (name === "PWD") return String(env.PWD ?? env.MILKSU_USER_HOME ?? "");
     if (name === "MILKSU_USER_HOME") return String(env.MILKSU_USER_HOME ?? "");
+    if (bindings.has(name)) return bindings.get(name);
     return match;
   });
   return value;
@@ -253,6 +274,129 @@ function expandShellTarget(target, env = process.env) {
  * deliberately obfuscated command can slip past - but it must never be a coin flip, and it
  * must never block a read.
  */
+// The shell variables the command binds itself (`D=/path; ... > $D/f`). Ignoring them hands
+// the agent a ready-made way around a protected folder - that was the real bug: the write was
+// created through a variable, so the literal-path check never saw a protected path at all.
+// Values are expanded to a fixed point, so a variable built from another variable still counts.
+function shellVariableBindings(command, env = process.env) {
+  const bindings = new Map();
+  for (const segment of commandSegments(command)) {
+    for (const token of segmentTokens(segment)) {
+      const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(token);
+      if (!match) continue;
+      const raw = match[2].replace(/^["']|["']$/g, "");
+      bindings.set(match[1], raw ? expandShellTarget(raw, env, bindings) : "");
+    }
+  }
+  return bindings;
+}
+
+// Commands that can put bytes on disk. Used only by the strict-when-in-doubt branch below.
+// Commands whose whole job is to put bytes on disk.
+const WRITE_COMMAND_NAMES = new Set([
+  "rm", "rmdir", "mv", "cp", "install", "ln", "touch", "truncate", "mkdir", "mkfifo",
+  "chmod", "chown", "chgrp", "rsync", "tar", "unzip", "patch", "tee", "dd", "ed",
+]);
+// Interpreters and editors can write, but only when the script says so: a plain
+// `sed 's/x/y/' file` or `python -c 'print(1)'` is a read and must never be blocked.
+const WRITE_CAPABLE_COMMAND_NAMES = new Set([
+  "python", "python3", "node", "perl", "ruby", "sh", "bash", "zsh", "osascript", "awk",
+  "sed", "ex", "vi", "vim", "nano", "emacs", "git", "find", "xargs", "sqlite3",
+]);
+const WRITE_ACTIVITY_SHAPE = /(?:open\s*\([^)]*["'](?:w|a|x)|writeFile|write_text|appendFile|>\s*["']?\/|(?:^|\s)-i\b|<<-?\s*["']?\w|hook|chmod|truncate|cp\b|mv\b|rm\b)/;
+
+const DISCARD_TARGET_SHAPE = /^\/dev\/(?:null|stdout|stderr|tty)$/;
+
+function commandHasWriteIntent(command, { env = process.env, bindings = new Map(), cwd = "" } = {}) {
+  const text = String(command ?? "");
+  // Real write targets only: `2>/dev/null` and `>/dev/null` discard output, they do not write,
+  // and a read that merely contains a `>` must still pass.
+  for (const target of shellWriteTargets(text, { env, bindings, cwd })) {
+    const expanded = expandShellTarget(target, env, bindings);
+    if (expanded && !DISCARD_TARGET_SHAPE.test(expanded)) return true;
+  }
+  for (const segment of commandSegments(text)) {
+    const tokens = segmentTokens(segment);
+    const name = String(tokens[0] ?? "").split("/").pop();
+    if (!name) continue;
+    const inPlace = /(?:^|\s)-i/.test(segment);
+    if (WRITE_COMMAND_NAMES.has(name)) {
+      if (name === "sed" && !inPlace) continue;
+      return true;
+    }
+    if (SINGLE_TARGET_COMMANDS.has(name) || ALL_TARGET_COMMANDS.has(name)) return true;
+    if (WRITE_CAPABLE_COMMAND_NAMES.has(name) && (name === "sed" ? inPlace : WRITE_ACTIVITY_SHAPE.test(segment))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function protectedViolationForPath(candidate, { roots = [], enforcedRoots = [], ownWorkspace } = {}) {
+  const expanded = String(candidate ?? "").trim();
+  if (!expanded) return null;
+  if (!expanded.startsWith("/") && !expanded.startsWith("~")) return null;
+  return protectedWriteViolation(expanded, { roots, enforcedRoots, ownWorkspace });
+}
+
+// Strict when in doubt: if the command can write and any path it mentions (after expanding its
+// own variables) lands inside a protected root, block it and say why. Reads still pass - only
+// commands that can write are judged here. "Cannot tell, so let it through" is exactly the
+// crack the agent kept widening.
+function protectedCommandMentionViolation(
+  command,
+  { roots = [], enforcedRoots = [], ownWorkspace, bindings = new Map(), env = process.env } = {},
+) {
+  for (const value of bindings.values()) {
+    const violation = protectedViolationForPath(
+      expandShellTarget(value, env, bindings),
+      { roots, enforcedRoots, ownWorkspace },
+    );
+    if (violation) return { ...violation, reason: "protected-path-in-command" };
+  }
+  for (const segment of commandSegments(command)) {
+    for (const token of segmentTokens(segment)) {
+      if (token === ">" || token === ">>" || token.startsWith("-")) continue;
+      const violation = protectedViolationForPath(
+        expandShellTarget(token, env, bindings),
+        { roots, enforcedRoots, ownWorkspace },
+      );
+      if (violation) return { ...violation, reason: "protected-path-in-command" };
+    }
+  }
+  return null;
+}
+
+/**
+ * What the **agent** is told when it is blocked. Deliberately different from the notice the
+ * reader sees: the reader is told "it was blocked", the agent is told "this road is closed, do
+ * not look for another one". The reader's own words: an agent that is not told will keep
+ * hunting for a way in.
+ */
+export function protectedAgentNotice(violation, locale) {
+  const target = String(violation?.path ?? "").trim() || "(the path you tried to write)";
+  const throughVariable = violation?.reason === "protected-path-in-command";
+  if (String(locale ?? "") === "en") {
+    return "Blocked: " + target + " is inside a folder on the reader's protected list "
+      + "(Settings, Files, protected folders), so agents may not write there."
+      + (throughVariable
+        ? " This command was blocked because it pointed at that folder through a shell variable"
+          + " or after a cd, not because of how it was spelled."
+        : "")
+      + " Do not work around it: do not retry with a shell variable, a cd, another tool, or "
+      + "another spelling of the path - the write stays blocked and repeated attempts stop the "
+      + "turn. The only way through is for the reader to remove that folder in Settings (or turn "
+      + "the master switch off): tell them what you need written and where, and wait for them.";
+  }
+  return "已拦截：" + target + " 在读者的「受限文件夹」列表里（设置 → 文件 → 受限文件夹），"
+    + "agent 不能写入。" + (throughVariable
+      ? "这条命令被拦不是因为写法，而是它通过 shell 变量或 cd 指到了那个目录。"
+      : "")
+    + "**不要绕过**：不要改用 shell 变量、cd、别的工具或别的路径拼法再试 —— 写入仍会被拒，"
+    + "反复尝试会终止本轮。唯一可行的是让读者在设置里把该目录移出列表（或关掉总开关）："
+    + "把你要写什么、写到哪里告诉读者，等读者处理。";
+}
+
 export function protectedCommandViolation(
   command,
   { roots = [], enforcedRoots = [], ownWorkspace, cwd, env = process.env } = {},
@@ -260,8 +404,9 @@ export function protectedCommandViolation(
   const text = String(command ?? "");
   if (!text.trim()) return null;
   const base = String(cwd ?? ownWorkspace ?? env.HOME ?? "").trim();
-  for (const raw of shellWriteTargets(text)) {
-    let resolved = expandShellTarget(raw, env);
+  const bindings = shellVariableBindings(text, env);
+  for (const raw of shellWriteTargets(text, { env, bindings, cwd: base })) {
+    let resolved = expandShellTarget(raw, env, bindings);
     if (!resolved) continue;
     // A `$=`-style suffix or a trailing quote leftover is not a path we can judge.
     if (!isAbsolute(resolved)) {
@@ -270,6 +415,16 @@ export function protectedCommandViolation(
     if (!isAbsolute(resolved)) continue;
     const violation = protectedWriteViolation(resolved, { roots, enforcedRoots, ownWorkspace });
     if (violation) return violation;
+  }
+  if (commandHasWriteIntent(text, { env, bindings, cwd: base })) {
+    const mentioned = protectedCommandMentionViolation(text, {
+      roots,
+      enforcedRoots,
+      ownWorkspace,
+      bindings,
+      env,
+    });
+    if (mentioned) return mentioned;
   }
   return null;
 }
