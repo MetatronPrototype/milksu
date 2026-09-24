@@ -9,7 +9,6 @@
  * backend as measurements and merged in `describeDestructiveRequest`.
  */
 
-import { readProtectProjectPaths } from '@/lib/approvalGuardsPreference'
 
 export type DestructiveTargetKind = 'file' | 'directory-tree' | 'glob' | 'unknown'
 
@@ -90,13 +89,34 @@ const ALWAYS_PROTECTED_RULES: { rule: string; test: (path: string) => boolean }[
   },
 ]
 
-// 可开关：只保护"我们自己的项目目录"这一类。默认开（行为与以前完全一致），
-// 关掉之后读者才能批准删除自己的项目文件（真机：maiRecord 项目里审批只能拒绝，工作被卡住）。
-// 注意 maiRecord 规则自带 record，任何含 mairecord 的路径都会命中，所以它必须落在这一组。
-const PROJECT_PROTECTED_RULES: { rule: string; test: (path: string) => boolean }[] = [
-  { rule: '/private/tmp/mairecord-*', test: p => /^\/private\/tmp\/mairecord-/.test(p) },
-  { rule: 'maiRecord 记录', test: p => /mairecord/i.test(p) && /(record|trainer)/i.test(p) },
-]
+/**
+ * 受限文件夹的"生效列表"：总开关缺省为开（`!== false`），关掉时返回空列表。
+ * 与引擎侧 `effectiveProtectedFolders(settings)`（关掉 ⇒ 下发空数组）**同一口径**，
+ * 所以界面与侧车只可能看到同一个值，不会出现"界面说关了、侧车还在拦"。
+ */
+export function effectiveProtectedFolders(settings?: {
+  protected_folders?: string[]
+  protected_folders_enabled?: boolean
+}): string[] {
+  if (settings?.protected_folders_enabled === false) return []
+  return settings?.protected_folders ?? []
+}
+
+/**
+ * 受限文件夹：保护对象**完全来自读者在设置里列出的绝对路径** —— 产品里不含任何写死的
+ * 项目名或项目特征。这里只把列表翻译成规则：规则名就是那条路径本身，命中"该路径及其下面"。
+ */
+export function projectProtectedRules(
+  folders?: readonly string[],
+): { rule: string; test: (path: string) => boolean }[] {
+  return (folders ?? [])
+    .map(folder => String(folder ?? '').trim().replace(/\/+$/, ''))
+    .filter(folder => folder.startsWith('/') && folder !== '/')
+    .map(folder => ({
+      rule: folder,
+      test: (path: string) => path === folder || path.startsWith(`${folder}/`),
+    }))
+}
 
 /** Split a shell-ish command into simple tokens, honouring quotes. */
 function tokenize(command: string): string[] {
@@ -386,11 +406,12 @@ export interface ApprovalAssessment extends DestructiveAssessment {
 export function assessApprovalRequest(
   input: { content?: string; approvalInput?: string },
   facts: DestructiveFacts[] = [],
+  options?: { effectiveProtectedFolders?: readonly string[] },
 ): ApprovalAssessment {
   const structured = parseApprovalInput(input.approvalInput)
   if (!structured) {
     // Older or unexpected requests: fall back to the text, but say so.
-    const fallback = assessDestructiveRequest(String(input.content ?? ''), facts)
+    const fallback = assessDestructiveRequest(String(input.content ?? ''), facts, '/', options)
     return {
       ...fallback,
       unverified: true,
@@ -401,28 +422,29 @@ export function assessApprovalRequest(
     ? `rm -rf ${structured.paths.map(path => JSON.stringify(path)).join(' ')}`
     : ''
   const first = structured.command
-    ? assessDestructiveRequest(structured.command, facts)
+    ? assessDestructiveRequest(structured.command, facts, '/', options)
     : undefined
   if (first && !first.undetermined && first.targets.length) return first
   if (fromPaths) {
-    const fromTargets = assessDestructiveRequest(fromPaths, facts)
+    const fromTargets = assessDestructiveRequest(fromPaths, facts, '/', options)
     if (!fromTargets.undetermined && fromTargets.targets.length) return fromTargets
   }
-  return first ?? assessDestructiveRequest(String(input.content ?? ''), facts)
+  return first ?? assessDestructiveRequest(String(input.content ?? ''), facts, '/', options)
 }
 
 /**
  * 命中哪条保护。`protectProjectPaths`（默认 true = 与以前完全一致）为 false 时，
- * **只**跳过"可开关"那一组（maiRecord 这类项目目录），系统级判定一律照旧。
+ * **只**跳过读者列出的那一组（生效列表），系统级判定一律照旧。
  */
 export function protectedMatch(
   path: string | undefined,
-  options?: { protectProjectPaths?: boolean },
+  options?: { effectiveFolders?: readonly string[] },
 ): ProtectedMatch {
   if (!path) return { protected: false }
-  const protectProjectPaths = options?.protectProjectPaths !== false
-  const rules = protectProjectPaths
-    ? [...ALWAYS_PROTECTED_RULES, ...PROJECT_PROTECTED_RULES]
+  // **只有一个判断来源**：调用方给的是"已经算好的生效列表"（总开关关掉时为空）。
+  const folders = options?.effectiveFolders ?? []
+  const rules = folders.length
+    ? [...ALWAYS_PROTECTED_RULES, ...projectProtectedRules(folders)]
     : ALWAYS_PROTECTED_RULES
   for (const entry of rules) {
     if (entry.test(path)) return { protected: true, rule: entry.rule }
@@ -540,6 +562,7 @@ export function assessDestructiveRequest(
   command: string,
   facts: DestructiveFacts[] = [],
   cwd = '/',
+  options?: { effectiveProtectedFolders?: readonly string[] },
 ): DestructiveAssessment {
   const targets = parseDestructiveTargets(normalizeAssessmentInput(command), cwd)
     // The parser expands substitutions to judge the outer command; a target that still
@@ -573,9 +596,9 @@ export function assessDestructiveRequest(
   let undetermined = targets.some(target => target.kind === 'unknown')
 
   targets.forEach((target, index) => {
-    // 项目目录保护（maiRecord 等）是读者本机的选择：设置里关掉后，他自己项目里的删除申请
+    // 受限文件夹保护是读者本机的选择：总开关关掉后（生效列表为空），
     // 就可以被批准；系统级保护不接受这个偏好（见 protectedMatch）。
-    const match = protectedMatch(target.path, { protectProjectPaths: readProtectProjectPaths() })
+    const match = protectedMatch(target.path, { effectiveFolders: options?.effectiveProtectedFolders })
     if (match.protected && match.rule) protections.push(match.rule)
     if (touchesUserData(target.path)) touchesUserDataFlag = true
     const fact = facts[index]

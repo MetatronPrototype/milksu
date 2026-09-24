@@ -10,7 +10,8 @@ import (
 	"testing"
 )
 
-const sendableRealHeicPath = "/Users/xiaoxingjiang/Downloads/IMG_2646.HEIC"
+// 真机素材走环境变量：取不到就 skip（仓库规则，代码里不留个人路径）。
+var sendableRealHeicPath = os.Getenv("MILKSU_TEST_HEIC_PATH")
 
 func readSendableRealHeic(t *testing.T) []byte {
 	t.Helper()
@@ -50,6 +51,17 @@ func smallHeic(t *testing.T) []byte {
 }
 
 // 真机那张：转换后超可发送体积 ⇒ 压缩到目标内**才发得出去**（现在 33,668,242 字节会被 32 MiB 挡下）。
+// 真机素材取不到就 skip（不放宽任何断言：有素材时照旧执行）。
+func requireSendableRealHeic(t *testing.T) {
+	t.Helper()
+	if sendableRealHeicPath == "" {
+		t.Skip("set MILKSU_TEST_HEIC_PATH to run this case")
+	}
+	if _, err := os.Stat(sendableRealHeicPath); err != nil {
+		t.Skipf("real HEIC not on this machine: %v", err)
+	}
+}
+
 func TestTheLargestRealPhotoBecomesSendableWithoutLosingResolution(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -127,6 +139,7 @@ func TestASmallHeicStaysLossless(t *testing.T) {
 
 // 防越权：读者自己上传的文件（哪怕很大、哪怕是 PNG/JPEG）**一律不压**。
 func TestReaderUploadedFilesAreNeverCompressed(t *testing.T) {
+	requireSendableRealHeic(t)
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

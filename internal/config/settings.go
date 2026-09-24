@@ -218,7 +218,12 @@ type AppSettings struct {
 	// ProtectedFolders are absolute paths the reader marked as "agents may not write".
 	// Empty by default: it only ever narrows what an agent may write. Reads are unaffected;
 	// the sidecar blocks writes the paths in this list and nothing else.
-	ProtectedFolders         []string             `json:"protected_folders,omitempty"`
+	ProtectedFolders []string `json:"protected_folders,omitempty"`
+	// ProtectedFoldersEnabled is the reader's master switch for the list above. nil (absent)
+	// means enabled, so an older settings file keeps the previous behaviour. When it is false
+	// the listed folders protect nothing: the sidecar is handed an empty list and the delete
+	// approval ignores them, while the system rules stay in force.
+	ProtectedFoldersEnabled  *bool                `json:"protected_folders_enabled,omitempty"`
 	EnabledOptionalSkills    []string             `json:"enabled_optional_skills,omitempty"`
 	WorkerProvider           string               `json:"worker_provider,omitempty"`
 	WorkerModel              string               `json:"worker_model,omitempty"`
@@ -1563,6 +1568,10 @@ func ResolveCompanionModel(settings AppSettings) CompanionModelSelection {
 		Model:    settings.CompanionModel,
 		Source:   settings.CompanionSource,
 	}
+}
+
+func ProtectedFoldersEnabled(settings AppSettings) bool {
+	return settings.ProtectedFoldersEnabled == nil || *settings.ProtectedFoldersEnabled
 }
 
 func CompanionDispatchEnabled(settings AppSettings) bool {

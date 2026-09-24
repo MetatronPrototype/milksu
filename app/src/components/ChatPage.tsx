@@ -61,7 +61,7 @@ import { invokeCommand, listenEvent } from '@/desktop'
 import { toastError } from '@/lib/appToast'
 import { isAskMessage } from '@/lib/agentAsk'
 import { chatNeedsAnotherFollowScroll, nextChatAutoScrollPinned } from '@/lib/chatAutoScroll'
-import { assessApprovalRequest } from '@/lib/destructiveTarget'
+import { assessApprovalRequest, effectiveProtectedFolders } from '@/lib/destructiveTarget'
 import { isGeneratedScratchWorkspace } from '@/lib/codingConversationGroups'
 import {
   computeTranscriptWindow,
@@ -433,10 +433,16 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     && Boolean(message.approvalRequestId)
     && !isAskMessage(message)
   )) ?? null
+  // 受限文件夹的**生效列表**（总开关关掉时为空）：与引擎下发给侧车的值同一口径。
+  const protectedFolders = effectiveProtectedFolders(settings ?? undefined)
   const approvalAssessed = useMemo(() => assessApprovalRequest({
     content: pendingApprovalMessage?.content ?? '',
     approvalInput: pendingApprovalMessage?.approvalInput ?? '',
-  }), [pendingApprovalMessage?.approvalInput, pendingApprovalMessage?.content])
+  }, [], { effectiveProtectedFolders: protectedFolders }), [
+    pendingApprovalMessage?.approvalInput,
+    pendingApprovalMessage?.content,
+    protectedFolders,
+  ])
   const approvalBarIsDestructive = useMemo(() => approvalBarIsDestructiveFor({
     content: pendingApprovalMessage?.content,
     approvalInput: pendingApprovalMessage?.approvalInput,
@@ -2829,6 +2835,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                 {visibleTranscript.map(item => (
                   item.kind === 'process' ? (
                     <ChatProcessFold
+                      protectedFolders={protectedFolders}
                       key={item.id}
                       process={item}
                       recoverableFailureId={recoverableFailureId}

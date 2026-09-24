@@ -595,6 +595,17 @@ type WorkspaceActionHandler func(sessionID, action, input string) (string, error
 
 type CodingBrowserLookup func(sessionID string) (*CodingBrowserDescriptor, bool)
 
+// effectiveProtectedFolders is the single decision both halves share. The master switch decides
+// whether the reader's list is enforced at all, and this is the only value the sidecar ever sees:
+// when the switch is off it is handed an empty list rather than a second flag, so the sidecar's
+// existing reader cannot end up disagreeing with the renderer.
+func effectiveProtectedFolders(settings config.AppSettings) []string {
+	if !config.ProtectedFoldersEnabled(settings) {
+		return []string{}
+	}
+	return settings.ProtectedFolders
+}
+
 func (s *Supervisor) SetWorkspaceActionHandler(handler WorkspaceActionHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1647,20 +1658,21 @@ func (s *Supervisor) sendMessage(
 		resourceRuntime = s.agentResources()
 	}
 	command := map[string]any{
-		"action":          "send_message",
-		"conversationId":  sessionID,
-		"prompt":          prompt,
-		"locale":          resolvedUserInterfaceLocale(settings),
-		"provider":        settings.ActiveProvider,
-		"model":           settings.ActiveModel,
-		"thinking":        thinking,
-		"sessionRole":     strings.TrimSpace(sessionRole),
-		"executionMode":   codingPolicy.ExecutionMode,
-		"approvalPolicy":  codingPolicy.ApprovalPolicy,
-		"mcpServers":      mcpServers,
-		"mcpConfigDigest": strings.TrimSpace(mcpConfigDigest),
-		"disabledSkills":  mergeDisabledSkills(settings.DisabledSkills, resourceRuntime.HideFactorySkills),
-		"attachments":     attachments,
+		"action":           "send_message",
+		"conversationId":   sessionID,
+		"prompt":           prompt,
+		"locale":           resolvedUserInterfaceLocale(settings),
+		"provider":         settings.ActiveProvider,
+		"model":            settings.ActiveModel,
+		"thinking":         thinking,
+		"sessionRole":      strings.TrimSpace(sessionRole),
+		"executionMode":    codingPolicy.ExecutionMode,
+		"approvalPolicy":   codingPolicy.ApprovalPolicy,
+		"protectedFolders": effectiveProtectedFolders(settings),
+		"mcpServers":       mcpServers,
+		"mcpConfigDigest":  strings.TrimSpace(mcpConfigDigest),
+		"disabledSkills":   mergeDisabledSkills(settings.DisabledSkills, resourceRuntime.HideFactorySkills),
+		"attachments":      attachments,
 		"modelSourceOrder": preferredModelSourceOrder(
 			settings,
 			preference,
