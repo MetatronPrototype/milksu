@@ -1614,8 +1614,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     notice?: string
     noticeEnglish?: string
     at?: number
-    /** 这一轮是不是被守卫**停掉**的（不是普通的单次拒绝）。 */
-    turnStopped?: boolean
   }) {
     const conversationId = String(input.conversationId ?? '').trim()
     const notice = String(input.notice ?? '').trim()
@@ -1641,10 +1639,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       ? s.guardNotices.map(item => (item.id === previous.id ? entry : item))
       : [...s.guardNotices, entry]
     scheduleGuardNoticeExpiry(entry.id, entry.expiresAt)
-    // 被停轮 ⇒ 把该对话标成「遇到问题」：顶部常驻横幅 + 侧栏红叉，开新一回合才消。
-    if (input.turnStopped === true) {
-      markProblemTurn(conversationId, notice, noticeEnglish)
-    }
   }
 
   function dismissGuardNotice(id: string) {
@@ -4166,19 +4160,25 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         const payload = event.payload as unknown as {
           notice?: string
           noticeEnglish?: string
-          turnStopped?: boolean
+          protectedPath?: boolean
         }
         const chinese = String(payload?.notice ?? '').trim()
         const english = String(payload?.noticeEnglish ?? '').trim()
         if (chinese || english) {
           pushEngineNotice(t(chinese || english, english || chinese))
-          // 同时写一条**持久**条目：拦截会把回合停掉，状态行留不住这句话。
-          pushGuardNotice({
-            conversationId: sessionId,
-            notice: chinese,
-            noticeEnglish: english,
-            turnStopped: payload?.turnStopped === true,
-          })
+          if (payload?.protectedPath === true) {
+            // 受限路径被拦 —— **单次拒绝和被停轮一样**，都上顶部常驻横幅 + 侧栏红叉，
+            // 开新一回合（或点「知道了」）才消。读者要求：前两次的提醒也放上方，
+            // 原来在转写底部的那条很快就消失了 ✗。
+            markProblemTurn(String(sessionId ?? ''), chinese || english, english || chinese)
+          } else {
+            // 其它守卫告警（例：思考陷入重复）：仍走 12 秒后自己消失的那条。
+            pushGuardNotice({
+              conversationId: sessionId,
+              notice: chinese,
+              noticeEnglish: english,
+            })
+          }
         }
         return
       }

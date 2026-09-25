@@ -146,6 +146,7 @@ type Event struct {
 	Notice               string                   `json:"notice,omitempty"`
 	NoticeEnglish        string                   `json:"noticeEnglish,omitempty"`
 	TurnStopped          bool                     `json:"turnStopped,omitempty"`
+	ProtectedPath        bool                     `json:"protectedPath,omitempty"`
 	Choice               string                   `json:"choice,omitempty"`
 	BackgroundTasks      []BackgroundTask         `json:"backgroundTasks,omitempty"`
 	SubagentTasks        []SubagentTask           `json:"subagentTasks,omitempty"`
@@ -414,6 +415,7 @@ type bridgeEvent struct {
 	Notice               string                   `json:"notice"`
 	NoticeEnglish        string                   `json:"noticeEnglish"`
 	TurnStopped          bool                     `json:"turnStopped"`
+	ProtectedPath        bool                     `json:"protectedPath"`
 	Justification        *ApprovalJustification   `json:"justification"`
 	Choice               string                   `json:"choice"`
 	Tasks                []BackgroundTask         `json:"tasks"`
@@ -3621,6 +3623,7 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		event.Notice = raw.Notice
 		event.NoticeEnglish = raw.NoticeEnglish
 		event.TurnStopped = raw.TurnStopped
+		event.ProtectedPath = raw.ProtectedPath
 	case "attachment.held":
 		// 同一类静默丢失（收紧覆盖测试后当场又抓出两条）：附件没发出去的原因必须到读者眼前。
 		event.Type = "attachment.held"

@@ -872,9 +872,12 @@ function createCodingPermissionExtension(
           reason,
           notice,
           noticeEnglish: englishNotice,
+          // 这是**受限路径被拦**（不是“思考复读”那种告警）：同一个事件名下必须能分开——
+          // 读者要求受限路径的提醒全部搬到顶部常驻横幅（开新一回合才消），
+          // 而复读告警仍走 12 秒后就消失的那条。
+          protectedPath: true,
           // 这一轮是不是**被守卫停掉的**：界面据此把该对话标成“遇到问题”
-          // （顶部常驻横幅 + 侧栏红叉），开新一回合时消 ✓。只靠一句提示文字不够：
-          // 读着认不出“这是被强制终止”还是“又一次普通拒绝”。
+          // （顶部常驻横幅 + 侧栏红叉），开新一回合时消 ✓。
           turnStopped: escalates,
           // agent 侧单独一条（前端/宿主不展示给读者）。
           agentNotice: protectedAgentNotice(protectedViolation, "zh"),
