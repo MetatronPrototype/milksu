@@ -468,8 +468,31 @@ export function protectedAgentNotice(violation, locale) {
       ? "这条命令被拦不是因为写法，而是它通过 shell 变量或 cd 指到了那个目录。"
       : "")
     + "**不要绕过**：不要改用 shell 变量、cd、别的工具或别的路径拼法再试 —— 写入仍会被拒，"
-    + "反复尝试会终止本轮。唯一可行的是让读者在设置里把该目录移出列表（或关掉总开关）："
+    + "同一轮反复试（第 3 次起）会终止本轮。唯一可行的是让读者在设置里把该目录移出列表（或关掉总开关）："
     + "把你要写什么、写到哪里告诉读者，等读者处理。";
+}
+
+// 读者要的是「拒绝这次写入并告知」，不是「一碰就把整轮掐死」。
+// 口径：单次写入一律拒绝并告知 agent；同一条命令反复换写法（同一轮第 N 次）才算在找绕过，
+// 那时才停止本轮，并且**必须**把原因写给读者（不能静默）。
+export const PROTECTED_WRITE_ATTEMPT_LIMIT = 3;
+
+export function protectedBlockEscalates(attempt) {
+  const count = Number(attempt ?? 0);
+  return Number.isFinite(count) && count >= PROTECTED_WRITE_ATTEMPT_LIMIT;
+}
+
+// 给**读者**的升级提示：读者永远不应该需要问「刚刚发生了什么」。
+// 说清：哪个目录、试了几次、没有写进去、已告知它别绕。
+export function protectedEscalationNotice(violation, attempt, locale) {
+  const target = String(violation?.path ?? "").trim() || "(a protected path)";
+  const tries = String(Number(attempt ?? 0) || PROTECTED_WRITE_ATTEMPT_LIMIT);
+  if (String(locale ?? "") === "en") {
+    return "Stopped this turn: the agent tried " + tries + " times to write a protected path ("
+      + target + "). Nothing was written, and it was told to stop looking for a way around.";
+  }
+  return "已停止本轮：agent 连续 " + tries + " 次试图写入受限路径（" + target + "）。"
+    + "写入都没有发生，也已明确告诉它不要再找绕过的写法。";
 }
 
 export function protectedCommandViolation(

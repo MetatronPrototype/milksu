@@ -50,7 +50,9 @@ import {
   mergeProtectedRoots,
   parseProtectedRoots,
   protectedAgentNotice,
+  protectedBlockEscalates,
   protectedCommandViolation,
+  protectedEscalationNotice,
   protectedWriteViolation,
 } from "./bridge-protected-paths.js";
 import {
@@ -500,8 +502,9 @@ function protectedAlarmNotice(violation, locale) {
         + "要允许写入，请先在设置里把它移除。";
   }
   return String(locale ?? "") === "en"
-    ? `Blocked: the agent tried to write a protected path (rule: ${label}). The turn was stopped and the attempt was logged.`
-    : `已拦截：Agent 试图写入受保护路径（命中规则：${label}）。本轮已停止，并已记入审计。`;
+    ? `Blocked: the agent tried to write a protected path (rule: ${label}). Nothing was written; the attempt was logged.`
+    : `已拦截：Agent 试图写入受保护路径（命中规则：${label}）。这次写入没有发生，已记入审计；`
+      + "若它继续换写法试，本轮会被停止。";
 }
 // Settles the delivery tool's own request/response round trip with the host.
 const deliveryBroker = createDeliveryBroker(emit);
@@ -800,11 +803,15 @@ function createCodingPermissionExtension(
 ) {
   return (pi) => {
     const repeatGuard = createToolRepeatGuard();
+    // 本轮已经拒绝了几次「写入受限目录」。普通拒绝不停止回合，反复试才停。
+    let protectedWriteAttempts = 0;
     registerController({
       setActiveTools: names => pi.setActiveTools(names),
     });
     pi.on("before_agent_start", () => {
       repeatGuard.reset();
+      // 新的一轮从零开始：拒绝次数只属于同一轮。
+      protectedWriteAttempts = 0;
     });
     pi.on("context", async (event) => {
       const filtered = filterCodingTurnContractMessages(
@@ -837,30 +844,41 @@ function createCodingPermissionExtension(
           ? "This request came from another conversation, not from you. Confirm you want it run:\n\n"
           : "这条请求来自另一个会话（跨会话消息），不是用户本人的操作。请确认你本人要执行：\n\n"
       );
-      // A write to a protected path is never an approval question: it stops the turn, tells
-      // the reader, and leaves an audit line. The session is marked aborted so nothing queued
-      // runs after it.
+      // 写入受限目录不是审批问题：拒绝这次写入、把「此路不通」告诉 agent、把发生的事告诉读者。
+      // 但**单次拒绝不停轮**（读者要的是「说不」，不是整活死掉）；
+      // 同一轮里反复换写法试（第 3 次起）才是在找绕过，那时才停轮，并且**写明原因给读者**。
       const protectedViolation = protectedViolationFor(event, policy);
       if (protectedViolation) {
+        protectedWriteAttempts += 1;
+        const escalates = protectedBlockEscalates(protectedWriteAttempts);
         const reason = `MilkSU blocked a write to a protected path (${protectedViolation.label}): `
           + protectedViolation.path
           // 给 agent 的提示与给读者的提示分开：读者看到"被拦了"，agent 必须看到
           // "此路不通、别再换写法试"（不然它会一直找突破口）。
-          + "\n\n" + protectedAgentNotice(protectedViolation, policy.uiLocale);
+          + "\n\n" + protectedAgentNotice(protectedViolation, policy.uiLocale)
+          + (escalates
+            ? "\n\n" + protectedEscalationNotice(protectedViolation, protectedWriteAttempts, policy.uiLocale)
+            : "");
         // 载荷与别处的 guard.alarm 统一成对双语（前端按界面语言选一句）。
-        let englishNotice = protectedAlarmNotice(protectedViolation, "en");
-        if (!String(englishNotice ?? "").trim()) englishNotice = protectedAlarmNotice(protectedViolation, policy.uiLocale);
+        const notice = escalates
+          ? protectedEscalationNotice(protectedViolation, protectedWriteAttempts, "zh")
+          : protectedAlarmNotice(protectedViolation, "zh");
+        let englishNotice = escalates
+          ? protectedEscalationNotice(protectedViolation, protectedWriteAttempts, "en")
+          : protectedAlarmNotice(protectedViolation, "en");
+        if (!String(englishNotice ?? "").trim()) englishNotice = notice;
         emit(conversationId, "guard.alarm", {
           toolName: event.toolName,
           reason,
-          notice: protectedAlarmNotice(protectedViolation, "zh"),
+          notice,
           noticeEnglish: englishNotice,
           // agent 侧单独一条（前端/宿主不展示给读者）。
           agentNotice: protectedAgentNotice(protectedViolation, "zh"),
           agentNoticeEnglish: protectedAgentNotice(protectedViolation, "en"),
         });
-        abortedSessions.add(conversationId);
-        return { block: true, terminate: true, reason };
+        // 只有升级（反复试）才把会话标为中止，让队列里的东西不再跑。
+        if (escalates) abortedSessions.add(conversationId);
+        return { block: true, terminate: escalates, reason };
       }
       if (codingTurnContractBlocksTool(getTurnContract())) {
         return {
