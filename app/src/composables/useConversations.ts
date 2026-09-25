@@ -1586,6 +1586,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.problemTurns = next
   }
 
+  /** 顶部横幅上的「知道了」：读者点掉 ⇒ 该对话的问题标记立即消失（侧栏红叉同时灭）。 */
+  function dismissProblemTurn(conversationId?: string) {
+    clearProblemTurn(String(conversationId ?? s.activeId ?? ''))
+  }
+
   const activeProblemTurn = (() => (s.activeId ? s.problemTurns[s.activeId] ?? null : null))
 
   function conversationHasProblem(id: string) {
@@ -4771,6 +4776,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     dismissCrossConversationNotice,
     dismissGuardNotice,
     conversationHasProblem,
+    dismissProblemTurn,
     get activeProblemTurn() { return activeProblemTurn() },
     get activeGuardNotices() { return activeGuardNotices() },
     get activeCrossConversationNotices() { return activeCrossConversationNotices() },

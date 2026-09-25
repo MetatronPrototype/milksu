@@ -220,6 +220,22 @@ describe('engine guard alarms reach the reader', () => {
     expect(conversations.activeProblemTurn).toBeNull()
   })
 
+  // 读者要求：横幅上要有「知道了」按钮，点了立刻消除；同时“发下一条消息也消”照旧。
+  it('点「知道了」⇒ 问题标记立刻消除（侧栏红叉同时灭）', async () => {
+    const conversations = await loadRuntime()
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'guard.alarm',
+      notice: '已停止本轮：…',
+      noticeEnglish: 'Stopped this turn: …',
+      turnStopped: true,
+    } })
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
+    conversations.dismissProblemTurn()
+    expect(conversations.activeProblemTurn).toBeNull()
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
+  })
+
   it('12 秒内再来一次同样内容 ⇒ 续期并合并计数', async () => {
     const conversations = await loadRuntime()
     vi.useFakeTimers()
