@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { GUARD_NOTICE_TTL_MS } from '@/composables/useConversations'
 
 type Handler = (event: { payload: unknown }) => void
 const handlers = new Map<string, Handler>()
@@ -118,5 +119,52 @@ describe('engine guard alarms reach the reader', () => {
     } })
     conversations.dismissGuardNotice(conversations.activeGuardNotices[0].id)
     expect(conversations.activeGuardNotices.length).toBe(0)
+  })
+
+  // 读者原话：提示不该常驻——「我给你发了新对话之后那个提示会一直在最下方显示，
+  // 只要我不点「知道了」它就不会消失」。看一眼（10–15 秒）就够，然后自己消失 ✓。
+  it('守卫示警到点自己消失，不靠读者动手', async () => {
+    const conversations = await loadRuntime()
+    vi.useFakeTimers()
+    try {
+      handlers.get('engine-event')?.({ payload: {
+        sessionId: 'conversation-1',
+        type: 'guard.alarm',
+        notice: '已停止本轮：agent 连续 3 次试图写入受限路径（…）。',
+        noticeEnglish: 'Stopped this turn: …',
+      } })
+      expect(conversations.activeGuardNotices.length).toBe(1)
+      vi.advanceTimersByTime(GUARD_NOTICE_TTL_MS - 500)
+      expect(conversations.activeGuardNotices.length).toBe(1)
+      vi.advanceTimersByTime(1000)
+      expect(conversations.activeGuardNotices.length).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('12 秒内再来一次同样内容 ⇒ 续期并合并计数', async () => {
+    const conversations = await loadRuntime()
+    vi.useFakeTimers()
+    try {
+      const payload = {
+        sessionId: 'conversation-1',
+        type: 'guard.alarm',
+        notice: '已拦截：这个目录在你的设置里被标记为「agent 不可改写」。',
+        noticeEnglish: 'Blocked: this folder is on your protected list in Settings.',
+      }
+      handlers.get('engine-event')?.({ payload })
+      vi.advanceTimersByTime(GUARD_NOTICE_TTL_MS - 1000)
+      handlers.get('engine-event')?.({ payload })
+      expect(conversations.activeGuardNotices.length).toBe(1)
+      expect(conversations.activeGuardNotices[0].count).toBe(2)
+      // 续期后，第一次的到期时刻不该把它清掉。
+      vi.advanceTimersByTime(2000)
+      expect(conversations.activeGuardNotices.length).toBe(1)
+      vi.advanceTimersByTime(GUARD_NOTICE_TTL_MS)
+      expect(conversations.activeGuardNotices.length).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -1092,6 +1092,10 @@ export interface AgentDeliveryEvent {
   requestId?: string
 }
 
+/** 守卫示警在转写里停留多久（读者确认：10–15 秒够看一眼，然后必须自己消失）。
+ *  常驻不行：读者发下一条消息时它还挂在最下方，得手动点「知道了」才走 ✗。 */
+export const GUARD_NOTICE_TTL_MS = 12_000
+
 /** 守卫示警（受保护路径被拦、思考陷入重复）：**持久**留在转写里、可关闭。
  *  只靠短命状态行不行：它会被后续状态覆盖，而拦截又会把回合停掉 ⇒
  *  读者眼前只剩「这一轮没有可见正文」，连发生了什么都得问（真事）。 */
@@ -1103,6 +1107,8 @@ export interface GuardNotice {
   notice: string
   noticeEnglish: string
   at: number
+  /** 到点就自己消失（见 GUARD_NOTICE_TTL_MS），不靠读者动手。 */
+  expiresAt: number
   /** 同内容重复出现时合并计数，不刷屏。 */
   count: number
 }
@@ -1545,7 +1551,21 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.activeId ? s.crossConversationNotices.filter(item => item.conversationId === s.activeId) : []
   ))
 
-  /** 守卫示警写成**持久**条目：拦下一次写入后回合可能就被停了，临时状态行留不住话。 */
+  /** 守卫示警的到期定时器（按条目 id）：关闭或续期时都要清掉，不然旧定时器会误删新条目。 */
+  const guardNoticeTimers = new Map<string, number>()
+
+  /** 守卫示警写成**持久**条目：拦下一次写入后回合可能就被停了，临时状态行留不住话。
+   *  但它**不是常驻**：到点自己消失（读者看得到就够）。 */
+  function scheduleGuardNoticeExpiry(id: string, expiresAt: number) {
+    const existing = guardNoticeTimers.get(id)
+    if (existing !== undefined) window.clearTimeout(existing)
+    const timer = window.setTimeout(() => {
+      guardNoticeTimers.delete(id)
+      s.guardNotices = s.guardNotices.filter(item => item.id !== id)
+    }, Math.max(0, expiresAt - Date.now()))
+    guardNoticeTimers.set(id, timer)
+  }
+
   function pushGuardNotice(input: {
     conversationId: string
     notice?: string
@@ -1561,28 +1581,40 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       && item.notice === notice
       && item.noticeEnglish === noticeEnglish
     ))
+    const at = Number(input.at ?? 0) || Date.now()
     const entry: GuardNotice = {
       id: previous?.id ?? `guard-notice-${conversationId}-${Date.now()}`,
       conversationId,
       notice,
       noticeEnglish,
-      at: Number(input.at ?? 0) || Date.now(),
+      at,
+      // 同内容再来一次 ⇒ 续期（读者刚看见的那条不要被砍断）。
+      expiresAt: at + GUARD_NOTICE_TTL_MS,
       count: (previous?.count ?? 0) + 1,
     }
     s.guardNotices = previous
       ? s.guardNotices.map(item => (item.id === previous.id ? entry : item))
       : [...s.guardNotices, entry]
+    scheduleGuardNoticeExpiry(entry.id, entry.expiresAt)
   }
 
   function dismissGuardNotice(id: string) {
     const noticeId = String(id ?? '').trim()
     if (!noticeId) return
+    const timer = guardNoticeTimers.get(noticeId)
+    if (timer !== undefined) {
+      window.clearTimeout(timer)
+      guardNoticeTimers.delete(noticeId)
+    }
     s.guardNotices = s.guardNotices.filter(item => item.id !== noticeId)
   }
 
-  const activeGuardNotices = (() => (
-    s.activeId ? s.guardNotices.filter(item => item.conversationId === s.activeId) : []
-  ))
+  const activeGuardNotices = (() => {
+    if (!s.activeId) return []
+    const now = Date.now()
+    // 算的时候也摈一道：定时器睡过了（窗口被挂起）也不该让过期提示复现。
+    return s.guardNotices.filter(item => item.conversationId === s.activeId && item.expiresAt > now)
+  })
 
   // 搬运自本地分支（A 引导）：队列被中断（例如强制停止）时界面要说出来。
   const activeQueuedGuidanceInterrupted = (() => (
