@@ -12,8 +12,11 @@ export const THINKING_REPEAT_LINES = 8;
 
 /** 命中时给读者的句子（成对双语，前端按界面语言选一句）。 */
 export const THINKING_REPEAT_NOTICE = {
-  notice: "这一步思考陷入重复，已跳过。",
-  noticeEnglish: "This thinking step started repeating, so it was skipped.",
+  // 不能说“已跳过”：命中时那行思考**已经进入数据流**了，这里也确实没有任何跳过/中止的代码 ✗。
+  // 实话是：发现了复读，但这一步中途掐不断（思考是一整段连续生成、没有钩子）。
+  notice: "检测到这一步的思考在复读（连续 8 行完全相同）。这一步中途无法中止，只能先把情况告诉你。",
+  noticeEnglish:
+    "This thinking step is repeating itself (8 identical lines in a row). It cannot be stopped mid-step; you are being told instead.",
 };
 
 /**

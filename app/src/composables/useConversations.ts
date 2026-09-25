@@ -1007,8 +1007,6 @@ type ConversationsState = {
   hardStopFailedIds: Set<string>
   // 搬运自本地分支（C）：另一个对话交过来的消息，在转写里显示为只读提示。
   crossConversationNotices: CrossConversationNotice[]
-  /** 守卫示警：持久留在转写里（不会被状态行顶掉）。 */
-  guardNotices: GuardNotice[]
   /** 该对话是不是「上一轮被强制终止过」（按会话）；开新一回合即清。 */
   problemTurns: Record<string, ProblemTurn>
   // 搬运自本地分支（A 引导）：已经交给正在跑的这一轮的引导，以及“队列已被中断”标记。
@@ -1094,27 +1092,6 @@ export interface AgentDeliveryEvent {
   requestId?: string
 }
 
-/** 守卫示警在转写里停留多久（读者确认：10–15 秒够看一眼，然后必须自己消失）。
- *  常驻不行：读者发下一条消息时它还挂在最下方，得手动点「知道了」才走 ✗。 */
-export const GUARD_NOTICE_TTL_MS = 12_000
-
-/** 守卫示警（受保护路径被拦、思考陷入重复）：**持久**留在转写里、可关闭。
- *  只靠短命状态行不行：它会被后续状态覆盖，而拦截又会把回合停掉 ⇒
- *  读者眼前只剩「这一轮没有可见正文」，连发生了什么都得问（真事）。 */
-export interface GuardNotice {
-  /** 稳定 id，供关闭使用（同内容合并时沿用同一个 id）。 */
-  id: string
-  /** 这条提示属于哪个对话。 */
-  conversationId: string
-  notice: string
-  noticeEnglish: string
-  at: number
-  /** 到点就自己消失（见 GUARD_NOTICE_TTL_MS），不靠读者动手。 */
-  expiresAt: number
-  /** 同内容重复出现时合并计数，不刷屏。 */
-  count: number
-}
-
 /** 该对话的**上一轮是被强制终止的**（例：守卫停轮）。
  *  读者口径：顶部常驻横幅（放在「批准」那个位置）+ 侧栏红叉，**直到该对话开新一回合**才消。 */
 export interface ProblemTurn {
@@ -1174,7 +1151,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     forceStopReadyIds: new Set<string>(),
     hardStopFailedIds: new Set<string>(),
     crossConversationNotices: [],
-    guardNotices: [],
     problemTurns: {},
     injectedSteering: new Map<string, InjectedGuidanceEntry[]>(),
     interruptedQueueIds: new Set<string>(),
@@ -1252,8 +1228,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set hardStopFailedIds(value) { store.setState({ hardStopFailedIds: value }) },
     get crossConversationNotices() { return store.getState().crossConversationNotices },
     set crossConversationNotices(value) { store.setState({ crossConversationNotices: value }) },
-    get guardNotices() { return store.getState().guardNotices },
-    set guardNotices(value) { store.setState({ guardNotices: value }) },
     get problemTurns() { return store.getState().problemTurns },
     set problemTurns(value) { store.setState({ problemTurns: value }) },
     get injectedSteering() { return store.getState().injectedSteering },
@@ -1568,9 +1542,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.activeId ? s.crossConversationNotices.filter(item => item.conversationId === s.activeId) : []
   ))
 
-  /** 守卫示警的到期定时器（按条目 id）：关闭或续期时都要清掉，不然旧定时器会误删新条目。 */
-  const guardNoticeTimers = new Map<string, number>()
-
   /** 把某个对话标成「被拦过 / 没能继续」（顶部横幅）；severity 决定要不要亮侧栏红叉。 */
   function markProblemTurn(
     conversationId: string,
@@ -1609,68 +1580,6 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   function conversationHasProblem(id: string) {
     return s.problemTurns[String(id ?? '').trim()]?.severe === true
   }
-
-  /** 守卫示警写成**持久**条目：拦下一次写入后回合可能就被停了，临时状态行留不住话。
-   *  但它**不是常驻**：到点自己消失（读者看得到就够）。 */
-  function scheduleGuardNoticeExpiry(id: string, expiresAt: number) {
-    const existing = guardNoticeTimers.get(id)
-    if (existing !== undefined) window.clearTimeout(existing)
-    const timer = window.setTimeout(() => {
-      guardNoticeTimers.delete(id)
-      s.guardNotices = s.guardNotices.filter(item => item.id !== id)
-    }, Math.max(0, expiresAt - Date.now()))
-    guardNoticeTimers.set(id, timer)
-  }
-
-  function pushGuardNotice(input: {
-    conversationId: string
-    notice?: string
-    noticeEnglish?: string
-    at?: number
-  }) {
-    const conversationId = String(input.conversationId ?? '').trim()
-    const notice = String(input.notice ?? '').trim()
-    const noticeEnglish = String(input.noticeEnglish ?? '').trim()
-    if (!conversationId || !(notice || noticeEnglish)) return
-    const previous = s.guardNotices.find(item => (
-      item.conversationId === conversationId
-      && item.notice === notice
-      && item.noticeEnglish === noticeEnglish
-    ))
-    const at = Number(input.at ?? 0) || Date.now()
-    const entry: GuardNotice = {
-      id: previous?.id ?? `guard-notice-${conversationId}-${Date.now()}`,
-      conversationId,
-      notice,
-      noticeEnglish,
-      at,
-      // 同内容再来一次 ⇒ 续期（读者刚看见的那条不要被砍断）。
-      expiresAt: at + GUARD_NOTICE_TTL_MS,
-      count: (previous?.count ?? 0) + 1,
-    }
-    s.guardNotices = previous
-      ? s.guardNotices.map(item => (item.id === previous.id ? entry : item))
-      : [...s.guardNotices, entry]
-    scheduleGuardNoticeExpiry(entry.id, entry.expiresAt)
-  }
-
-  function dismissGuardNotice(id: string) {
-    const noticeId = String(id ?? '').trim()
-    if (!noticeId) return
-    const timer = guardNoticeTimers.get(noticeId)
-    if (timer !== undefined) {
-      window.clearTimeout(timer)
-      guardNoticeTimers.delete(noticeId)
-    }
-    s.guardNotices = s.guardNotices.filter(item => item.id !== noticeId)
-  }
-
-  const activeGuardNotices = (() => {
-    if (!s.activeId) return []
-    const now = Date.now()
-    // 算的时候也摈一道：定时器睡过了（窗口被挂起）也不该让过期提示复现。
-    return s.guardNotices.filter(item => item.conversationId === s.activeId && item.expiresAt > now)
-  })
 
   // 搬运自本地分支（A 引导）：队列被中断（例如强制停止）时界面要说出来。
   const activeQueuedGuidanceInterrupted = (() => (
@@ -4193,12 +4102,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
               payload?.turnStopped === true,
             )
           } else {
-            // 其它守卫告警（例：思考陷入重复）：仍走 12 秒后自己消失的那条。
-            pushGuardNotice({
-              conversationId: sessionId,
-              notice: chinese,
-              noticeEnglish: english,
-            })
+            // 其它守卫告警（例：思考陷入重复）：也上顶栏 + 红叉（读者要求“一起做”）。
+            markProblemTurn(String(sessionId ?? ''), chinese || english, english || chinese, true)
           }
         }
         return
@@ -4795,11 +4700,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     forceStopConversation,
     pushCrossConversationNotice,
     dismissCrossConversationNotice,
-    dismissGuardNotice,
     conversationHasProblem,
     dismissProblemTurn,
     get activeProblemTurn() { return activeProblemTurn() },
-    get activeGuardNotices() { return activeGuardNotices() },
     get activeCrossConversationNotices() { return activeCrossConversationNotices() },
     get activeInjectedGuidance() { return activeInjectedGuidance() },
     get activeQueuedGuidanceInterrupted() { return activeQueuedGuidanceInterrupted() },

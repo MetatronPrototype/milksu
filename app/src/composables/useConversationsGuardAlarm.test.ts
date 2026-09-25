@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { GUARD_NOTICE_TTL_MS } from '@/composables/useConversations'
 
 type Handler = (event: { payload: unknown }) => void
 const handlers = new Map<string, Handler>()
@@ -58,90 +57,25 @@ describe('engine guard alarms reach the reader', () => {
     expect(conversations.engineNotice).toContain('This thinking step started repeating')
   })
 
-  // 真事：拦截会把回合停掉，而状态行（engineNotice）会被后续状态覆盖 ⇒ 读者眼前只剩
-  // 「这一轮没有可见正文」，连发生了什么都得问。所以示警必须另写一条**持久**条目。
-  it('把守卫示警写进转写里的持久条目（状态行被覆盖后仍在）', async () => {
-    const conversations = await loadRuntime()
-    handlers.get('engine-event')?.({ payload: {
-      sessionId: 'conversation-1',
-      type: 'guard.alarm',
-      notice: '已停止本轮：agent 连续 3 次试图写入受限路径（/tmp/example/out）。写入都没有发生。',
-      noticeEnglish: 'Stopped this turn: the agent tried 3 times to write a protected path.',
-    } })
-    expect(conversations.activeGuardNotices.length).toBe(1)
-    expect(conversations.activeGuardNotices[0].notice).toContain('已停止本轮')
-    expect(conversations.activeGuardNotices[0].noticeEnglish).toContain('Stopped this turn')
-    // 状态行会被下一条通知顶掉（它只有一个槽位）：拿另一类引擎通知顶掉它，
-    // 这条持久条目必须还在 —— 这就是修它的全部理由。
-    handlers.get('engine-event')?.({ payload: {
-      sessionId: 'conversation-1',
-      type: 'attachment.held',
-      notice: '有一张附件没有发出去。',
-      noticeEnglish: 'One attachment was not sent.',
-    } })
-    expect(conversations.engineNotice).toContain('有一张附件')
-    expect(conversations.activeGuardNotices.length).toBe(1)
-    expect(conversations.activeGuardNotices[0].notice).toContain('已停止本轮')
-  })
 
-  it('同内容的重复示警合并计数，不刷屏', async () => {
-    const conversations = await loadRuntime()
-    for (let index = 0; index < 2; index += 1) {
-      handlers.get('engine-event')?.({ payload: {
-        sessionId: 'conversation-1',
-        type: 'guard.alarm',
-        notice: '已拦截：这个目录在你的设置里被标记为「agent 不可改写」。',
-        noticeEnglish: 'Blocked: this folder is on your protected list in Settings.',
-      } })
-    }
-    expect(conversations.activeGuardNotices.length).toBe(1)
-    expect(conversations.activeGuardNotices[0].count).toBe(2)
-  })
 
-  it('别的会话的示警不会串到当前会话', async () => {
+  it('别的对话的告警不会串到当前对话的横幅', async () => {
     const conversations = await loadRuntime()
     handlers.get('engine-event')?.({ payload: {
       sessionId: 'conversation-2',
       type: 'guard.alarm',
       notice: '已拦截：另一个会话的事。',
       noticeEnglish: 'Blocked: another conversation.',
+      protectedPath: true,
+      turnStopped: true,
     } })
-    expect(conversations.activeGuardNotices.length).toBe(0)
+    // 当前对话（conversation-1）不该出现横幅；出事的是 conversation-2。
+    expect(conversations.activeProblemTurn).toBeNull()
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
+    expect(conversations.conversationHasProblem('conversation-2')).toBe(true)
   })
 
-  it('读者可以关掉这条提示', async () => {
-    const conversations = await loadRuntime()
-    handlers.get('engine-event')?.({ payload: {
-      sessionId: 'conversation-1',
-      type: 'guard.alarm',
-      notice: '已拦截：…',
-      noticeEnglish: 'Blocked: …',
-    } })
-    conversations.dismissGuardNotice(conversations.activeGuardNotices[0].id)
-    expect(conversations.activeGuardNotices.length).toBe(0)
-  })
 
-  // 读者原话：提示不该常驻——「我给你发了新对话之后那个提示会一直在最下方显示，
-  // 只要我不点「知道了」它就不会消失」。看一眼（10–15 秒）就够，然后自己消失 ✓。
-  it('非受限路径的守卫告警（例：思考复读）到点自己消失，不靠读者动手', async () => {
-    const conversations = await loadRuntime()
-    vi.useFakeTimers()
-    try {
-      handlers.get('engine-event')?.({ payload: {
-        sessionId: 'conversation-1',
-        type: 'guard.alarm',
-        notice: '这一步思考陷入重复，已跳过。',
-        noticeEnglish: 'This thinking step started repeating, so it was skipped.',
-      } })
-      expect(conversations.activeGuardNotices.length).toBe(1)
-      vi.advanceTimersByTime(GUARD_NOTICE_TTL_MS - 500)
-      expect(conversations.activeGuardNotices.length).toBe(1)
-      vi.advanceTimersByTime(1000)
-      expect(conversations.activeGuardNotices.length).toBe(0)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
 
   // 「被守卫停轮」比「普通拒绝」严重：前者要在顶部常驻横幅 + 侧栏红叉（读者口径：
   // 该对话开新一回合就消）。
@@ -174,8 +108,6 @@ describe('engine guard alarms reach the reader', () => {
     expect(conversations.activeProblemTurn?.notice).toContain('已拦截')
     expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
     expect(conversations.problemConversationIds).not.toContain('conversation-1')
-    // 不要再往转写里塞一条 12 秒的重复提示 —— 那正是读者要求搬上去的那条 ✗。
-    expect(conversations.activeGuardNotices.length).toBe(0)
   })
 
   it('先单次拒绝、后真停轮 ⇒ 红叉要亮起来（severe 只升不降）', async () => {
@@ -208,18 +140,6 @@ describe('engine guard alarms reach the reader', () => {
     expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
   })
 
-  it('别的告警（思考复读）不上横幅、不亮红叉，只走 12 秒那条', async () => {
-    const conversations = await loadRuntime()
-    handlers.get('engine-event')?.({ payload: {
-      sessionId: 'conversation-1',
-      type: 'guard.alarm',
-      notice: '这一步思考陷入重复，已跳过。',
-      noticeEnglish: 'This thinking step started repeating, so it was skipped.',
-    } })
-    expect(conversations.activeProblemTurn).toBeNull()
-    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
-    expect(conversations.activeGuardNotices.length).toBe(1)
-  })
 
   it('该对话开新一回合 ⇒ 标记消除；别的对话不受影响', async () => {
     const conversations = await loadRuntime()
@@ -289,28 +209,18 @@ describe('engine guard alarms reach the reader', () => {
     expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
   })
 
-  it('12 秒内再来一次同样内容 ⇒ 续期并合并计数', async () => {
+
+  // 读者要求：复读告警也“一起做”——上顶栏 + 红叉（不再走那条 12 秒就消失的提示）。
+  it('思考复读告警 ⇒ 上顶栏 + 红叉（和受限路径同一套）', async () => {
     const conversations = await loadRuntime()
-    vi.useFakeTimers()
-    try {
-      const payload = {
-        sessionId: 'conversation-1',
-        type: 'guard.alarm',
-        notice: '已拦截：这个目录在你的设置里被标记为「agent 不可改写」。',
-        noticeEnglish: 'Blocked: this folder is on your protected list in Settings.',
-      }
-      handlers.get('engine-event')?.({ payload })
-      vi.advanceTimersByTime(GUARD_NOTICE_TTL_MS - 1000)
-      handlers.get('engine-event')?.({ payload })
-      expect(conversations.activeGuardNotices.length).toBe(1)
-      expect(conversations.activeGuardNotices[0].count).toBe(2)
-      // 续期后，第一次的到期时刻不该把它清掉。
-      vi.advanceTimersByTime(2000)
-      expect(conversations.activeGuardNotices.length).toBe(1)
-      vi.advanceTimersByTime(GUARD_NOTICE_TTL_MS)
-      expect(conversations.activeGuardNotices.length).toBe(0)
-    } finally {
-      vi.useRealTimers()
-    }
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'guard.alarm',
+      notice: '检测到这一步的思考在复读（连续 8 行完全相同）。这一步中途无法中止，只能先把情况告诉你。',
+      noticeEnglish: 'This thinking step is repeating itself (8 identical lines in a row).',
+    } })
+    expect(conversations.activeProblemTurn?.notice).toContain('复读')
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
   })
+
 })

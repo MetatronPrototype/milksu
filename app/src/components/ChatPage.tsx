@@ -2910,30 +2910,6 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                     />
                   )
                 ))}
-                {/* 守卫示警（受保护路径被拦等）：**放在转写末尾** —— 拦截会把回合停掉，
-                    而读者就停在底部看；放到顶部的提示都在屏幕外（真事：读者只看到
-                    「这一轮没有可见正文」，以为没有任何提示）。 */}
-                {conversations.activeGuardNotices.map(notice => (
-                  <div
-                    key={notice.id}
-                    className="agent-turn mb-4 flex w-full items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-caption text-amber-700 dark:text-amber-300"
-                    data-testid="guard-notice"
-                  >
-                    <span className="flex-1">
-                      {t(notice.notice || notice.noticeEnglish, notice.noticeEnglish || notice.notice)}
-                      {notice.count > 1 ? ` ×${notice.count}` : ''}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      data-testid="dismiss-guard-notice"
-                      onClick={() => conversations.dismissGuardNotice(notice.id)}
-                    >
-                      {t('知道了', 'Dismiss')}
-                    </Button>
-                  </div>
-                ))}
                 {emptyVisibleReply && !waitingForModel ? (
                   <article className="agent-turn mb-7 min-w-0 w-full">
                     <div className="mt-3 flex flex-wrap items-center gap-2">
