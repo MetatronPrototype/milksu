@@ -480,7 +480,35 @@ export function builtinProtectedName(label) {
   return BUILTIN_PROTECTED_LABELS.get(String(label ?? "").trim()) ?? "";
 }
 
+// agent 的 ~ 是运行时隔离沙箱，不是读者的真实主目录。写读者目录的活必须用绝对路径，
+// 否则文件落在沙箱里（读者看不到）并且撞上 runtime-data 这把锁。读者为此来回传过话，
+// 所以把这条纠正信息直接附在拦截提示里，并给出可照抄的正确路径。
+function sandboxHomeHint(target, locale) {
+  const sandboxHome = normalizePath(process.env.HOME ?? "");
+  const realHome = normalizePath(process.env.MILKSU_USER_HOME ?? "");
+  if (!sandboxHome || !realHome || sandboxHome === realHome) return "";
+  const candidate = normalizePath(target);
+  if (!candidate || !isInside(candidate, sandboxHome)) return "";
+  const rest = candidate.slice(sandboxHome.length);
+  if (String(locale ?? "") === "en") {
+    return " Note: your ~ is an isolated sandbox (" + sandboxHome + "), not the reader's home;"
+      + " this file would land in the sandbox, where the reader cannot see it. Write the reader's own"
+      + " folders with an absolute path, or replace ~ with $MILKSU_USER_HOME (= " + realHome + "):"
+      + " suggested path " + realHome + rest;
+  }
+  return "另外：你的 ~ 是隔离沙箱（" + sandboxHome + "），不是读者的真实主目录；"
+    + "这个文件会落在沙箱里，读者看不到。要写读者自己的目录，请用绝对路径，"
+    + "或把 ~ 换成 $MILKSU_USER_HOME（= " + realHome + "）：建议改成 " + realHome + rest;
+}
+
+// 包一层：所有给 agent 的拦截提示都带上上面这条纠正信息（否则它会一直用错的 ~ 写法）。
 export function protectedAgentNotice(violation, locale) {
+  const note = protectedAgentNoticeBody(violation, locale);
+  const hint = sandboxHomeHint(String(violation?.path ?? "").trim(), locale);
+  return hint ? note + hint : note;
+}
+
+function protectedAgentNoticeBody(violation, locale) {
   const target = String(violation?.path ?? "").trim() || "(the path you tried to write)";
   const throughVariable = violation?.reason === "protected-path-in-command";
   const builtin = builtinProtectedName(violation?.label);

@@ -242,3 +242,38 @@ test("内置保护的提示不许谎称在读者的受限文件夹列表里", ()
   assert.match(userItem, /在读者的「受限文件夹」列表里/, "读者列表的说法保持不变");
   assert.match(userItem, /关掉总开关/, "读者列表项仍然可以引导去关开关");
 });
+
+// 读者为此来回传过话：agent 的 ~ 是隔离沙箱，它写「读者的项目目录」时文件其实落在沙箱里，
+// 还会直接撞上 runtime-data 这把锁。所以拦截提示必须把这件事说清，并给出可照抄的完整路径。
+test("被拦在沙箱里的写入：提示要把 ~ 换成真实目录并给出完整路径", (t) => {
+  const sandbox = "/Users/me/data/agent-home";
+  const real = "/Users/me";
+  const previousHome = process.env.HOME;
+  const previousReal = process.env.MILKSU_USER_HOME;
+  process.env.HOME = sandbox; // 侧车的 HOME = 隔离沙箱
+  process.env.MILKSU_USER_HOME = real; // 引擎下发的真实主目录
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousReal === undefined) delete process.env.MILKSU_USER_HOME;
+    else process.env.MILKSU_USER_HOME = previousReal;
+  });
+
+  const violation = {
+    path: sandbox + "/MilkSU/Coding/PR提交准备/工作约定.md",
+    label: "runtime-data",
+  };
+  const zh = protectedAgentNotice(violation, "zh");
+  assert.match(zh, /隔离沙箱/, "要说清 ~ 是隔离沙箱");
+  assert.match(zh, /MILKSU_USER_HOME/, "要给出正确写法");
+  assert.match(
+    zh,
+    new RegExp(real + "/MilkSU/Coding/PR提交准备/工作约定\\.md"),
+    "要给出可以直接照抄的完整路径",
+  );
+  assert.match(protectedAgentNotice(violation, "en"), /isolated sandbox/, "英文同样要说明");
+
+  // 反向：不在沙箱里的路径（例如读者自己设置的受限目录）不得附这条提示
+  const outside = { path: "/Users/me/private/notes.md", label: "protected" };
+  assert.doesNotMatch(protectedAgentNotice(outside, "zh"), /隔离沙箱/, "非沙箱路径不得附这条提示");
+});
