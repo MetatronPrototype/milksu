@@ -305,7 +305,44 @@ const WRITE_CAPABLE_COMMAND_NAMES = new Set([
 ]);
 const WRITE_ACTIVITY_SHAPE = /(?:open\s*\([^)]*["'](?:w|a|x)|writeFile|write_text|appendFile|>\s*["']?\/|(?:^|\s)-i\b|<<-?\s*["']?\w|hook|chmod|truncate|cp\b|mv\b|rm\b)/;
 
-const DISCARD_TARGET_SHAPE = /^\/dev\/(?:null|stdout|stderr|tty)$/;
+const DISCARD_TARGET_SHAPE = /^(?:\/dev\/(?:null|stdout|stderr|tty)|\/dev\/fd\/\d+|&\d+)$/;
+
+// A command whose write lives inside a quoted script (`sh -c 'echo x > f'`,
+// `python3 -c "open('f','w')"`) cannot be judged by reading its tokens: the shell only sees the
+// script text. Judge it by what the script says it does. Without this, a write hidden inside
+// `-c` walked straight past the protected-folder check (verified on the real machine).
+const INLINE_SCRIPT_COMMAND_NAMES = new Set([
+  "sh", "bash", "zsh", "dash", "ksh", "python", "python3", "node", "perl", "ruby",
+  "osascript", "php", "eval", "xargs", "awk", "gawk",
+]);
+const INLINE_SCRIPT_WRITE_SHAPE = /(?:open\s*\([^)]*["'](?:w|a|x)|writeFile|write_text|appendFile|writeFileSync|>\(?\s*["']?\S|>>|\btee\b|\brm\b|\bcp\b|\bmv\b|\btouch\b|\bmkdir\b|\btruncate\b|\bdd\b|(?:^|\s)-i\b|(?:^|\s)-delete\b|(?:^|\s)-exec\b)/;
+
+// True when the command runs a script we cannot read token by token and that script writes.
+function commandHidesWriteInScript(command) {
+  for (const segment of commandSegments(command)) {
+    const tokens = segmentTokens(segment);
+    const name = String(tokens[0] ?? "").split("/").pop();
+    if (!name || !INLINE_SCRIPT_COMMAND_NAMES.has(name)) continue;
+    if (INLINE_SCRIPT_WRITE_SHAPE.test(tokens.slice(1).join(" "))) return true;
+  }
+  return false;
+}
+
+// True when a write target cannot be resolved (an undefined variable, a command substitution),
+// so we cannot tell where the write lands. Strict-on-doubt applies to these only: a write that
+// resolves outside every protected root is none of this guard's business, even when the same
+// command reads a protected folder. Treating "any redirect at all" as write intent blocked plain
+// `ls "$DIR/log" 2>&1 | tail -5` diagnostics on the real machine.
+function commandWritesWhereWeCannotSee(command, { env = process.env, bindings = new Map(), cwd = "" } = {}) {
+  for (const target of shellWriteTargets(command, { env, bindings, cwd })) {
+    const expanded = expandShellTarget(target, env, bindings);
+    if (!expanded) return true;
+    // A value that still holds a substitution or an unknown variable is not a destination we can
+    // judge: `D=$(echo <folder>); echo x > "$D/f"` must count as "cannot see where this writes".
+    if (/[$`]/.test(expanded)) return true;
+  }
+  return false;
+}
 
 function commandHasWriteIntent(command, { env = process.env, bindings = new Map(), cwd = "" } = {}) {
   const text = String(command ?? "");
@@ -339,29 +376,67 @@ function protectedViolationForPath(candidate, { roots = [], enforcedRoots = [], 
   return protectedWriteViolation(expanded, { roots, enforcedRoots, ownWorkspace });
 }
 
+// Every path-like substring of a token. A quoted script arrives as one token
+// (`echo x > /root/f`), and a `-c` program arrives as one token too
+// (`open('/root/f','w')`), so judging only the whole token never sees the path inside it - that
+// is how a write hidden in `sh -c` walked past this check.
+const PATH_LIKE_SHAPE = /(?:~|\/)[^\s'"`;|&)]*/g;
+
+function mentionedPaths(token) {
+  const found = [];
+  for (const match of String(token ?? "").matchAll(PATH_LIKE_SHAPE)) {
+    const value = match[0].replace(/[.,;:]+$/, "");
+    if (value.length > 1) found.push(value);
+  }
+  return found;
+}
+
+// Expand the command's own `$VAR` / `${VAR}` references the way the shell would. Without this,
+// a protected folder hidden inside a script (`bash -c 'echo x > $D/f'`) leaves no path-shaped
+// text to judge.
+function expandShellText(text, env = process.env, bindings = new Map()) {
+  let current = String(text ?? "");
+  for (let pass = 0; pass < 3; pass += 1) {
+    const next = current.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (whole, name) => {
+      if (bindings.has(name)) return String(bindings.get(name) ?? "");
+      if (env && env[name] !== undefined) return String(env[name]);
+      return whole;
+    });
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
 // Strict when in doubt: if the command can write and any path it mentions (after expanding its
 // own variables) lands inside a protected root, block it and say why. Reads still pass - only
 // commands that can write are judged here. "Cannot tell, so let it through" is exactly the
 // crack the agent kept widening.
+//
+// A variable that merely *holds* a protected path is not a violation: `R=<folder>; ls "$R"` is a
+// read, and judging the assignment alone blocked plain diagnostics on the real machine. The
+// variable is judged where it is used - as a write target (resolved in the caller) or as text.
 function protectedCommandMentionViolation(
   command,
   { roots = [], enforcedRoots = [], ownWorkspace, bindings = new Map(), env = process.env } = {},
 ) {
-  for (const value of bindings.values()) {
-    const violation = protectedViolationForPath(
-      expandShellTarget(value, env, bindings),
-      { roots, enforcedRoots, ownWorkspace },
-    );
-    if (violation) return { ...violation, reason: "protected-path-in-command" };
-  }
+  const judge = (candidate) => protectedViolationForPath(
+    expandShellTarget(candidate, env, bindings),
+    { roots, enforcedRoots, ownWorkspace },
+  );
   for (const segment of commandSegments(command)) {
     for (const token of segmentTokens(segment)) {
       if (token === ">" || token === ">>" || token.startsWith("-")) continue;
-      const violation = protectedViolationForPath(
-        expandShellTarget(token, env, bindings),
-        { roots, enforcedRoots, ownWorkspace },
-      );
+      // A binding token (`D=<folder>`) is not a mention: the variable is judged where it is used
+      // - as a resolved write target, or as text inside a script. Judging the assignment alone
+      // blocked read commands that merely kept a protected folder in a variable.
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
+      const violation = judge(token);
       if (violation) return { ...violation, reason: "protected-path-in-command" };
+      for (const inner of mentionedPaths(expandShellText(token, env, bindings))) {
+        const nested = judge(inner);
+        if (nested) return { ...nested, reason: "protected-path-in-command" };
+      }
     }
   }
   return null;
@@ -416,7 +491,14 @@ export function protectedCommandViolation(
     const violation = protectedWriteViolation(resolved, { roots, enforcedRoots, ownWorkspace });
     if (violation) return violation;
   }
-  if (commandHasWriteIntent(text, { env, bindings, cwd: base })) {
+  // Strict on doubt only: a write whose destination cannot be resolved, or a write hidden inside
+  // a script, is refused as soon as the command names a protected folder. Commands that merely
+  // read one - even while writing somewhere else - stay allowed: the reader asked for "no writes
+  // into my folders", not for the agent to lose its sight.
+  if (
+    commandWritesWhereWeCannotSee(text, { env, bindings, cwd: base })
+    || commandHidesWriteInScript(text)
+  ) {
     const mentioned = protectedCommandMentionViolation(text, {
       roots,
       enforcedRoots,

@@ -161,6 +161,63 @@ test("写入工具那条路（protectedWriteViolation）不受本次改动影响
   );
 });
 
+// 本轮（真机误伤 + 脚本藏写）补的两组口径：**只拦真写入、放行只读**。
+test("只读命令提到受限路径、把输出写到别处，不该被拦（真机误伤回归）", () => {
+  for (const command of [
+    // 真机上就是这么被误拦的：变量持有受限路径 + 2>&1 之类的重定向。
+    `R="${PROTECTED}"; ls -la "$R" 2>&1 | tail -5`,
+    `R="${PROTECTED}"; ls -la "$R" 2>/dev/null`,
+    `R="${PROTECTED}"; cat "$R/f.txt"`,
+    `R="${PROTECTED}"; python3 -c "print(open('$R/f.txt').read())"`,
+    `R="${PROTECTED}"; python3 -c "print(1)" > /tmp/example-out.txt`,
+    `ls -la ${PROTECTED}`,
+  ]) {
+    assert.equal(
+      protectedCommandViolation(command, SHELL_OPTIONS),
+      null,
+      `只读不该被拦：${command}`,
+    );
+  }
+});
+
+test("写在引号脚本里（sh -c / python -c）同样被拦", () => {
+  for (const command of [
+    `sh -c 'echo x > ${PROTECTED}/f.txt'`,
+    `bash -c "printf probe > ${PROTECTED}/f.txt"`,
+    `python3 -c "open('${PROTECTED}/f.txt','w').write('x')"`,
+    `D=${PROTECTED}; bash -c 'echo x > $D/f.txt'`,
+    `find ${PROTECTED} -name '*.log' | xargs rm`,
+  ]) {
+    assert.equal(
+      protectedCommandViolation(command, SHELL_OPTIONS)?.label,
+      USER_PROTECTED_FOLDER_LABEL,
+      `脚本里的写也要拦：${command}`,
+    );
+  }
+});
+
+test("引号脚本里只读时仍然放行（别把脚本一律当写）", () => {
+  for (const command of [
+    `bash -c 'cat ${PROTECTED}/f.txt'`,
+    `python3 -c "print(open('${PROTECTED}/f.txt').read())"`,
+  ]) {
+    assert.equal(
+      protectedCommandViolation(command, SHELL_OPTIONS),
+      null,
+      `脚本里只读不该被拦：${command}`,
+    );
+  }
+});
+
+test("写目标解析不出来、命令又提到受限路径：宁严勿松，拦", () => {
+  const command = `D=$(echo ${PROTECTED}); echo x > "$D/f.txt"`;
+  assert.equal(
+    protectedCommandViolation(command, SHELL_OPTIONS)?.label,
+    USER_PROTECTED_FOLDER_LABEL,
+    "无法解析的写目标 + 提到受限路径必须拦",
+  );
+});
+
 function joinTmp(...parts) {
   return [tmpdir().replace(/[\\/]+$/, ""), ...parts].join("/");
 }
