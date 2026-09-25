@@ -1606,6 +1606,24 @@ function subscribeSession(
           content: update.content ?? "",
           durationMs: startedAt === undefined ? undefined : Math.max(0, Date.now() - startedAt),
         });
+        // 第二道闸：这一步**结束时还在**死磕同一行（≥24 次、且是有内容的长行）⇒ 停轮。
+        // 三道闸全过才停（见 bridge-thinking-repetition.js 的 pendingStop）：
+        // ①行 ≥16 字符 ②连续 ≥24 次 ③结束时仍在重复。中途自己想通的不停 ✗。
+        const stillRepeating = thinkingRepetition.pendingStop(conversationId);
+        if (stillRepeating) {
+          const sample = stillRepeating.line.slice(0, 60);
+          emit(conversationId, "guard.alarm", {
+            toolName: "",
+            reason: `thinking repeated one line ${stillRepeating.run} times: ${sample}`,
+            notice:
+              `这一步的思考陷入了死循环：同一行连续重复 ${stillRepeating.run} 次（“${sample}…”）。`
+              + "继续下去只会白烧 token，所以本轮到此停止 —— 你可以直接重发，或换个说法再让我试。",
+            noticeEnglish:
+              `This thinking step looped: one line repeated ${stillRepeating.run} times in a row. `
+              + "The turn stops here instead of burning tokens; send it again, or rephrase and I will retry.",
+          });
+          void session.abort().catch(() => undefined);
+        }
       } else if (update.type === "text_delta") {
         assistantTextStreamed = true;
         streamDeltas.queue("text_delta", conversationId, update.delta);

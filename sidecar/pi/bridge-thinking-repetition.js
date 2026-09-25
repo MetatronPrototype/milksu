@@ -7,16 +7,25 @@
 //
 // 只在**真的复读**时触发：判据是"**连续** N 行完全相同"。长但每行都不同的思考必然放行（有测试钉住）。
 
-/** 连续多少行完全相同才算复读（真机上用户看到的是连续 8 行）。 */
+/** 第一道闸（只提示、不停轮）：连续多少行完全相同就算复读。 */
 export const THINKING_REPEAT_LINES = 8;
+
+/** 第二道闸（**会停轮**）：同一行连续这么多次 ⇒ 判为死循环。
+ *  读者问过「怎么判定而不误伤」⇒ 三道闸全过才停：①行 trim 后 ≥16 字符、②连续 ≥24 次、
+ *  ③到这一步**结束**时仍在重复（中途自己想通的不停）。 */
+export const THINKING_REPEAT_STOP_LINES = 24;
+
+/** 第二道闸只认“有内容”的行：挡住 } / - / --- / ``` 这类结构性短行（它们在正常输出里成片出现）。 */
+export const THINKING_REPEAT_MIN_LINE_CHARS = 16;
 
 /** 命中时给读者的句子（成对双语，前端按界面语言选一句）。 */
 export const THINKING_REPEAT_NOTICE = {
   // 不能说“已跳过”：命中时那行思考**已经进入数据流**了，这里也确实没有任何跳过/中止的代码 ✗。
   // 实话是：发现了复读，但这一步中途掐不断（思考是一整段连续生成、没有钩子）。
-  notice: "检测到这一步的思考在复读（连续 8 行完全相同）。这一步中途无法中止，只能先把情况告诉你。",
+  notice:
+    "检测到这一步的思考在复读（连续 8 行完全相同）。这一步中途无法中止；如果它继续这样重复，这一步结束时会自动停止本轮。",
   noticeEnglish:
-    "This thinking step is repeating itself (8 identical lines in a row). It cannot be stopped mid-step; you are being told instead.",
+    "This thinking step is repeating itself (8 identical lines in a row). It cannot be stopped mid-step; if it keeps repeating, the turn stops when this step ends.",
 };
 
 /**
@@ -64,6 +73,22 @@ export function createThinkingRepetitionGuard({ threshold = THINKING_REPEAT_LINE
         }
       }
       return hit;
+    },
+    /**
+     * 这一步**结束时**问一次：还在重复吗？
+     *
+     * 三道闸（读者口径：宁可少停，不要误伤）：
+     * ① 那一行 trim 后 ≥ THINKING_REPEAT_MIN_LINE_CHARS（挡结构性短行）；
+     * ② 连续 ≥ THINKING_REPEAT_STOP_LINES 次；
+     * ③ **最后一行仍属于同一个 run** —— 中途换过行就说明它自己想通了，不停 ✗。
+     */
+    pendingStop(conversationId) {
+      const state = states.get(String(conversationId ?? ""));
+      if (!state) return null;
+      const line = state.previous;
+      if (!line || line.length < THINKING_REPEAT_MIN_LINE_CHARS) return null;
+      if (state.run < THINKING_REPEAT_STOP_LINES) return null;
+      return { line, run: state.run };
     },
   };
 }
