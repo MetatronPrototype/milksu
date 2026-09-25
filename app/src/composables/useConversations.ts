@@ -1552,22 +1552,61 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   /** 清除某个对话的「上一轮被强制终止」标记（开新一回合时调）。 */
   function clearProblemTurn(conversationId: string) {
     const id = String(conversationId ?? '').trim()
-    if (!id || !s.problemTurns[id]) return
-    const next = { ...s.problemTurns }
-    delete next[id]
-    s.problemTurns = next
+    if (!id) return
+    if (s.problemTurns[id]) {
+      const next = { ...s.problemTurns }
+      delete next[id]
+      s.problemTurns = next
+    }
+    // 开新一回合时引擎也会清记录；这里同步一份，界面不用等列表刷新。
+    dropStoredProblemTurn(id)
   }
 
   /** 顶部横幅上的「知道了」：读者点掉 ⇒ 该对话的问题标记立即消失（侧栏红叉同时灭）。 */
   function dismissProblemTurn(conversationId?: string) {
-    clearProblemTurn(String(conversationId ?? s.activeId ?? ''))
+    const id = String(conversationId ?? s.activeId ?? '').trim()
+    clearProblemTurn(id)
+    if (!id) return
+    // 落盘那份也要清 ✗ 否则重开 App 横幅又回来（读者点的是"知道了"，不是"下次再说"）。
+    dropStoredProblemTurn(id)
+    void invokeCommand('clear_conversation_problem', { conversationId: id }).catch(() => {})
   }
 
-  const activeProblemTurn = (() => (s.activeId ? s.problemTurns[s.activeId] ?? null : null))
+  /** 把记录里的 agentProblem 就地抹掉（本地立刻一致，随后列表刷新再对齐）。 */
+  function dropStoredProblemTurn(id: string) {
+    const key = String(id ?? '').trim()
+    if (!key) return
+    let changed = false
+    const next = s.conversations.map(item => {
+      if (item.id !== key || !item.agentProblem) return item
+      changed = true
+      return { ...item, agentProblem: undefined }
+    })
+    if (changed) s.conversations = next
+  }
+
+  /** 落盘那份（重启后仍然在）⇒ 转成与内存同形的 ProblemTurn。 */
+  function storedProblemTurn(record: Conversation | undefined) {
+    const problem = record?.agentProblem
+    if (!problem) return null
+    const notice = String(problem.notice ?? '').trim()
+    const noticeEnglish = String(problem.noticeEnglish ?? '').trim()
+    if (!notice && !noticeEnglish) return null
+    return { notice: notice || noticeEnglish, noticeEnglish: noticeEnglish || notice, at: Number(problem.at ?? 0) }
+  }
+
+  /** 该对话当前的标记：**内存里的即时覆盖优先**（事件刚到，列表还没刷新）⇒ 回落记录。 */
+  function problemTurnFor(id: string): ProblemTurn | null {
+    const key = String(id ?? '').trim()
+    if (!key) return null
+    return s.problemTurns[key] ?? storedProblemTurn(s.conversations.find(item => item.id === key))
+  }
+
+  const activeProblemTurn = (() => (s.activeId ? problemTurnFor(s.activeId) : null))
 
   /** 侧栏红叉的判据：被拦过就有（读者口径：不再分级）。 */
   function conversationHasProblem(id: string) {
-    return Boolean(s.problemTurns[String(id ?? '').trim()])
+    return Boolean(problemTurnFor(id))
   }
 
   // 搬运自本地分支（A 引导）：队列被中断（例如强制停止）时界面要说出来。
@@ -1755,7 +1794,13 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   ))
   const runningConversationIds = (() => [...s.runningIds])
   /** 被拦过的对话（侧栏红叉靠它）。开新一回合或点「知道了」即清。 */
-  const problemConversationIds = (() => Object.keys(s.problemTurns))
+  const problemConversationIds = (() => {
+    const ids = new Set(Object.keys(s.problemTurns))
+    for (const item of s.conversations) {
+      if (storedProblemTurn(item)) ids.add(item.id)
+    }
+    return [...ids]
+  })
   const activeAborting = (() => (
     s.activeId ? s.abortingIds.has(s.activeId) : false
   ))

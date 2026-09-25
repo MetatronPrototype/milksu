@@ -195,6 +195,7 @@ func electronHostDesktopMethod(function any) desktopAppMethod {
 func desktopAppMethods(app *App) map[string]desktopAppMethod {
 	return map[string]desktopAppMethod{
 		"GetSettings":                          rendererDesktopMethod(app.GetSettings),
+		"ClearConversationProblem":             rendererDesktopMethod(app.ClearConversationProblem),
 		"GetModelCatalog":                      rendererDesktopMethod(app.GetModelCatalog),
 		"SaveSettingsCmd":                      rendererDesktopMethod(app.SaveSettingsCmd),
 		"GetNetworkStatus":                     rendererDesktopMethod(app.GetNetworkStatus),

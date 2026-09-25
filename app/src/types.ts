@@ -213,6 +213,8 @@ export interface Conversation {
   pinned?: boolean
   /** Manual order inside the pinned section; smaller comes first. */
   pinnedOrder?: number
+  /** 上一轮被守卫拦过的记录（落盘）。横幅与侧栏红叉据此在重启后仍然显示。 */
+  agentProblem?: { notice?: string; noticeEnglish?: string; at?: number }
   /** Codex-style scheduling queue, persisted with the conversation record. */
   messageQueue?: { steering: string[]; followUp: string[] }
   workspacePath?: string
