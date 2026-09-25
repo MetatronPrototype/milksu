@@ -30,6 +30,9 @@ func TestEverySidecarEventNameIsClaimedByTheEngine(t *testing.T) {
 		"background.wake":         "后台唤醒的提示信息，目前无消费方 ✓",
 		"thinking_level_selected": "思考档位由渲染层本地状态维护，事件仅作回显 ✓",
 		"workspace_action":        "其响应由 workspace_action_response 消费 ✓",
+		// 引擎**故意改名**成 `runtime.background_tasks`（渲染层认的也是新名 ✓），
+		// 渲染层多认一个旧名只是容错 ⇒ 不是“渲染层认了、引擎却改名”那种漏 ✓。
+		"background_tasks": "引擎改名为 runtime.background_tasks，渲染层两个名字都认（故意容错）✓",
 	}
 
 	emitted := map[string]string{} // 事件名 → 首次出现的文件
@@ -64,10 +67,29 @@ func TestEverySidecarEventNameIsClaimedByTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read supervisor.go: %v", err)
 	}
-	casePattern := regexp.MustCompile(`case "([a-z0-9_.]+)":`)
+	casePattern := regexp.MustCompile(`case\s+([^:]+):`)
+	labelPattern := regexp.MustCompile(`"([a-z0-9_.]+)"`)
 	claimed := map[string]bool{}
-	for _, match := range casePattern.FindAllStringSubmatch(string(source), -1) {
-		claimed[match[1]] = true
+	// 引擎“保住原名”的名字：case 体里写的是同名映射（`event.Type = "x"`）或原样透传
+	// （`event.Type = raw.Type`）。只有这两种，渲染层才真的能按原名分支到 ✓。
+	keptVerbatim := map[string]bool{}
+	sourceText := string(source)
+	matches := casePattern.FindAllStringSubmatchIndex(sourceText, -1)
+	for _, match := range matches {
+		labels := labelPattern.FindAllStringSubmatch(sourceText[match[2]:match[3]], -1)
+		end := len(sourceText)
+		if next := casePattern.FindStringIndex(sourceText[match[1]:]); next != nil {
+			end = match[1] + next[0]
+		}
+		body := sourceText[match[1]:end]
+		for _, label := range labels {
+			name := label[1]
+			claimed[name] = true
+			if strings.Contains(body, "event.Type = \""+name+"\"") ||
+				strings.Contains(body, "event.Type = raw.Type") {
+				keptVerbatim[name] = true
+			}
+		}
 	}
 
 	// 引擎可以直接透传“已经是最终名”的事件（侧车对这类用点号命名，如 agent.delivery）✓，
@@ -95,6 +117,41 @@ func TestEverySidecarEventNameIsClaimedByTheEngine(t *testing.T) {
 			"neither the engine's rename table nor the renderer knows these sidecar events, so "+
 				"they are dropped silently:\n  %s",
 			strings.Join(missing, "\n  "),
+		)
+	}
+
+	// 渲染层认识的名字，引擎**必须原样保住**。
+	//
+	// 以前的判据是「引擎表或渲染层，认一个就行」✗：渲染层认了、引擎却把它改成了
+	// `engine.raw.<name>`，测试照样绿 —— 于是 `guard.alarm`（受保护路径被拦、思考复读）
+	// 就这么溜过去了，读者在拦截之后一条提示都看不到（真事：只剩「这一轮没有可见正文」）。
+	// 现在改名也算丢 ✗。
+	// 渲染层认识的名字里，**侧车也发过**的那些，引擎必须原样保住。
+	//
+	// 以前的判据是「引擎表或渲染层，认一个就行」✗：渲染层认了、引擎却把它改成了
+	// `engine.raw.<name>`，测试照样绿 —— 于是 `guard.alarm`（受保护路径被拦、思考复读）
+	// 就这么溜过去了，读者在拦截之后一条提示都看不到（真事：只剩「这一轮没有可见正文」）。
+	// 现在改名也算丢 ✗。
+	//
+	// 只看**交集**：引擎自己产出的名字（如 `session.model_source_unavailable`）不在侧车
+	// 发出名单里，它们由引擎改名、渲染层认新名 ✓，那是正确形状。
+	var renamed []string
+	for name := range emitted {
+		if !rendererKnows[name] || keptVerbatim[name] || allowList[name] != "" {
+			continue
+		}
+		if claimed[name] {
+			renamed = append(renamed, name+" (claimed by the engine, but under a different name)")
+			continue
+		}
+		renamed = append(renamed, name+" (not claimed: it falls through to engine.raw.<name>)")
+	}
+	sort.Strings(renamed)
+	if len(renamed) > 0 {
+		t.Fatalf(
+			"the renderer switches on these names, but the engine does not keep them, so the "+
+				"renderer can never match them:\n  %s",
+			strings.Join(renamed, "\n  "),
 		)
 	}
 }

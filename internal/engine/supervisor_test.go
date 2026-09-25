@@ -323,6 +323,26 @@ func TestNormalizeModelSourceUnavailableKeepsItsOwnEventName(t *testing.T) {
 	}
 }
 
+func TestNormalizeGuardAlarmKeepsItsOwnEventNameAndNotices(t *testing.T) {
+	// 受保护路径被拦时的示警：名字必须原样（渲染层按 `guard.alarm` 分支）+ 中英两句都要活着
+	// 到渲染层——否则读者在拦截之后什么都看不到（真事：只剩「这一轮没有可见正文」）。
+	event := normalizeBridgeEvent(bridgeEvent{
+		Type:          "guard.alarm",
+		ID:            "session-1",
+		Notice:        "已停止本轮：agent 连续 3 次试图写入受限路径（/tmp/example/out）。",
+		NoticeEnglish: "Stopped this turn: the agent tried 3 times to write a protected path.",
+	})
+	if event.Type != "guard.alarm" {
+		t.Fatalf("the guard alarm must keep its own name, got %q", event.Type)
+	}
+	if event.Notice == "" {
+		t.Fatalf("the Chinese notice must survive normalization: %#v", event)
+	}
+	if event.NoticeEnglish == "" {
+		t.Fatalf("the English notice must survive normalization: %#v", event)
+	}
+}
+
 func TestNormalizeAndCacheBackgroundTasks(t *testing.T) {
 	exitCode := 0
 	event := normalizeBridgeEvent(bridgeEvent{

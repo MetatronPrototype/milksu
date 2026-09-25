@@ -144,6 +144,7 @@ type Event struct {
 	Grantable            bool                     `json:"grantable,omitempty"`
 	Justification        *ApprovalJustification   `json:"justification,omitempty"`
 	Notice               string                   `json:"notice,omitempty"`
+	NoticeEnglish        string                   `json:"noticeEnglish,omitempty"`
 	Choice               string                   `json:"choice,omitempty"`
 	BackgroundTasks      []BackgroundTask         `json:"backgroundTasks,omitempty"`
 	SubagentTasks        []SubagentTask           `json:"subagentTasks,omitempty"`
@@ -410,6 +411,7 @@ type bridgeEvent struct {
 	Approved             *bool                    `json:"approved"`
 	Grantable            bool                     `json:"grantable"`
 	Notice               string                   `json:"notice"`
+	NoticeEnglish        string                   `json:"noticeEnglish"`
 	Justification        *ApprovalJustification   `json:"justification"`
 	Choice               string                   `json:"choice"`
 	Tasks                []BackgroundTask         `json:"tasks"`
@@ -3609,6 +3611,21 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		event.Type = "context.composition"
 	case "approval_requested":
 		event.Type = "approval.requested"
+	case "guard.alarm":
+		// 守卫示警（受保护路径被拦、思考陷入重复）：渲染层按这个名字分支 ⇒ 必须原样透传并
+		// 带上两句提示。以前它落到 default 被改成 `engine.raw.guard.alarm` ✗ ⇒
+		// 读者在拦截后什么都看不到（真事：只剩「这一轮没有可见正文」）。
+		event.Type = "guard.alarm"
+		event.Notice = raw.Notice
+		event.NoticeEnglish = raw.NoticeEnglish
+	case "attachment.held":
+		// 同一类静默丢失（收紧覆盖测试后当场又抓出两条）：附件没发出去的原因必须到读者眼前。
+		event.Type = "attachment.held"
+		event.Notice = raw.Notice
+		event.NoticeEnglish = raw.NoticeEnglish
+	case "turn.heartbeat":
+		// 回合心跳：渲染层据此判定“卡住/仍在跑”。以前它被改成 engine.raw.turn.heartbeat ✗ ⇒ 永远收不到。
+		event.Type = "turn.heartbeat"
 	// Passed through verbatim: the renderer switches on these exact names, while the
 	// default arm would prefix them with engine.raw. and they could never match.
 	case "destructive.blocked", "agent.delivery":
