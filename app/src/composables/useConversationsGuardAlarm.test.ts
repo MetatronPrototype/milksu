@@ -94,9 +94,8 @@ describe('engine guard alarms reach the reader', () => {
     expect(conversations.problemConversationIds).toContain('conversation-1')
   })
 
-  // 读者要求（真机反馈）：单次拒绝也上**顶部横幅**（不再走"12 秒后消失"那条），
-  // 但**侧栏红叉只在真·没能继续时亮**（停轮 / 运行失败）—— 单次拒绝不该招叉。
-  it('普通的单次拒绝（没停轮）：上顶部横幅，但不亮红叉', async () => {
+  // 读者口径（最终确认）：**只要被拦就上顶部横幅 + 侧栏红叉**，不再分"单次拒绝/停轮"。
+  it('普通的单次拒绝（没停轮）：同样上顶部横幅 + 红叉', async () => {
     const conversations = await loadRuntime()
     handlers.get('engine-event')?.({ payload: {
       sessionId: 'conversation-1',
@@ -106,39 +105,10 @@ describe('engine guard alarms reach the reader', () => {
       protectedPath: true,
     } })
     expect(conversations.activeProblemTurn?.notice).toContain('已拦截')
-    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
-    expect(conversations.problemConversationIds).not.toContain('conversation-1')
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
+    expect(conversations.problemConversationIds).toContain('conversation-1')
   })
 
-  it('先单次拒绝、后真停轮 ⇒ 红叉要亮起来（severe 只升不降）', async () => {
-    const conversations = await loadRuntime()
-    handlers.get('engine-event')?.({ payload: {
-      sessionId: 'conversation-1',
-      type: 'guard.alarm',
-      notice: '已拦截：…',
-      noticeEnglish: 'Blocked: …',
-      protectedPath: true,
-    } })
-    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
-    handlers.get('engine-event')?.({ payload: {
-      sessionId: 'conversation-1',
-      type: 'guard.alarm',
-      notice: '已停止本轮：…',
-      noticeEnglish: 'Stopped this turn: …',
-      protectedPath: true,
-      turnStopped: true,
-    } })
-    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
-    // 反过来：停轮之后再来一次单次拒绝，不能把叉撤掉。
-    handlers.get('engine-event')?.({ payload: {
-      sessionId: 'conversation-1',
-      type: 'guard.alarm',
-      notice: '已拦截：…',
-      noticeEnglish: 'Blocked: …',
-      protectedPath: true,
-    } })
-    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
-  })
 
 
   it('该对话开新一回合 ⇒ 标记消除；别的对话不受影响', async () => {
