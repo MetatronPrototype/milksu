@@ -2,11 +2,13 @@ package engine
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/MilkSU-Official/milksu/internal/appdata"
+	"github.com/MilkSU-Official/milksu/internal/config"
 )
 
 // The sidecar is where the tools run, so the host must hand it the protected roots rather
@@ -106,5 +108,52 @@ func TestAppBundleProtectionFollowsChannel(t *testing.T) {
 	}
 	if _, ok := appBundleProtectedRoot(fakeBundle); !ok {
 		t.Error("渠道未知时包本体必须受保护")
+	}
+}
+
+// 读者的原话：怕出问题「连救都救不了」。所以必须有紧急关闭，而且不依赖界面：
+// 环境变量 MILKSU_PROTECTED_DISABLED=1，或数据目录下放一个 agent-protection-off 文件
+// ⇒ 整套受限保护（含 app-bundle / runtime-data 等内置项）失效；删掉后保护立即恢复。
+func TestEmergencySwitchDisablesEveryProtectedRoot(t *testing.T) {
+	dataDirectory := filepath.Join(t.TempDir(), "data")
+	t.Setenv(appdata.DirectoryOverrideEnv, dataDirectory)
+	t.Setenv(protectedDisabledEnvironment, "")
+
+	if protectedRootsVariable() == "" {
+		t.Fatal("默认应当下发内置受保护根")
+	}
+
+	t.Setenv(protectedDisabledEnvironment, "1")
+	if !agentProtectionDisabled() {
+		t.Error("环境变量 MILKSU_PROTECTED_DISABLED=1 应立即生效")
+	}
+	if got := protectedRootsVariable(); got != "" {
+		t.Errorf("紧急关闭时不应下发任何受保护根，得到 %q", got)
+	}
+	settings := config.AppSettings{ProtectedFolders: []string{"/Users/me/private"}}
+	if folders := effectiveProtectedFolders(settings); len(folders) != 0 {
+		t.Errorf("紧急关闭时读者列表也必须失效，得到 %#v", folders)
+	}
+
+	t.Setenv(protectedDisabledEnvironment, "")
+	marker := filepath.Join(dataDirectory, protectionDisabledMarker)
+	if err := os.WriteFile(marker, []byte("off"), 0o600); err != nil {
+		t.Fatalf("写标记文件: %v", err)
+	}
+	if !agentProtectionDisabled() {
+		t.Error("数据目录下的 agent-protection-off 标记应立即生效（界面坏掉时唯一的路）")
+	}
+	if got := protectedRootsVariable(); got != "" {
+		t.Errorf("标记文件生效时不应下发任何受保护根，得到 %q", got)
+	}
+
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("删标记: %v", err)
+	}
+	if agentProtectionDisabled() {
+		t.Error("标记删除后保护必须立即恢复")
+	}
+	if protectedRootsVariable() == "" {
+		t.Error("标记删除后应重新下发内置受保护根")
 	}
 }

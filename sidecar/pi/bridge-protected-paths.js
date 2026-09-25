@@ -5,6 +5,17 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 // so this is the only place a write can be refused before it happens.
 export const PROTECTED_ROOTS_ENV = "MILKSU_PROTECTED_ROOTS";
 
+// 读者的「紧急关闭」：环境变量 MILKSU_PROTECTED_DISABLED=1，或数据目录下放一个
+// agent-protection-off 文件（引擎会把它转成这个环境变量下发）。
+// 读者原话：怕出问题「连救都救不了」。所以这条退路必须不依赖界面、也不依赖 App 能正常启动。
+// 命中即整套受限保护失效：派生根不再生效，写判定、命令判定、git-hooks 硬规则全部放行。
+export const PROTECTED_DISABLED_ENV = "MILKSU_PROTECTED_DISABLED";
+
+export function protectedGuardDisabled(env = process.env) {
+  const raw = String(env?.[PROTECTED_DISABLED_ENV] ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 // .git/hooks is an execution-injection point anywhere on disk, so it is matched by shape
 // rather than by root.
 const GIT_HOOKS_SHAPE = /(^|[\\/])\.git[\\/]hooks([\\/]|$)/;
@@ -51,6 +62,8 @@ export function dataDirectoryFromEnvironment(env = process.env) {
 // roots are derived from this session's own workspace and the real user home.
 export function derivedProtectedRoots({ workspace, userHome, dataDirectory } = {}) {
   const roots = [];
+  // 紧急关闭：连侧车自己派生的根也不再生效，否则读者关了开关仍然被拦。
+  if (protectedGuardDisabled()) return roots;
   const home = String(userHome ?? "").trim() || homedir();
   if (dataDirectory) {
     roots.push({ path: normalizePath(dataDirectory), label: "runtime-data" });
@@ -93,6 +106,8 @@ export function protectedWriteViolation(
 ) {
   const candidate = normalizePath(target);
   if (!candidate) return null;
+  // 紧急关闭：一切都放行（包括下面的 git-hooks 硬规则）。
+  if (protectedGuardDisabled()) return null;
   if (GIT_HOOKS_SHAPE.test(candidate)) return { path: candidate, label: "git-hooks" };
   // 读者在设置里指定的受限文件夹优先于「会话自己的 workspace 永远可写」那条例外：
   // 他要保护的往往正是自己项目里的某个目录。内置清单不走这一支（它们的作用域仍按原来的
@@ -534,6 +549,8 @@ export function protectedCommandViolation(
 ) {
   const text = String(command ?? "");
   if (!text.trim()) return null;
+  // 紧急关闭：命令判定（含「写目标看不到就宁严勿松」那一支）整体失效。
+  if (protectedGuardDisabled(env)) return null;
   const base = String(cwd ?? ownWorkspace ?? env.HOME ?? "").trim();
   const bindings = shellVariableBindings(text, env);
   for (const raw of shellWriteTargets(text, { env, bindings, cwd: base })) {

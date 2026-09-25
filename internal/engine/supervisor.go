@@ -606,6 +606,10 @@ type CodingBrowserLookup func(sessionID string) (*CodingBrowserDescriptor, bool)
 // when the switch is off it is handed an empty list rather than a second flag, so the sidecar's
 // existing reader cannot end up disagreeing with the renderer.
 func effectiveProtectedFolders(settings config.AppSettings) []string {
+	// 紧急关闭优先于一切：连读者自己的列表也一起失效（读者要的是「整套关掉」）。
+	if agentProtectionDisabled() {
+		return []string{}
+	}
 	if !config.ProtectedFoldersEnabled(settings) {
 		return []string{}
 	}

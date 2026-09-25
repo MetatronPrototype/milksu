@@ -36,6 +36,13 @@ const (
 	// sidecar is where the tools run, so the host hands the roots over at spawn instead of
 	// trusting the agent's own working directory.
 	protectedRootsEnvironment = "MILKSU_PROTECTED_ROOTS"
+
+	// protectedDisabledEnvironment / protectionDisabledMarker 是读者的「紧急关闭」通道。
+	// 读者原话：怕出问题「连救都救不了」。所以留一条**不依赖界面、也不依赖 App 能正常启动**的
+	// 退路：设环境变量，或在数据目录下放一个 agent-protection-off 文件。
+	// 命中即整套受限保护（含 app-bundle / runtime-data 等内置项）全部关闭。
+	protectedDisabledEnvironment = "MILKSU_PROTECTED_DISABLED"
+	protectionDisabledMarker     = "agent-protection-off"
 )
 
 type sidecarRuntime struct {
@@ -102,7 +109,11 @@ func sidecarEnvironment(settings config.AppSettings) ([]string, error) {
 		// reject accidental broad grants without guessing from its isolated HOME.
 		"MILKSU_USER_HOME="+canonicalUserHome,
 	)
-	if protected := protectedRootsVariable(); protected != "" {
+	if agentProtectionDisabled() {
+		// 紧急关闭：内置项（含 App 本体）也不再下发，并把这个事实明确告诉侧车，
+		// 否则侧车会自己派生根（derivedProtectedRoots）而继续拦人。
+		environment = append(environment, protectedDisabledEnvironment+"=1")
+	} else if protected := protectedRootsVariable(); protected != "" {
 		environment = append(environment, protected)
 	}
 	if catalogPath := strings.TrimSpace(settings.RuntimeModelCatalogPath); catalogPath != "" {
@@ -503,7 +514,25 @@ type protectedRoot struct {
 
 // protectedRootsVariable renders MILKSU_PROTECTED_ROOTS. Empty when nothing could be
 // resolved, so the sidecar falls back to its own derived roots instead of failing to start.
+// agentProtectionDisabled 报告读者的「紧急关闭」是否生效。
+// 只在两处读：环境变量（进程级）与数据目录下的标记文件（读者自己就能建，界面坏掉也行）。
+func agentProtectionDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(protectedDisabledEnvironment))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	directory, err := appdata.Directory()
+	if err != nil || directory == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(directory, protectionDisabledMarker))
+	return err == nil && !info.IsDir()
+}
+
 func protectedRootsVariable() string {
+	if agentProtectionDisabled() {
+		return ""
+	}
 	roots := make([]protectedRoot, 0, 4)
 	if dataDirectory, err := appdata.Directory(); err == nil && dataDirectory != "" {
 		// Covers settings.json, conversations/**, credentials.db and the scratch workspaces.
