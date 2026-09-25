@@ -109,7 +109,7 @@ func sidecarEnvironment(settings config.AppSettings) ([]string, error) {
 		// reject accidental broad grants without guessing from its isolated HOME.
 		"MILKSU_USER_HOME="+canonicalUserHome,
 	)
-	if agentProtectionDisabled() {
+	if agentProtectionDisabledFor(settings) {
 		// 紧急关闭：内置项（含 App 本体）也不再下发，并把这个事实明确告诉侧车，
 		// 否则侧车会自己派生根（derivedProtectedRoots）而继续拦人。
 		environment = append(environment, protectedDisabledEnvironment+"=1")
@@ -527,6 +527,12 @@ func agentProtectionDisabled() bool {
 	}
 	info, err := os.Stat(filepath.Join(directory, protectionDisabledMarker))
 	return err == nil && !info.IsDir()
+}
+
+// agentProtectionDisabledFor 合并读者的两条关闭通道：设置界面里的紧急开关，以及不依赖界面
+// 的环境变量 / 标记文件（界面坏掉时用）。任一条生效即整套保护关闭。
+func agentProtectionDisabledFor(settings config.AppSettings) bool {
+	return agentProtectionDisabled() || config.AgentProtectionDisabled(settings)
 }
 
 func protectedRootsVariable() string {

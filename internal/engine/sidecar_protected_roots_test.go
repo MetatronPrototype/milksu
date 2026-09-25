@@ -156,4 +156,24 @@ func TestEmergencySwitchDisablesEveryProtectedRoot(t *testing.T) {
 	if protectedRootsVariable() == "" {
 		t.Error("标记删除后应重新下发内置受保护根")
 	}
+
+	// 设置界面里的紧急开关：读者要的是「点一下」，而不是去输命令。
+	on := true
+	settingsOff := config.AppSettings{
+		AgentProtectionDisabled: &on,
+		ProtectedFolders:        []string{"/Users/me/private"},
+	}
+	if !agentProtectionDisabledFor(settingsOff) {
+		t.Error("设置里的紧急开关必须生效")
+	}
+	if folders := effectiveProtectedFolders(settingsOff); len(folders) != 0 {
+		t.Errorf("设置紧急开关生效时读者列表也必须失效，得到 %#v", folders)
+	}
+	off := false
+	if agentProtectionDisabledFor(config.AppSettings{AgentProtectionDisabled: &off}) {
+		t.Error("紧急开关为 false 时不得关闭保护")
+	}
+	if agentProtectionDisabledFor(config.AppSettings{}) {
+		t.Error("缺省（未设置）时不得关闭保护——绝不能静默失守")
+	}
 }

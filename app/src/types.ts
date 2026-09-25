@@ -484,6 +484,8 @@ export interface AppSettings {
   protected_folders?: string[]
   /** 受限文件夹保护的**总开关**（后端设置；缺省 = 开）。关掉后列出的路径不再受保护。 */
   protected_folders_enabled?: boolean
+  /** **紧急开关**：临时把整套保护（**含系统目录**）全关，用于「救不回来」的场合。缺省 = 关。 */
+  agent_protection_disabled?: boolean
   enabled_optional_skills?: string[]
   worker_provider?: string
   worker_model?: string
@@ -770,6 +772,8 @@ export function withAppSettingsDefaults(value: AppSettings): AppSettings {
       .filter(name => /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(name)))],
     // 受限文件夹：只收绝对路径（相对路径在 agent 的 shell 里没有确定含义），去空、去重。
     protected_folders_enabled: value.protected_folders_enabled !== false,
+    // 紧急开关：只有明确的 true 才算开（缺省绝不静默关闭保护）。
+    agent_protection_disabled: value.agent_protection_disabled === true,
     protected_folders: [...new Set((value.protected_folders ?? [])
       .map(path => String(path).trim().replace(/\/+$/, ''))
       .filter(path => path.startsWith('/') && path !== '/'))],
