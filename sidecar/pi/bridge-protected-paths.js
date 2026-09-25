@@ -70,10 +70,11 @@ export function derivedProtectedRoots({ workspace, userHome, dataDirectory } = {
   }
   const normalizedWorkspace = normalizePath(workspace);
   if (!normalizedWorkspace) return roots;
-  const codingRoot = normalizePath(join(home, "MilkSU", "Coding"));
-  if (isInside(normalizedWorkspace, codingRoot)) {
-    roots.push({ path: codingRoot, label: "coding-workspaces" });
-  }
+  // 这里曾经把整个 ~/MilkSU/Coding 当成「coding-workspaces」保护起来，理由是「别的会话
+  // 的沙箱不能互相写坏」。但真正的沙箱住在 <runtime-data>/agent-home/workspaces 下，
+  // 已经被 runtime-data 这一条盖住了；而 ~/MilkSU/Coding 里放的是读者自己的项目、
+  // 工作副本与文档（例如 PR 提交准备）——把它们一并封死，会直接堵住这些活。
+  // 读者反馈："PR 因为这点事情连写文档都写不了"。所以只留下真正窄的那条（协作沙箱）。
   const scratch = /^(.*[\\/]agent-workspaces[\\/]Coding)[\\/]/.exec(normalizedWorkspace);
   if (scratch?.[1]) {
     roots.push({ path: normalizePath(scratch[1]), label: "coding-workspaces" });
