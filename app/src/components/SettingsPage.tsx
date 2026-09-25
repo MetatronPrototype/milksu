@@ -993,8 +993,8 @@ export default function SettingsPage({
                 <SettingsRow
                   label={t('启用受限文件夹保护', 'Enable protected folders')}
                   description={t(
-                    '总开关。关掉后，上面列出的路径不再受保护（写入不被拦截、删除审批里也不算受保护）；系统目录（用户主目录、~/Library、Documents、Desktop、runtime-data、构建缓存等）始终受保护，与本开关无关——要连系统目录一起关，用下面的「紧急」。',
-                    'The master switch. Turn it off and the folders listed above stop being protected — writes are not blocked and a delete approval no longer counts them; system locations (your home directory, ~/Library, Documents, Desktop, runtime-data, build caches) stay protected regardless of this switch. To drop those too, use “Emergency” below.',
+                    '总开关。关掉后，上面列出的路径不再受保护（写入不被拦截、删除审批里也不算受保护）；MilkSU 内置保护的位置（你的用户主目录、~/Library、Documents、Desktop、runtime-data、构建缓存等）始终受保护，与本开关无关——要连这些一起关，用下面的「紧急」。',
+                    'The master switch. Turn it off and the folders listed above stop being protected — writes are not blocked and a delete approval no longer counts them; MilkSU’s built-in protected locations (your home directory, ~/Library, Documents, Desktop, runtime-data, build caches) stay protected regardless of this switch. To drop those too, use “Emergency” below.',
                   )}
                   trailing={(
                     <Switch
@@ -1012,10 +1012,10 @@ export default function SettingsPage({
                   )}
                 />
                 <SettingsRow
-                  label={t('紧急：完全关闭防护（含系统目录）', 'Emergency: turn off all protection')}
+                  label={t('紧急：完全关闭防护（含 MilkSU 应用目录）', 'Emergency: turn off all protection')}
                   description={t(
-                    '应急用。打开后整套受限保护失效：上面列出的路径、系统目录（~/Library、Documents、Desktop、runtime-data 等），以及 MilkSU 自身的数据与本体都不再拦截。只在「救不回来」时打开，事后请关掉。',
-                    'For emergencies. When on, every protected location stops being blocked: the folders above, system locations (~/Library, Documents, Desktop, runtime-data …), and MilkSU’s own data and app bundle. Turn it on only to recover, then turn it back off.',
+                    '应急用。打开后整套受限保护失效：上面列出的路径、MilkSU 内置保护的位置（你的用户主目录、~/Library、Documents、Desktop、runtime-data、构建缓存等），以及 MilkSU 自己的应用目录（应用本体与数据）都不再拦截。只在「救不回来」时打开，事后请关掉。',
+                    'For emergencies. When on, every protected location stops being blocked: the folders above, MilkSU’s built-in protected locations (your home directory, ~/Library, Documents, Desktop, runtime-data, build caches …), and MilkSU’s own app folder (the app bundle and its data). Turn it on only to recover, then turn it back off.',
                   )}
                   divider={false}
                   trailing={(

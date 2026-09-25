@@ -484,7 +484,7 @@ export interface AppSettings {
   protected_folders?: string[]
   /** 受限文件夹保护的**总开关**（后端设置；缺省 = 开）。关掉后列出的路径不再受保护。 */
   protected_folders_enabled?: boolean
-  /** **紧急开关**：临时把整套保护（**含系统目录**）全关，用于「救不回来」的场合。缺省 = 关。 */
+  /** **紧急开关**：临时把整套保护（**含 MilkSU 自己的应用目录**）全关，用于「救不回来」的时刻。缺省 = 关。 */
   agent_protection_disabled?: boolean
   enabled_optional_skills?: string[]
   worker_provider?: string
