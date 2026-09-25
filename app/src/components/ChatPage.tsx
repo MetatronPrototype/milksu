@@ -2711,29 +2711,6 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
             onScroll={handleChatScroll}
           >
-            {/* 守卫示警（受保护路径被拦等）：**持久**留在转写里 —— 拦截会把回合停掉，
-                临时状态行留不住原因，读者会只看到「这一轮没有可见正文」。 */}
-            {conversations.activeGuardNotices.map(notice => (
-              <div
-                key={notice.id}
-                className="mx-auto mb-2 flex w-[72%] items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-caption text-amber-700 dark:text-amber-300"
-                data-testid="guard-notice"
-              >
-                <span className="flex-1">
-                  {t(notice.notice || notice.noticeEnglish, notice.noticeEnglish || notice.notice)}
-                  {notice.count > 1 ? ` ×${notice.count}` : ''}
-                </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  data-testid="dismiss-guard-notice"
-                  onClick={() => conversations.dismissGuardNotice(notice.id)}
-                >
-                  {t('知道了', 'Dismiss')}
-                </Button>
-              </div>
-            ))}
             {/* 搬运自本地分支（C）：别的对话交过来的提示。只读、可关闭，永远不入 messages。 */}
             {conversations.activeCrossConversationNotices.map(notice => (
               <CrossConversationNotice
@@ -2905,6 +2882,30 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       thinkingFoldKey={thinkingFoldKey}
                     />
                   )
+                ))}
+                {/* 守卫示警（受保护路径被拦等）：**放在转写末尾** —— 拦截会把回合停掉，
+                    而读者就停在底部看；放到顶部的提示都在屏幕外（真事：读者只看到
+                    「这一轮没有可见正文」，以为没有任何提示）。 */}
+                {conversations.activeGuardNotices.map(notice => (
+                  <div
+                    key={notice.id}
+                    className="agent-turn mb-4 flex w-full items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-caption text-amber-700 dark:text-amber-300"
+                    data-testid="guard-notice"
+                  >
+                    <span className="flex-1">
+                      {t(notice.notice || notice.noticeEnglish, notice.noticeEnglish || notice.notice)}
+                      {notice.count > 1 ? ` ×${notice.count}` : ''}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      data-testid="dismiss-guard-notice"
+                      onClick={() => conversations.dismissGuardNotice(notice.id)}
+                    >
+                      {t('知道了', 'Dismiss')}
+                    </Button>
+                  </div>
                 ))}
                 {emptyVisibleReply && !waitingForModel ? (
                   <article className="agent-turn mb-7 min-w-0 w-full">
