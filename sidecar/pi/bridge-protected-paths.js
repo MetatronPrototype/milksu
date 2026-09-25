@@ -448,25 +448,58 @@ function protectedCommandMentionViolation(
  * not look for another one". The reader's own words: an agent that is not told will keep
  * hunting for a way in.
  */
+// 内置保护位置的中文名。它们和读者在设置里加的「受限文件夹」不是一回事：不受总开关影响，
+// 也不能从设置里移除。文案必须说实话——读者曾被误导成「我只加了一个测试文件夹，为什么被拦」。
+const BUILTIN_PROTECTED_LABELS = new Map([
+  ["app-bundle", "MilkSU 应用本体"],
+  ["app-sources", "MilkSU 源码目录"],
+  ["runtime-data", "MilkSU 运行数据"],
+  ["pi-sessions", "会话记录"],
+  ["coding-workspaces", "Coding 工作区"],
+  ["git-hooks", "Git 钩子"],
+]);
+
+/** 内置保护的显示名；读者列表里的项（label 为 protected 或自定义）返回空串。 */
+export function builtinProtectedName(label) {
+  return BUILTIN_PROTECTED_LABELS.get(String(label ?? "").trim()) ?? "";
+}
+
 export function protectedAgentNotice(violation, locale) {
   const target = String(violation?.path ?? "").trim() || "(the path you tried to write)";
   const throughVariable = violation?.reason === "protected-path-in-command";
+  const builtin = builtinProtectedName(violation?.label);
+  const spelled = throughVariable
+    ? (String(locale ?? "") === "en"
+      ? " This command was blocked because it pointed at that folder through a shell variable"
+        + " or after a cd, not because of how it was spelled."
+      : "这条命令被拦不是因为写法，而是它通过 shell 变量或 cd 指到了那个目录。")
+    : "";
   if (String(locale ?? "") === "en") {
+    if (builtin) {
+      return "Blocked: " + target + " is inside " + builtin + ", a location MilkSU always protects"
+        + " (it is not on the reader's protected list, and the master switch does not affect it),"
+        + " so agents may not write there." + spelled
+        + " Do not work around it: do not retry with a shell variable, a cd, another tool, or "
+        + "another spelling of the path - the write stays blocked and repeated attempts stop the "
+        + "turn. The reader has to do this one themselves: tell them what you need written and where.";
+    }
     return "Blocked: " + target + " is inside a folder on the reader's protected list "
-      + "(Settings, Files, protected folders), so agents may not write there."
-      + (throughVariable
-        ? " This command was blocked because it pointed at that folder through a shell variable"
-          + " or after a cd, not because of how it was spelled."
-        : "")
+      + "(Settings, Files, protected folders), so agents may not write there." + spelled
       + " Do not work around it: do not retry with a shell variable, a cd, another tool, or "
       + "another spelling of the path - the write stays blocked and repeated attempts stop the "
       + "turn. The only way through is for the reader to remove that folder in Settings (or turn "
       + "the master switch off): tell them what you need written and where, and wait for them.";
   }
+  if (builtin) {
+    return "已拦截：" + target + " 在" + builtin + "里，这是 MilkSU 内置保护的位置"
+      + "（**不在**读者设置的「受限文件夹」列表里，也不受总开关影响），agent 不能写入。"
+      + spelled
+      + "**不要绕过**：不要改用 shell 变量、cd、别的工具或别的路径拼法再试 —— 写入仍会被拒，"
+      + "同一轮反复试（第 3 次起）会终止本轮。这种事要由读者本人来做："
+      + "把你要写什么、写到哪里告诉读者，等读者处理。";
+  }
   return "已拦截：" + target + " 在读者的「受限文件夹」列表里（设置 → 文件 → 受限文件夹），"
-    + "agent 不能写入。" + (throughVariable
-      ? "这条命令被拦不是因为写法，而是它通过 shell 变量或 cd 指到了那个目录。"
-      : "")
+    + "agent 不能写入。" + spelled
     + "**不要绕过**：不要改用 shell 变量、cd、别的工具或别的路径拼法再试 —— 写入仍会被拒，"
     + "同一轮反复试（第 3 次起）会终止本轮。唯一可行的是让读者在设置里把该目录移出列表（或关掉总开关）："
     + "把你要写什么、写到哪里告诉读者，等读者处理。";

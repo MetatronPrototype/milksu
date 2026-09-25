@@ -221,3 +221,24 @@ test("写目标解析不出来、命令又提到受限路径：宁严勿松，�
 function joinTmp(...parts) {
   return [tmpdir().replace(/[\\/]+$/, ""), ...parts].join("/");
 }
+
+// 读者反馈过：「我只在设置里加了一个测试用文件夹，为什么连 App 本体都拦我？」
+// 因为 App 本体/运行数据是引擎下发的**内置保护**，跟读者的列表无关。文案必须说实话。
+test("内置保护的提示不许谎称在读者的受限文件夹列表里", () => {
+  const bundle = {
+    path: "/Users/me/Applications/MilkSU Beta Test.app/Contents/Resources/app.asar",
+    label: "app-bundle",
+  };
+  const zh = protectedAgentNotice(bundle, "zh");
+  assert.match(zh, /应用本体/, "要说清是哪个内置位置");
+  assert.match(zh, /内置保护/, "要说明这是内置保护");
+  assert.match(zh, /不在.*受限文件夹.*列表里/, "要明确说清不在读者的列表里");
+  assert.doesNotMatch(zh, /在读者的「受限文件夹」列表里/, "绝不能谎称在读者的列表里");
+  assert.doesNotMatch(zh, /关掉总开关/, "内置保护不受总开关影响，不要误导读者去关开关");
+  assert.match(zh, /读者本人/, "内置保护这类事要由读者本人做（agent 做不到）");
+  assert.match(protectedAgentNotice(bundle, "en"), /not on the reader's protected list/, "英文同样说实话");
+
+  const userItem = protectedAgentNotice({ path: "/Users/me/private", label: "protected" }, "zh");
+  assert.match(userItem, /在读者的「受限文件夹」列表里/, "读者列表的说法保持不变");
+  assert.match(userItem, /关掉总开关/, "读者列表项仍然可以引导去关开关");
+});
