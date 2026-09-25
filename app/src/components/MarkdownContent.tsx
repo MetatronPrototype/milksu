@@ -189,7 +189,14 @@ export default function MarkdownContent({
       copy.addEventListener('click', async event => {
         event.preventDefault()
         try {
-          await navigator.clipboard.writeText(body?.innerText ?? block.innerText)
+          // 只复制**代码本身**：每行的结构是
+          // `<span class="agent-code__line"><span class="agent-code__n">行号</span><span class="agent-code__src">代码</span></span>`
+          // ⇒ 取 `innerText` 会把左边的行号一起收进去 ✗（读者真机反馈：粘进终端后命令被行号污染）。
+          const codeCells = body?.querySelectorAll<HTMLElement>('.agent-code__src')
+          const text = codeCells && codeCells.length
+            ? [...codeCells].map(cell => cell.textContent ?? '').join('\n')
+            : body?.innerText ?? block.innerText
+          await navigator.clipboard.writeText(text)
           copy.textContent = t('已复制', 'Copied')
           window.setTimeout(() => {
             copy.textContent = t('复制', 'Copy')
