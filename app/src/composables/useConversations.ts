@@ -1007,6 +1007,8 @@ type ConversationsState = {
   hardStopFailedIds: Set<string>
   // 搬运自本地分支（C）：另一个对话交过来的消息，在转写里显示为只读提示。
   crossConversationNotices: CrossConversationNotice[]
+  /** 守卫示警：持久留在转写里（不会被状态行顶掉）。 */
+  guardNotices: GuardNotice[]
   // 搬运自本地分支（A 引导）：已经交给正在跑的这一轮的引导，以及“队列已被中断”标记。
   injectedSteering: Map<string, InjectedGuidanceEntry[]>
   interruptedQueueIds: Set<string>
@@ -1090,6 +1092,21 @@ export interface AgentDeliveryEvent {
   requestId?: string
 }
 
+/** 守卫示警（受保护路径被拦、思考陷入重复）：**持久**留在转写里、可关闭。
+ *  只靠短命状态行不行：它会被后续状态覆盖，而拦截又会把回合停掉 ⇒
+ *  读者眼前只剩「这一轮没有可见正文」，连发生了什么都得问（真事）。 */
+export interface GuardNotice {
+  /** 稳定 id，供关闭使用（同内容合并时沿用同一个 id）。 */
+  id: string
+  /** 这条提示属于哪个对话。 */
+  conversationId: string
+  notice: string
+  noticeEnglish: string
+  at: number
+  /** 同内容重复出现时合并计数，不刷屏。 */
+  count: number
+}
+
 export interface CrossConversationNotice {
   /** 稳定 id，供关闭使用（合并后的条目沿用同一个 id）。 */
   id: string
@@ -1137,6 +1154,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     forceStopReadyIds: new Set<string>(),
     hardStopFailedIds: new Set<string>(),
     crossConversationNotices: [],
+    guardNotices: [],
     injectedSteering: new Map<string, InjectedGuidanceEntry[]>(),
     interruptedQueueIds: new Set<string>(),
     continuity: createCodingContinuityState(),
@@ -1213,6 +1231,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set hardStopFailedIds(value) { store.setState({ hardStopFailedIds: value }) },
     get crossConversationNotices() { return store.getState().crossConversationNotices },
     set crossConversationNotices(value) { store.setState({ crossConversationNotices: value }) },
+    get guardNotices() { return store.getState().guardNotices },
+    set guardNotices(value) { store.setState({ guardNotices: value }) },
     get injectedSteering() { return store.getState().injectedSteering },
     set injectedSteering(value) { store.setState({ injectedSteering: value }) },
     get interruptedQueueIds() { return store.getState().interruptedQueueIds },
@@ -1523,6 +1543,45 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
 
   const activeCrossConversationNotices = (() => (
     s.activeId ? s.crossConversationNotices.filter(item => item.conversationId === s.activeId) : []
+  ))
+
+  /** 守卫示警写成**持久**条目：拦下一次写入后回合可能就被停了，临时状态行留不住话。 */
+  function pushGuardNotice(input: {
+    conversationId: string
+    notice?: string
+    noticeEnglish?: string
+    at?: number
+  }) {
+    const conversationId = String(input.conversationId ?? '').trim()
+    const notice = String(input.notice ?? '').trim()
+    const noticeEnglish = String(input.noticeEnglish ?? '').trim()
+    if (!conversationId || !(notice || noticeEnglish)) return
+    const previous = s.guardNotices.find(item => (
+      item.conversationId === conversationId
+      && item.notice === notice
+      && item.noticeEnglish === noticeEnglish
+    ))
+    const entry: GuardNotice = {
+      id: previous?.id ?? `guard-notice-${conversationId}-${Date.now()}`,
+      conversationId,
+      notice,
+      noticeEnglish,
+      at: Number(input.at ?? 0) || Date.now(),
+      count: (previous?.count ?? 0) + 1,
+    }
+    s.guardNotices = previous
+      ? s.guardNotices.map(item => (item.id === previous.id ? entry : item))
+      : [...s.guardNotices, entry]
+  }
+
+  function dismissGuardNotice(id: string) {
+    const noticeId = String(id ?? '').trim()
+    if (!noticeId) return
+    s.guardNotices = s.guardNotices.filter(item => item.id !== noticeId)
+  }
+
+  const activeGuardNotices = (() => (
+    s.activeId ? s.guardNotices.filter(item => item.conversationId === s.activeId) : []
   ))
 
   // 搬运自本地分支（A 引导）：队列被中断（例如强制停止）时界面要说出来。
@@ -4007,7 +4066,15 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         const payload = event.payload as unknown as { notice?: string; noticeEnglish?: string }
         const chinese = String(payload?.notice ?? '').trim()
         const english = String(payload?.noticeEnglish ?? '').trim()
-        if (chinese || english) pushEngineNotice(t(chinese || english, english || chinese))
+        if (chinese || english) {
+          pushEngineNotice(t(chinese || english, english || chinese))
+          // 同时写一条**持久**条目：拦截会把回合停掉，状态行留不住这句话。
+          pushGuardNotice({
+            conversationId: sessionId,
+            notice: chinese,
+            noticeEnglish: english,
+          })
+        }
         return
       }
       if (type === 'session.model_source_unavailable') {
@@ -4600,6 +4667,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     forceStopConversation,
     pushCrossConversationNotice,
     dismissCrossConversationNotice,
+    dismissGuardNotice,
+    get activeGuardNotices() { return activeGuardNotices() },
     get activeCrossConversationNotices() { return activeCrossConversationNotices() },
     get activeInjectedGuidance() { return activeInjectedGuidance() },
     get activeQueuedGuidanceInterrupted() { return activeQueuedGuidanceInterrupted() },
