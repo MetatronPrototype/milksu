@@ -1543,10 +1543,19 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   function markProblemTurn(conversationId: string, notice: string, noticeEnglish: string) {
     const id = String(conversationId ?? '').trim()
     if (!id) return
+    const at = Date.now()
     s.problemTurns = {
       ...s.problemTurns,
-      [id]: { notice, noticeEnglish, at: Date.now() },
+      [id]: { notice, noticeEnglish, at },
     }
+    // **同时写进对话对象**：前端每次都用整份对象调 `save_conversation`，
+    // 而对象里没有这个字段的话，会把引擎刚落盘的那份**抹掉** ✗（真机抓到：
+    // 拦截 19:32:03 落盘 ✓，19:32:10 前端保存后记录里就没这个字段了）。
+    s.conversations = s.conversations.map(item => (
+      item.id === id
+        ? { ...item, agentProblem: { notice, noticeEnglish, at } }
+        : item
+    ))
   }
 
   /** 清除某个对话的「上一轮被强制终止」标记（开新一回合时调）。 */

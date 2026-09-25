@@ -229,4 +229,28 @@ describe('engine guard alarms reach the reader', () => {
     expect(invoke).toHaveBeenCalledWith('clear_conversation_problem', { conversationId: 'conversation-1' })
   })
 
+
+  // 真机抓到的坑（19:32:03 落盘 ✓、19:32:10 前端保存后没了 ✗）：前端用**整份对话对象**
+  // 调 save_conversation ⇒ 对象里不带 agentProblem 就会把引擎刚落盘的那份抹掉。
+  it('收到拦截时，对话对象本身也要带上 agentProblem（否则前端保存会抹掉落盘）', async () => {
+    const conversations = await loadRuntime()
+    conversations.conversations = [{
+      id: 'conversation-1',
+      title: 't',
+      createdAt: 1,
+      kernel: 'dsh',
+      messages: [],
+    }]
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'guard.alarm',
+      notice: '已拦截：这个目录在你的设置里被标记为「agent 不可改写」。',
+      noticeEnglish: 'Blocked: this folder is on your protected list in Settings.',
+      protectedPath: true,
+    } })
+    const record = conversations.conversations.find(item => item.id === 'conversation-1')
+    expect(record?.agentProblem?.notice).toContain('已拦截')
+    expect(record?.agentProblem?.noticeEnglish).toContain('Blocked')
+  })
+
 })
