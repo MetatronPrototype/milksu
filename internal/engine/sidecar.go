@@ -515,8 +515,11 @@ func protectedRootsVariable() string {
 			})
 		}
 	}
-	if bundle := appBundleRoot(); bundle != "" {
-		roots = append(roots, protectedRoot{Path: bundle, Label: "app-bundle"})
+	// 测试渠道例外：beta 的包本体就是 agent 反复安装的产物（读者要求：不要在装机这一步
+	// 每次都卡住它）。正式渠道以及下面所有数据位置（runtime-data / pi-sessions）
+	// **任何渠道**都照旧保护。
+	if root, ok := appBundleProtectedRoot(appBundleRoot()); ok {
+		roots = append(roots, root)
 	}
 	if projectRoot, err := findProjectRoot(); err == nil && projectRoot != "" {
 		roots = append(roots, protectedRoot{Path: projectRoot, Label: "app-sources"})
@@ -533,6 +536,23 @@ func protectedRootsVariable() string {
 
 // appBundleRoot walks up from the running executable to the packaging root. Empty in
 // development, where the project root covers the source tree instead.
+// appBundleProtectedRoot 决定“这个包本体要不要当受保护路径”。
+// 拆成纯函数（路径传入）是为了能真测：测试二进制不在 .app 里，appBundleRoot() 永远为空，
+// 直接在 protectedRootsVariable 上断言会得到一条永远为真的假守卫。
+func appBundleProtectedRoot(bundle string) (protectedRoot, bool) {
+	if strings.TrimSpace(bundle) == "" || bundleWritableByAgent() {
+		return protectedRoot{}, false
+	}
+	return protectedRoot{Path: bundle, Label: "app-bundle"}, true
+}
+
+// bundleWritableByAgent 报告当前渠道是否允许 agent 更新 App 本体本身。
+// 只有 beta 测试渠道放行：那里的包本来就是这个 agent 一天装五六次的东西，
+// 让读者每次手动替换是多余的。stable 渠道照旧保护；数据位置不受本开关影响。
+func bundleWritableByAgent() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("MILKSU_CHANNEL")), "beta")
+}
+
 func appBundleRoot() string {
 	executable, err := os.Executable()
 	if err != nil {
