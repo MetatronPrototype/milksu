@@ -160,8 +160,9 @@ describe('engine guard alarms reach the reader', () => {
     expect(conversations.problemConversationIds).toContain('conversation-1')
   })
 
-  // 读者要求（真机反馈）：**前两次的单次拒绝也上顶部横幅**，不再走"12 秒后消失"那条。
-  it('普通的单次拒绝（没停轮）也上顶部横幅 + 红叉', async () => {
+  // 读者要求（真机反馈）：单次拒绝也上**顶部横幅**（不再走"12 秒后消失"那条），
+  // 但**侧栏红叉只在真·没能继续时亮**（停轮 / 运行失败）—— 单次拒绝不该招叉。
+  it('普通的单次拒绝（没停轮）：上顶部横幅，但不亮红叉', async () => {
     const conversations = await loadRuntime()
     handlers.get('engine-event')?.({ payload: {
       sessionId: 'conversation-1',
@@ -171,9 +172,40 @@ describe('engine guard alarms reach the reader', () => {
       protectedPath: true,
     } })
     expect(conversations.activeProblemTurn?.notice).toContain('已拦截')
-    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
+    expect(conversations.problemConversationIds).not.toContain('conversation-1')
     // 不要再往转写里塞一条 12 秒的重复提示 —— 那正是读者要求搬上去的那条 ✗。
     expect(conversations.activeGuardNotices.length).toBe(0)
+  })
+
+  it('先单次拒绝、后真停轮 ⇒ 红叉要亮起来（severe 只升不降）', async () => {
+    const conversations = await loadRuntime()
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'guard.alarm',
+      notice: '已拦截：…',
+      noticeEnglish: 'Blocked: …',
+      protectedPath: true,
+    } })
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'guard.alarm',
+      notice: '已停止本轮：…',
+      noticeEnglish: 'Stopped this turn: …',
+      protectedPath: true,
+      turnStopped: true,
+    } })
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
+    // 反过来：停轮之后再来一次单次拒绝，不能把叉撤掉。
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'guard.alarm',
+      notice: '已拦截：…',
+      noticeEnglish: 'Blocked: …',
+      protectedPath: true,
+    } })
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
   })
 
   it('别的告警（思考复读）不上横幅、不亮红叉，只走 12 秒那条', async () => {

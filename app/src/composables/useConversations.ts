@@ -1121,6 +1121,10 @@ export interface ProblemTurn {
   notice: string
   noticeEnglish: string
   at: number
+  /** 是不是“严重”——只有**停轮 / Agent 运行失败**才为真。
+   *  顶部横幅：**所有**被拦都出（含单次拒绍）；
+   *  侧栏红叉：**只看 severe**（读者口径：叉 = 这个对话没能继续，单次拒绍不该招叉）。 */
+  severe: boolean
 }
 
 export interface CrossConversationNotice {
@@ -1567,13 +1571,21 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   /** 守卫示警的到期定时器（按条目 id）：关闭或续期时都要清掉，不然旧定时器会误删新条目。 */
   const guardNoticeTimers = new Map<string, number>()
 
-  /** 把某个对话标成「这一轮没能正常继续」（顶部常驻横幅 + 侧栏红叉）。开新一回合时清。 */
-  function markProblemTurn(conversationId: string, notice: string, noticeEnglish: string) {
+  /** 把某个对话标成「被拦过 / 没能继续」（顶部横幅）；severity 决定要不要亮侧栏红叉。 */
+  function markProblemTurn(
+    conversationId: string,
+    notice: string,
+    noticeEnglish: string,
+    severe: boolean,
+  ) {
     const id = String(conversationId ?? '').trim()
     if (!id) return
+    const previous = s.problemTurns[id]
     s.problemTurns = {
       ...s.problemTurns,
-      [id]: { notice, noticeEnglish, at: Date.now() },
+      // 严重标记**只升不降**：先单次拒绍（不亮叉），后停轮 ⇒ 叉要亮起来；
+      // 反过来（先停轮、后又一次单次拒绍）不能把叉撤掉 ✗。
+      [id]: { notice, noticeEnglish, at: Date.now(), severe: severe || previous?.severe === true },
     }
   }
 
@@ -1593,8 +1605,9 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
 
   const activeProblemTurn = (() => (s.activeId ? s.problemTurns[s.activeId] ?? null : null))
 
+  /** 侧栏红叉的判据：**只看 severe**（单次拒绝虽然有横幅，但不该招叉）。 */
   function conversationHasProblem(id: string) {
-    return Boolean(s.problemTurns[String(id ?? '').trim()])
+    return s.problemTurns[String(id ?? '').trim()]?.severe === true
   }
 
   /** 守卫示警写成**持久**条目：拦下一次写入后回合可能就被停了，临时状态行留不住话。
@@ -1843,8 +1856,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.activeId ? s.runningIds.has(s.activeId) : false
   ))
   const runningConversationIds = (() => [...s.runningIds])
-  /** 「上一轮被强制终止」的对话（侧栏红叉靠它）。开新一回合即清。 */
-  const problemConversationIds = (() => Object.keys(s.problemTurns))
+  /** 「没能继续」的对话（侧栏红叉靠它）——**只看 severe**。开新一回合即清。 */
+  const problemConversationIds = (() => (
+    Object.entries(s.problemTurns).filter(([, turn]) => turn?.severe === true).map(([id]) => id)
+  ))
   const activeAborting = (() => (
     s.activeId ? s.abortingIds.has(s.activeId) : false
   ))
@@ -3894,7 +3909,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           message: String(message ?? '').trim(),
         })
         if (!failed.stopped) {
-          markProblemTurn(String(sessionId ?? ''), failed.content, failed.content)
+          // 运行失败 = 真·没能继续 ⇒ 横幅 + 侧栏红叉（severe=true）。
+          markProblemTurn(String(sessionId ?? ''), failed.content, failed.content, true)
         }
       }
       // 搬运自本地分支：任何事件都证明这个对话的流又活了——但心跳除外。
@@ -4161,16 +4177,21 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
           notice?: string
           noticeEnglish?: string
           protectedPath?: boolean
+          turnStopped?: boolean
         }
         const chinese = String(payload?.notice ?? '').trim()
         const english = String(payload?.noticeEnglish ?? '').trim()
         if (chinese || english) {
           pushEngineNotice(t(chinese || english, english || chinese))
           if (payload?.protectedPath === true) {
-            // 受限路径被拦 —— **单次拒绝和被停轮一样**，都上顶部常驻横幅 + 侧栏红叉，
-            // 开新一回合（或点「知道了」）才消。读者要求：前两次的提醒也放上方，
-            // 原来在转写底部的那条很快就消失了 ✗。
-            markProblemTurn(String(sessionId ?? ''), chinese || english, english || chinese)
+            // 受限路径被拦 ⇒ **一律上顶部横幅**（开新一回合或点「知道了」才消）。
+            // 但**侧栏红叉只在真·没能继续时亮**（被守卫停轮）：单次拒绝不该招叉。
+            markProblemTurn(
+              String(sessionId ?? ''),
+              chinese || english,
+              english || chinese,
+              payload?.turnStopped === true,
+            )
           } else {
             // 其它守卫告警（例：思考陷入重复）：仍走 12 秒后自己消失的那条。
             pushGuardNotice({
