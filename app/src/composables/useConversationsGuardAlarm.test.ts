@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { invokeCommand } from '@/desktop'
 
 type Handler = (event: { payload: unknown }) => void
 const handlers = new Map<string, Handler>()
@@ -191,6 +192,41 @@ describe('engine guard alarms reach the reader', () => {
     } })
     expect(conversations.activeProblemTurn?.notice).toContain('复读')
     expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
+  })
+
+
+  /** 一个"重启后从记录里读回来"的对话：只有落盘的 agentProblem，没有任何事件。 */
+  function storedProblemConversation() {
+    return {
+      id: 'conversation-1',
+      title: 'blocked before restart',
+      createdAt: 1,
+      kernel: 'dsh',
+      messages: [],
+      agentProblem: { notice: '已停止本轮：…', noticeEnglish: 'Stopped this turn: …', at: 1 },
+    }
+  }
+
+  // 落盘路径（读者要的"重启后仍保留"）：事件早就过去了 ⇒ 界面必须靠记录里的 agentProblem
+  // 显示横幅 + 红叉。（Work 那笔只加了 Go 侧测试，这条前端回归是我补的。）
+  it('重启后：记录里带着 agentProblem ⇒ 横幅 + 红叉仍然显示（不靠任何事件）', async () => {
+    const conversations = await loadRuntime()
+    conversations.conversations = [storedProblemConversation()]
+    expect(conversations.activeProblemTurn?.notice).toContain('已停止本轮')
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
+    expect(conversations.problemConversationIds).toContain('conversation-1')
+  })
+
+  it('点「知道了」⇒ 调引擎命令清落盘记录，本地也立刻清', async () => {
+    const conversations = await loadRuntime()
+    conversations.conversations = [storedProblemConversation()]
+    const invoke = vi.mocked(invokeCommand)
+    invoke.mockClear()
+    conversations.dismissProblemTurn()
+    expect(conversations.activeProblemTurn).toBeNull()
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
+    // 不清落盘那份 ⇒ 重开 App 横幅会回来 ✗（读者点的是"知道了"）。
+    expect(invoke).toHaveBeenCalledWith('clear_conversation_problem', { conversationId: 'conversation-1' })
   })
 
 })
