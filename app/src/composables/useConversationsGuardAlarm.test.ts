@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { invokeCommand } from '@/desktop'
+import { normalizeConversation } from '@/composables/useConversations'
 
 type Handler = (event: { payload: unknown }) => void
 const handlers = new Map<string, Handler>()
@@ -251,6 +252,22 @@ describe('engine guard alarms reach the reader', () => {
     const record = conversations.conversations.find(item => item.id === 'conversation-1')
     expect(record?.agentProblem?.notice).toContain('已拦截')
     expect(record?.agentProblem?.noticeEnglish).toContain('Blocked')
+  })
+
+
+  // 真机抓到的断点：`normalizeConversation` 是**逐字段挑**的，漏了 agentProblem ⇒
+  // 重启加载后字段没了，前端再保存回去 ⇒ 记录也空了（横幅/红叉全丢）。
+  it('映射层：normalizeConversation 必须带上 agentProblem（断过就在这里）', () => {
+    const record = normalizeConversation({
+      id: 'conversation-1',
+      title: 't',
+      agentProblem: { notice: '已拦截：…', noticeEnglish: 'Blocked: …', at: 1 },
+    })
+    expect(record.agentProblem?.notice).toContain('已拦截')
+    expect(record.agentProblem?.noticeEnglish).toContain('Blocked')
+    // 形状不对 / 两条都空 ⇒ 当作没有，别塞半个对象进界面。
+    expect(normalizeConversation({ id: 'x' }).agentProblem).toBeUndefined()
+    expect(normalizeConversation({ id: 'x', agentProblem: { notice: '   ' } }).agentProblem).toBeUndefined()
   })
 
 })

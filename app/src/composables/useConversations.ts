@@ -473,6 +473,22 @@ function normalizeLastContextUsage(raw: unknown): Conversation['lastContextUsage
   }
 }
 
+/** 落盘的「被拦过」记录（横幅 + 侧栏红叉靠它，重启后仍要显示）。
+ *  形状不对 / 两条都空 ⇒ undefined（当作没有），别把半个对象塞进界面。 */
+function normalizeAgentProblem(value: unknown): Conversation['agentProblem'] {
+  if (!value || typeof value !== 'object') return undefined
+  const raw = value as Record<string, unknown>
+  const notice = typeof raw.notice === 'string' ? raw.notice.trim() : ''
+  const noticeEnglish = typeof raw.noticeEnglish === 'string' ? raw.noticeEnglish.trim() : ''
+  if (!notice && !noticeEnglish) return undefined
+  const at = Number(raw.at)
+  return {
+    notice: notice || undefined,
+    noticeEnglish: noticeEnglish || undefined,
+    at: Number.isFinite(at) ? at : undefined,
+  }
+}
+
 export function normalizeConversation(raw: Record<string, unknown>): Conversation {
   const messages = (raw.messages as Record<string, unknown>[] | undefined) ?? []
   return {
@@ -507,6 +523,9 @@ export function normalizeConversation(raw: Record<string, unknown>): Conversatio
       : undefined,
     executionMode: normalizeCodingExecutionMode(raw.executionMode),
     approvalPolicy: normalizeCodingApprovalPolicy(raw.approvalPolicy),
+    // 落盘的「被拦过」记录必须活过这一层：这里**逐字段挑**，漏一个字段就等于重启后丢 ✗
+    // （真机抓到：拦截落盘 ✓、重启后横幅没了 —— 就是这里没挑它）。
+    agentProblem: normalizeAgentProblem(raw.agentProblem),
     mcpServers: normalizeMCPServers(raw.mcpServers),
     mcpConfigDigest: /^[a-f0-9]{64}$/i.test(String(raw.mcpConfigDigest ?? ''))
       ? String(raw.mcpConfigDigest).toLowerCase()
