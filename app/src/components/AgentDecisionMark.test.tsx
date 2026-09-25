@@ -119,3 +119,37 @@ describe('needs-decision mark appearance', () => {
     expect(screen.getAllByRole('status')[1]?.getAttribute('aria-label')).toBe('Needs your decision')
   })
 })
+
+// 「这个对话遇到了问题」：同一套 3×3 网格，但画成**红色的叉**
+// （左上/右上/中心/左下/右下 = 0/2/4/6/8），其余四格留空。
+describe('problem mark', () => {
+  it('draws an X: five cells at the corners and the centre, four holes elsewhere', () => {
+    const { container } = render(<AgentDecisionMark variant="problem" />)
+    expect(container.querySelectorAll('.agent-pixel--problem')).toHaveLength(1)
+    expect(container.querySelectorAll('.agent-pixel__cell')).toHaveLength(5)
+    expect(container.querySelectorAll('.agent-pixel__cell--problem')).toHaveLength(5)
+    expect(container.querySelectorAll('.agent-pixel__cell--hole')).toHaveLength(4)
+    // 不能蹭「待决策」那套颜色：红叉和琥珀圈是两种意思。
+    expect(container.querySelectorAll('.agent-pixel__cell--decision')).toHaveLength(0)
+    // 必须是那五格（四角 + 中心），不是随便五格。
+    const slots = container.querySelectorAll('.agent-pixel > *')
+    for (const index of [0, 2, 4, 6, 8]) {
+      expect(slots[index]?.className).toContain('agent-pixel__cell--problem')
+    }
+    for (const index of [1, 3, 5, 7]) {
+      expect(slots[index]?.className).toContain('agent-pixel__cell--hole')
+    }
+  })
+
+  it('is red and still (not the amber breathing ring)', () => {
+    const wrap = ruleBody('.agent-pixel--problem {')
+    expect(wrap).toContain('animation: none')
+    const cell = ruleBody('.agent-pixel--problem .agent-pixel__cell {')
+    expect(cell).toContain('var(--color-red-500)')
+  })
+
+  it('names the state for screen readers', () => {
+    render(<AgentDecisionMark variant="problem" />)
+    expect(screen.getByRole('status').getAttribute('aria-label')).toContain('遇到了问题')
+  })
+})

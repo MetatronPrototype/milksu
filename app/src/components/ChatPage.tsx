@@ -2775,6 +2775,26 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                 ) : null}
               </div>
             ) : null}
+            {/* 「这个对话遇到了问题」（上一轮被强制终止）：**常驻在顶部**（就是「批准」那个槽位），
+                不自动消失、也不用点关闭 —— 按读者口径，**该对话开新一回合就消**。
+                侧栏同时亮红叉（ContextSidebar）。 */}
+            {conversations.activeProblemTurn ? (
+              <div
+                className="sticky top-0 z-30 mx-auto mb-2 flex w-[72%] items-start gap-2 rounded-xl border border-red-500/50 bg-red-500/10 px-3 py-2 text-caption text-red-700 dark:text-red-300"
+                data-testid="problem-bar"
+                role="status"
+              >
+                <span className="min-w-0 flex-1">
+                  {t(
+                    conversations.activeProblemTurn.notice || conversations.activeProblemTurn.noticeEnglish,
+                    conversations.activeProblemTurn.noticeEnglish || conversations.activeProblemTurn.notice,
+                  )}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {t('发下一条消息即消', 'Clears on your next message')}
+                </span>
+              </div>
+            ) : null}
             {pendingApprovalMessage ? (
               <div
                 className="sticky top-0 z-30 mx-auto mb-2 flex w-[72%] items-center gap-2 rounded-xl border border-primary/40 bg-background/95 px-3 py-2 shadow-sm"

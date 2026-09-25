@@ -1009,6 +1009,8 @@ type ConversationsState = {
   crossConversationNotices: CrossConversationNotice[]
   /** 守卫示警：持久留在转写里（不会被状态行顶掉）。 */
   guardNotices: GuardNotice[]
+  /** 该对话是不是「上一轮被强制终止过」（按会话）；开新一回合即清。 */
+  problemTurns: Record<string, ProblemTurn>
   // 搬运自本地分支（A 引导）：已经交给正在跑的这一轮的引导，以及“队列已被中断”标记。
   injectedSteering: Map<string, InjectedGuidanceEntry[]>
   interruptedQueueIds: Set<string>
@@ -1113,6 +1115,14 @@ export interface GuardNotice {
   count: number
 }
 
+/** 该对话的**上一轮是被强制终止的**（例：守卫停轮）。
+ *  读者口径：顶部常驻横幅（放在「批准」那个位置）+ 侧栏红叉，**直到该对话开新一回合**才消。 */
+export interface ProblemTurn {
+  notice: string
+  noticeEnglish: string
+  at: number
+}
+
 export interface CrossConversationNotice {
   /** 稳定 id，供关闭使用（合并后的条目沿用同一个 id）。 */
   id: string
@@ -1161,6 +1171,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     hardStopFailedIds: new Set<string>(),
     crossConversationNotices: [],
     guardNotices: [],
+    problemTurns: {},
     injectedSteering: new Map<string, InjectedGuidanceEntry[]>(),
     interruptedQueueIds: new Set<string>(),
     continuity: createCodingContinuityState(),
@@ -1239,6 +1250,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     set crossConversationNotices(value) { store.setState({ crossConversationNotices: value }) },
     get guardNotices() { return store.getState().guardNotices },
     set guardNotices(value) { store.setState({ guardNotices: value }) },
+    get problemTurns() { return store.getState().problemTurns },
+    set problemTurns(value) { store.setState({ problemTurns: value }) },
     get injectedSteering() { return store.getState().injectedSteering },
     set injectedSteering(value) { store.setState({ injectedSteering: value }) },
     get interruptedQueueIds() { return store.getState().interruptedQueueIds },
@@ -1554,6 +1567,31 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   /** 守卫示警的到期定时器（按条目 id）：关闭或续期时都要清掉，不然旧定时器会误删新条目。 */
   const guardNoticeTimers = new Map<string, number>()
 
+  /** 把某个对话标成「这一轮没能正常继续」（顶部常驻横幅 + 侧栏红叉）。开新一回合时清。 */
+  function markProblemTurn(conversationId: string, notice: string, noticeEnglish: string) {
+    const id = String(conversationId ?? '').trim()
+    if (!id) return
+    s.problemTurns = {
+      ...s.problemTurns,
+      [id]: { notice, noticeEnglish, at: Date.now() },
+    }
+  }
+
+  /** 清除某个对话的「上一轮被强制终止」标记（开新一回合时调）。 */
+  function clearProblemTurn(conversationId: string) {
+    const id = String(conversationId ?? '').trim()
+    if (!id || !s.problemTurns[id]) return
+    const next = { ...s.problemTurns }
+    delete next[id]
+    s.problemTurns = next
+  }
+
+  const activeProblemTurn = (() => (s.activeId ? s.problemTurns[s.activeId] ?? null : null))
+
+  function conversationHasProblem(id: string) {
+    return Boolean(s.problemTurns[String(id ?? '').trim()])
+  }
+
   /** 守卫示警写成**持久**条目：拦下一次写入后回合可能就被停了，临时状态行留不住话。
    *  但它**不是常驻**：到点自己消失（读者看得到就够）。 */
   function scheduleGuardNoticeExpiry(id: string, expiresAt: number) {
@@ -1571,6 +1609,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     notice?: string
     noticeEnglish?: string
     at?: number
+    /** 这一轮是不是被守卫**停掉**的（不是普通的单次拒绝）。 */
+    turnStopped?: boolean
   }) {
     const conversationId = String(input.conversationId ?? '').trim()
     const notice = String(input.notice ?? '').trim()
@@ -1596,6 +1636,10 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       ? s.guardNotices.map(item => (item.id === previous.id ? entry : item))
       : [...s.guardNotices, entry]
     scheduleGuardNoticeExpiry(entry.id, entry.expiresAt)
+    // 被停轮 ⇒ 把该对话标成「遇到问题」：顶部常驻横幅 + 侧栏红叉，开新一回合才消。
+    if (input.turnStopped === true) {
+      markProblemTurn(conversationId, notice, noticeEnglish)
+    }
   }
 
   function dismissGuardNotice(id: string) {
@@ -1800,6 +1844,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     s.activeId ? s.runningIds.has(s.activeId) : false
   ))
   const runningConversationIds = (() => [...s.runningIds])
+  /** 「上一轮被强制终止」的对话（侧栏红叉靠它）。开新一回合即清。 */
+  const problemConversationIds = (() => Object.keys(s.problemTurns))
   const activeAborting = (() => (
     s.activeId ? s.abortingIds.has(s.activeId) : false
   ))
@@ -3835,6 +3881,23 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
         contextComposition,
         sessions,
       } = event.payload
+      // 新一回合开始了 ⇒ 上一轮「被强制终止」的标记到此为止（读者口径）。
+      // 放在入口：这条标记属于**会话**，不该依赖它此刻是否在会话列表里。
+      if (type === 'assistant.started') clearProblemTurn(String(sessionId ?? ''))
+      // 「Agent 运行失败」= 这一轮没能正常继续 ⇒ 顶部常驻横幅 + 侧栏红叉（开新一回合才消）。
+      // 放在入口：这条标记属于**会话**，不该依赖它此刻是否在会话列表里（同上面那条）。
+      // 用户主动停下（aborted/cancelled）不算问题：那不是“没能继续”，那是他要的 ✗。
+      if (type === 'engine.error') {
+        const failed = agentEngineErrorBubble(error, {
+          provider: String(provider ?? '').trim(),
+          model: String(model ?? '').trim(),
+          source: String(modelSource ?? '').trim(),
+          message: String(message ?? '').trim(),
+        })
+        if (!failed.stopped) {
+          markProblemTurn(String(sessionId ?? ''), failed.content, failed.content)
+        }
+      }
       // 搬运自本地分支：任何事件都证明这个对话的流又活了——但心跳除外。
       // 心跳只是“引擎还在”，不是“有进展”；把心跳算成进展会让“安静但活着”
       // 和“已经没了”在界面上看起来一模一样。
@@ -4095,7 +4158,11 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
       if (type === 'guard.alarm') {
         // 引擎的守卫示警（受保护路径被拦、思考陷入重复）。与 attachment.held 同一形状：引擎给中英两句，
         // 这里按界面语言选一句 ⇒ 读者看得见（绝不静默吞掉）。
-        const payload = event.payload as unknown as { notice?: string; noticeEnglish?: string }
+        const payload = event.payload as unknown as {
+          notice?: string
+          noticeEnglish?: string
+          turnStopped?: boolean
+        }
         const chinese = String(payload?.notice ?? '').trim()
         const english = String(payload?.noticeEnglish ?? '').trim()
         if (chinese || english) {
@@ -4105,6 +4172,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
             conversationId: sessionId,
             notice: chinese,
             noticeEnglish: english,
+            turnStopped: payload?.turnStopped === true,
           })
         }
         return
@@ -4505,6 +4573,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
               status: 'done',
             })
           }
+
         }
         if (type === 'runtime.compaction_started' || type === 'runtime.compaction_completed') {
           const compactError = error ? codingCompactionErrorMessage(error) : ''
@@ -4684,6 +4753,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     get workspacePath() { return workspacePath() },
     get activeRunning() { return activeRunning() },
     get runningConversationIds() { return runningConversationIds() },
+    get problemConversationIds() { return problemConversationIds() },
     get activeAborting() { return activeAborting() },
     get activeAbortStalled() { return activeAbortStalled() },
     get activeMessageQueue() { return activeMessageQueue() },
@@ -4700,6 +4770,8 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     pushCrossConversationNotice,
     dismissCrossConversationNotice,
     dismissGuardNotice,
+    conversationHasProblem,
+    get activeProblemTurn() { return activeProblemTurn() },
     get activeGuardNotices() { return activeGuardNotices() },
     get activeCrossConversationNotices() { return activeCrossConversationNotices() },
     get activeInjectedGuidance() { return activeInjectedGuidance() },

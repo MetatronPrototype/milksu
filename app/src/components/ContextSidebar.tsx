@@ -141,6 +141,7 @@ export default function ContextSidebar({
   activeConversationId,
   conversations,
   runningConversationIds: runningIdsProp,
+  problemConversationIds: problemIdsProp,
   backgroundTasks,
   actionError,
   ctfSection: _ctfSection,
@@ -179,6 +180,8 @@ export default function ContextSidebar({
   activeConversationId: string | null
   conversations: Conversation[]
   runningConversationIds?: string[]
+  /** 「上一轮被强制终止」的对话（侧栏红叉）；同样由持有 runtime 的那一层传进来。 */
+  problemConversationIds?: string[]
   /** 后台任务（**事实层**，由持有 runtime 的那一层传进来 —— 与 runningConversationIds 同一条 props 路线）。
       不要在这里调 useConversations() 工厂：那会拿到**另一份新 store**，事实永远是空的。 */
   backgroundTasks?: Record<string, BackgroundTaskLineTask[]>
@@ -313,6 +316,7 @@ export default function ContextSidebar({
   )
   const codingGroups = groupWorkspaceConversations(conversations, workspaceHome)
   const runningConversationIds = new Set(runningIdsProp ?? [])
+  const problemConversationIds = new Set(problemIdsProp ?? [])
   // 待决策直接从 conversations 里算（它本来就拿到了 messages）—— 少一层 prop 管线，也不用 App 另传。
   const needsDecisionConversationIds = new Set(needsDecisionConversationIdsFrom(conversations))
   const projectGroups = codingGroups.filter(group => !group.temporary)
@@ -693,7 +697,10 @@ export default function ContextSidebar({
             }}
           >
             <span className="coding-session-status">
-              {needsDecisionConversationIds.has(conversation.id) ? (
+              {problemConversationIds.has(conversation.id) ? (
+                // 「遇到问题」（上一轮被强制终止）比"待决策/运行中"更该被看见：先亮这个红叉。
+                <AgentDecisionMark variant="problem" />
+              ) : needsDecisionConversationIds.has(conversation.id) ? (
                 // 待决策优先于运行中：它同时在跑、又在等人拍板时，用户最需要知道的是"轮到我"。
                 <AgentDecisionMark />
               ) : runningConversationIds.has(conversation.id) ? (

@@ -143,6 +143,83 @@ describe('engine guard alarms reach the reader', () => {
     }
   })
 
+  // 「被守卫停轮」比「普通拒绝」严重：前者要在顶部常驻横幅 + 侧栏红叉（读者口径：
+  // 该对话开新一回合就消）。
+  it('被守卫停轮 ⇒ 该对话标记为「遇到问题」（顶部横幅 + 侧栏红叉）', async () => {
+    const conversations = await loadRuntime()
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'guard.alarm',
+      notice: '已停止本轮：agent 连续 3 次试图写入受限路径（…）。',
+      noticeEnglish: 'Stopped this turn: …',
+      turnStopped: true,
+    } })
+    expect(conversations.activeProblemTurn?.notice).toContain('已停止本轮')
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
+    expect(conversations.problemConversationIds).toContain('conversation-1')
+  })
+
+  it('普通的单次拒绝（没停轮）不亮「遇到问题」', async () => {
+    const conversations = await loadRuntime()
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'guard.alarm',
+      notice: '已拦截：这个目录在你的设置里被标记为「agent 不可改写」。',
+      noticeEnglish: 'Blocked: this folder is on your protected list in Settings.',
+    } })
+    expect(conversations.activeProblemTurn).toBeNull()
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
+  })
+
+  it('该对话开新一回合 ⇒ 标记消除；别的对话不受影响', async () => {
+    const conversations = await loadRuntime()
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'guard.alarm',
+      notice: '已停止本轮：…',
+      noticeEnglish: 'Stopped this turn: …',
+      turnStopped: true,
+    } })
+    expect(conversations.activeProblemTurn).not.toBeNull()
+    // 别的对话也先亮着：不能被“当前对话开新回合”误清。
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-2',
+      type: 'guard.alarm',
+      notice: '已停止本轮：…',
+      noticeEnglish: 'Stopped this turn: …',
+      turnStopped: true,
+    } })
+    handlers.get('engine-event')?.({ payload: { sessionId: 'conversation-1', type: 'assistant.started' } })
+    expect(conversations.activeProblemTurn).toBeNull()
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
+    expect(conversations.conversationHasProblem('conversation-2')).toBe(true)
+  })
+
+  // 读者补充：「Agent 运行失败」也会让对话停住 ⇒ 同样要亮红叉 + 顶部常驻横幅。
+  it('「Agent 运行失败」也算这一轮没能正常继续 ⇒ 亮红叉 + 顶部横幅', async () => {
+    const conversations = await loadRuntime()
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'engine.error',
+      error: 'terminated',
+      done: true,
+    } })
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(true)
+    expect(conversations.activeProblemTurn?.notice).toContain('运行失败')
+  })
+
+  it('用户主动停下的那种（aborted/cancelled）不算问题', async () => {
+    const conversations = await loadRuntime()
+    handlers.get('engine-event')?.({ payload: {
+      sessionId: 'conversation-1',
+      type: 'engine.error',
+      error: 'aborted',
+      done: true,
+    } })
+    expect(conversations.conversationHasProblem('conversation-1')).toBe(false)
+    expect(conversations.activeProblemTurn).toBeNull()
+  })
+
   it('12 秒内再来一次同样内容 ⇒ 续期并合并计数', async () => {
     const conversations = await loadRuntime()
     vi.useFakeTimers()

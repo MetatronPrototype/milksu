@@ -392,6 +392,20 @@
   background: var(--color-amber-400);
 }
 
+/* 「这个对话遇到了问题」（例如上一轮被守卫强制终止）：同一套 3×3 网格，
+   但画成**红色的叉** —— 左上/右上/中心/左下/右下（0/2/4/6/8）五格，其余四格留空。
+   尺寸不另写（复用网格），颜色走 Tailwind 主题变量（不硬编码色值）。 */
+.agent-pixel--problem {
+  /* 静态警示，不呼吸：这不是"在忙"，是"出事了"。 */
+  animation: none;
+}
+
+.agent-pixel--problem .agent-pixel__cell {
+  animation: none;
+  opacity: 1;
+  background: var(--color-red-500);
+}
+
 /* 中心留空：占位撑住网格，但不画格子。 */
 .agent-pixel__cell--hole {
   width: 4px;

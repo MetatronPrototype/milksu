@@ -331,6 +331,7 @@ func TestNormalizeGuardAlarmKeepsItsOwnEventNameAndNotices(t *testing.T) {
 		ID:            "session-1",
 		Notice:        "已停止本轮：agent 连续 3 次试图写入受限路径（/tmp/example/out）。",
 		NoticeEnglish: "Stopped this turn: the agent tried 3 times to write a protected path.",
+		TurnStopped:   true,
 	})
 	if event.Type != "guard.alarm" {
 		t.Fatalf("the guard alarm must keep its own name, got %q", event.Type)
@@ -340,6 +341,10 @@ func TestNormalizeGuardAlarmKeepsItsOwnEventNameAndNotices(t *testing.T) {
 	}
 	if event.NoticeEnglish == "" {
 		t.Fatalf("the English notice must survive normalization: %#v", event)
+	}
+	// 「这一轮是被守卫停掉的」也必须活到渲染层：界面据此亮常驻横幅 + 侧栏红叉。
+	if !event.TurnStopped {
+		t.Fatalf("the turn-stopped flag must survive normalization: %#v", event)
 	}
 }
 
