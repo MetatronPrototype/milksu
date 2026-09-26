@@ -42,8 +42,10 @@ type envelope struct {
 	ClientID string          `json:"client_id,omitempty"`
 	Name     string          `json:"name,omitempty"`
 	Method   string          `json:"method,omitempty"`
+	Params   json.RawMessage `json:"params,omitempty"`
 	OK       bool            `json:"ok"`
 	Error    string          `json:"error,omitempty"`
+	Detail   string          `json:"detail,omitempty"`
 	Data     json.RawMessage `json:"data,omitempty"`
 	Device   *struct {
 		ID         string `json:"id"`
@@ -58,6 +60,7 @@ func main() {
 	code := flag.String("code", "", "绑定码；不给就从 -url 里读")
 	fingerprint := flag.String("fingerprint", "", "期望的主机指纹；不给就从 -url 里读")
 	method := flag.String("method", "snapshot", "握手后要调的方法")
+	params := flag.String("params", "", "方法参数（JSON）；不给就是空对象")
 	name := flag.String("name", "remote-probe", "报给主机的设备名")
 	timeout := flag.Duration("timeout", 20*time.Second, "整体超时")
 	flag.Parse()
@@ -177,7 +180,9 @@ func main() {
 		fmt.Println("配对成功")
 	}
 
-	if err := sendEnvelope(connection, send, envelope{Type: "request", Method: *method}); err != nil {
+	if err := sendEnvelope(connection, send, envelope{
+		Type: "request", Method: *method, Params: json.RawMessage(strings.TrimSpace(*params)),
+	}); err != nil {
 		log.Fatalf("发送请求失败：%v", err)
 	}
 	reply, err = readEnvelope(connection, receive)
@@ -186,6 +191,9 @@ func main() {
 	}
 	if !reply.OK {
 		log.Fatalf("请求被拒绝：%s", reply.Error)
+	}
+	if reply.Detail != "" {
+		fmt.Printf("%s：%s\n", *method, reply.Detail)
 	}
 	summarise(*method, reply.Data)
 }

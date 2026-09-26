@@ -1237,6 +1237,69 @@ func (m *Manager) handleConversation(writer http.ResponseWriter, request *http.R
 // maxRemotePromptRunes bounds one remotely submitted prompt.
 const maxRemotePromptRunes = 8000
 
+// sendRemoteMessage validates one remote prompt and hands it to the controller. The HTTP
+// channel and the encrypted channel both call it, so the two accept exactly the same input.
+func sendRemoteMessage(ctx context.Context, controller Controller, conversationID, prompt, mode string) (string, error) {
+	if controller == nil {
+		return "", errNoController
+	}
+	trimmed := strings.TrimSpace(prompt)
+	if trimmed == "" {
+		return "", errors.New("消息不能为空")
+	}
+	if len([]rune(trimmed)) > maxRemotePromptRunes {
+		return "", fmt.Errorf("消息过长（上限 %d 字）", maxRemotePromptRunes)
+	}
+	mode = strings.TrimSpace(mode)
+	switch mode {
+	case "", "queue", "steer":
+	default:
+		return "", fmt.Errorf("不支持的发送方式：%s", mode)
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "", errors.New("缺少对话标识")
+	}
+	if err := controller.RemoteSendMessage(ctx, conversationID, trimmed, mode); err != nil {
+		return "", err
+	}
+	switch mode {
+	case "queue":
+		return "排队到 " + conversationID, nil
+	case "steer":
+		return "引导 " + conversationID, nil
+	default:
+		return "发送到 " + conversationID, nil
+	}
+}
+
+// approveRemoteTool validates one approval and hands it to the controller, so both channels
+// report and accept the same verdict text.
+func approveRemoteTool(ctx context.Context, controller Controller, conversationID, requestID string, approved bool, scope, choice string) (string, error) {
+	if controller == nil {
+		return "", errNoController
+	}
+	scope = strings.TrimSpace(scope)
+	if scope != "" && scope != "conversation" {
+		return "", fmt.Errorf("不支持的授权范围：%s", scope)
+	}
+	choice = strings.TrimSpace(choice)
+	if err := controller.RemoteApproveTool(ctx, conversationID, requestID, approved, scope, choice); err != nil {
+		return "", err
+	}
+	verdict := "拒绝"
+	if approved {
+		verdict = "批准"
+	}
+	if scope == "conversation" {
+		verdict += "（本对话内）"
+	}
+	if choice != "" {
+		verdict += " 选择 " + choice
+	}
+	return verdict + " " + requestID, nil
+}
+
 func (m *Manager) handleSend(writer http.ResponseWriter, request *http.Request) {
 	var payload struct {
 		ConversationID string `json:"conversation_id"`
@@ -1249,39 +1312,48 @@ func (m *Manager) handleSend(writer http.ResponseWriter, request *http.Request) 
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 64<<10)).Decode(&payload); err != nil {
 			return "", errors.New("请求格式不正确")
 		}
-		prompt := strings.TrimSpace(payload.Prompt)
-		if prompt == "" {
-			return "", errors.New("消息不能为空")
-		}
-		if len([]rune(prompt)) > maxRemotePromptRunes {
-			return "", fmt.Errorf("消息过长（上限 %d 字）", maxRemotePromptRunes)
-		}
-		mode := strings.TrimSpace(payload.Mode)
-		switch mode {
-		case "", "queue", "steer":
-		default:
-			return "", fmt.Errorf("不支持的发送方式：%s", mode)
-		}
-		conversationID := strings.TrimSpace(payload.ConversationID)
-		if conversationID == "" {
-			return "", errors.New("缺少对话标识")
-		}
-		if err := m.controller.RemoteSendMessage(ctx, conversationID, prompt, mode); err != nil {
-			return "", err
-		}
-		switch mode {
-		case "queue":
-			return "排队到 " + conversationID, nil
-		case "steer":
-			return "引导 " + conversationID, nil
-		default:
-			return "发送到 " + conversationID, nil
-		}
+		return sendRemoteMessage(ctx, m.controller, payload.ConversationID, payload.Prompt, payload.Mode)
 	})
 }
 
 // writeAction runs one control action after checking the device may act. Every attempt
 // is audited, allowed or not.
+// errDeviceReadOnly and errNoController are the two refusals every transport has to report in
+// its own words. They exist so the HTTP channel and the encrypted channel share one
+// permission rule instead of two copies that can drift apart.
+var (
+	errDeviceReadOnly = errors.New("该设备为只读权限；请在主机设置里升级为「可操作」")
+	errNoController   = errors.New("主机未接通控制接口")
+)
+
+// performWrite runs one remote action under the rules every transport shares: a read-only
+// device is refused and the refusal is audited, the controller has to be attached, and the
+// outcome is audited either way. Both channels call this.
+func (m *Manager) performWrite(ctx context.Context, action string, device Device, handler func(ctx context.Context) (string, error)) (string, error) {
+	if !device.CanControl {
+		m.mu.Lock()
+		m.appendAuditLocked(AuditEntry{
+			DeviceID: device.ID, DeviceName: device.Name, IP: device.IP,
+			Action: action, OK: false, Error: "设备是只读权限（" + device.State + "）",
+		})
+		m.mu.Unlock()
+		return "", errDeviceReadOnly
+	}
+	if m.controller == nil {
+		return "", errNoController
+	}
+	detail, err := handler(ctx)
+	m.mu.Lock()
+	m.appendAuditLocked(AuditEntry{
+		DeviceID: device.ID, DeviceName: device.Name, IP: device.IP,
+		Action: action, Detail: detail, OK: err == nil, Error: errorText(err),
+	})
+	m.mu.Unlock()
+	// Another device may be watching: wake it, whatever the outcome was.
+	m.NotifyChange()
+	return detail, err
+}
+
 func (m *Manager) writeAction(
 	writer http.ResponseWriter,
 	request *http.Request,
@@ -1301,30 +1373,17 @@ func (m *Manager) writeAction(
 		writeAuthFailure(writer, auth)
 		return
 	}
-	if !device.CanControl {
-		m.mu.Lock()
-		m.appendAuditLocked(AuditEntry{
-			DeviceID: device.ID, DeviceName: device.Name, IP: device.IP,
-			Action: action, OK: false, Error: "设备是只读权限（" + device.State + "）",
-		})
-		m.mu.Unlock()
-		http.Error(writer, "该设备为只读权限；请在主机设置里升级为「可操作」", http.StatusForbidden)
-		return
-	}
-	if m.controller == nil {
-		http.Error(writer, "主机未接通控制接口", http.StatusServiceUnavailable)
-		return
-	}
-	detail, err := handler(request.Context(), device)
-	m.mu.Lock()
-	m.appendAuditLocked(AuditEntry{
-		DeviceID: device.ID, DeviceName: device.Name, IP: device.IP,
-		Action: action, Detail: detail, OK: err == nil, Error: errorText(err),
+	detail, err := m.performWrite(request.Context(), action, device, func(ctx context.Context) (string, error) {
+		return handler(ctx, device)
 	})
-	m.mu.Unlock()
-	// Another device may be watching: wake it, whatever the outcome was.
-	m.NotifyChange()
-	if err != nil {
+	switch {
+	case errors.Is(err, errDeviceReadOnly):
+		http.Error(writer, err.Error(), http.StatusForbidden)
+		return
+	case errors.Is(err, errNoController):
+		http.Error(writer, err.Error(), http.StatusServiceUnavailable)
+		return
+	case err != nil:
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1368,25 +1427,8 @@ func (m *Manager) handleApprove(writer http.ResponseWriter, request *http.Reques
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10)).Decode(&payload); err != nil {
 			return "", errors.New("请求格式不正确")
 		}
-		scope := strings.TrimSpace(payload.Scope)
-		if scope != "" && scope != "conversation" {
-			return "", fmt.Errorf("不支持的授权范围：%s", scope)
-		}
-		choice := strings.TrimSpace(payload.Choice)
-		if err := m.controller.RemoteApproveTool(ctx, payload.ConversationID, payload.RequestID, payload.Approved, scope, choice); err != nil {
-			return "", err
-		}
-		verdict := "拒绝"
-		if payload.Approved {
-			verdict = "批准"
-		}
-		if scope == "conversation" {
-			verdict += "（本对话内）"
-		}
-		if choice != "" {
-			verdict += " 选择 " + choice
-		}
-		return verdict + " " + payload.RequestID, nil
+		return approveRemoteTool(ctx, m.controller, payload.ConversationID, payload.RequestID,
+			payload.Approved, payload.Scope, payload.Choice)
 	})
 }
 

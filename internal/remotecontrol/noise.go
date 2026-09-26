@@ -98,9 +98,13 @@ type noiseEnvelope struct {
 	Name     string `json:"name,omitempty"`
 	// request 用：要调的方法名。
 	Method string `json:"method,omitempty"`
+	// Params carries the method-specific payload. The HTTP channel reads these from the
+	// request body or the query string; here they ride in the same encrypted frame.
+	Params json.RawMessage `json:"params,omitempty"`
 	// response 用。
 	OK     bool            `json:"ok"`
 	Error  string          `json:"error,omitempty"`
+	Detail string          `json:"detail,omitempty"`
 	Data   json.RawMessage `json:"data,omitempty"`
 	Device *Device         `json:"device,omitempty"`
 }
@@ -174,11 +178,10 @@ func (m *Manager) serveNoiseConnection(connection *websocket.Conn, request *http
 		return errors.New("对端没有交出静态公钥")
 	}
 
-	device, err := m.authoriseNoisePeer(connection, send, receive, peerStatic, request, ip, subnet)
-	if err != nil {
+	if _, err := m.authoriseNoisePeer(connection, send, receive, peerStatic, request, ip, subnet); err != nil {
 		return err
 	}
-	return m.serveNoiseRequests(connection, send, receive, device, ip)
+	return m.serveNoiseRequests(connection, send, receive, hex.EncodeToString(peerStatic), ip)
 }
 
 // runNoiseHandshake exchanges the three XX messages and returns the transport states.
@@ -357,9 +360,12 @@ func (m *Manager) enrolNoiseDevice(key, clientID, name string, request *http.Req
 	return device, nil
 }
 
-// serveNoiseRequests answers the request loop. Every reply goes through the same projection
-// the HTTP channel serves, so the two transports cannot drift apart.
-func (m *Manager) serveNoiseRequests(connection *websocket.Conn, send, receive *noise.CipherState, device Device, ip string) error {
+// serveNoiseRequests answers the request loop.
+//
+// 它每一轮都按静态公钥重新解析设备，而不是用手握时那一份快照。否则升级、换网降级、
+// 过期和撤销都要等到重连才生效 —— 对撤销而言那是安全事故：被撤销的设备会继续用它
+// 旧的权限直到自己断开。HTTP 通道每个请求都重算，这里必须同口径。
+func (m *Manager) serveNoiseRequests(connection *websocket.Conn, send, receive *noise.CipherState, key, ip string) error {
 	for {
 		payload, err := readNoiseMessage(connection, receive)
 		if err != nil {
@@ -369,6 +375,14 @@ func (m *Manager) serveNoiseRequests(connection *websocket.Conn, send, receive *
 		if err := json.Unmarshal(payload, &envelope); err != nil {
 			return err
 		}
+		device, ok := m.deviceForNoiseKey(key)
+		if !ok {
+			// 设备已被撤销：明确回一句再断开，别让对方以为还能用。
+			_ = writeNoiseMessage(connection, send, noiseEnvelope{
+				Type: "response", OK: false, Error: "该设备已被主机撤销",
+			})
+			return errors.New("设备已被撤销")
+		}
 		reply := m.handleNoiseRequest(envelope, device, ip)
 		if err := writeNoiseMessage(connection, send, reply); err != nil {
 			return err
@@ -376,28 +390,99 @@ func (m *Manager) serveNoiseRequests(connection *websocket.Conn, send, receive *
 	}
 }
 
-// handleNoiseRequest maps one method name onto the same projection the HTTP channel serves.
+// handleNoiseRequest maps one method name onto the same projection and the same permission
+// rules the HTTP channel uses. Reads need any paired device; writes go through performWrite,
+// so a read-only device is refused here exactly as it is over HTTP.
 func (m *Manager) handleNoiseRequest(envelope noiseEnvelope, device Device, ip string) noiseEnvelope {
 	if envelope.Type != "request" {
 		return noiseEnvelope{Type: "response", OK: false, Error: "未知的消息类型"}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	switch envelope.Method {
-	case "snapshot":
-		snapshot, err := m.provider.RemoteControlSnapshot(context.Background(), device)
-		if err != nil {
-			return noiseEnvelope{Type: "response", OK: false, Error: err.Error()}
-		}
-		encoded, err := json.Marshal(snapshot)
-		if err != nil {
-			return noiseEnvelope{Type: "response", OK: false, Error: err.Error()}
-		}
-		return noiseEnvelope{Type: "response", OK: true, Data: encoded}
 	case "identity":
-		// 客户端用它确认对端是屏幕上那台电脑，以及自己当前是什么权限。
 		return noiseEnvelope{Type: "response", OK: true, Device: &device}
+
+	case "snapshot":
+		if m.provider == nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "主机未接通数据接口"}
+		}
+		snapshot, err := m.provider.RemoteControlSnapshot(ctx, device)
+		if err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: err.Error()}
+		}
+		return noiseResponse(snapshot)
+
+	case "conversation":
+		var params struct {
+			ConversationID string `json:"conversation_id"`
+		}
+		if err := json.Unmarshal(envelope.Params, &params); err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "参数格式不正确"}
+		}
+		if strings.TrimSpace(params.ConversationID) == "" {
+			return noiseEnvelope{Type: "response", OK: false, Error: "缺少对话标识"}
+		}
+		if m.provider == nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "主机未接通数据接口"}
+		}
+		conversation, err := m.provider.RemoteConversation(ctx, params.ConversationID)
+		if err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: err.Error()}
+		}
+		return noiseResponse(conversation)
+
+	case "send":
+		var params struct {
+			ConversationID string `json:"conversation_id"`
+			Prompt         string `json:"prompt"`
+			Mode           string `json:"mode"`
+		}
+		if err := json.Unmarshal(envelope.Params, &params); err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "参数格式不正确"}
+		}
+		return m.noiseWrite(device, "send", func(ctx context.Context) (string, error) {
+			return sendRemoteMessage(ctx, m.controller, params.ConversationID, params.Prompt, params.Mode)
+		})
+
+	case "approve":
+		var params struct {
+			ConversationID string `json:"conversation_id"`
+			RequestID      string `json:"request_id"`
+			Approved       bool   `json:"approved"`
+			Scope          string `json:"scope"`
+			Choice         string `json:"choice"`
+		}
+		if err := json.Unmarshal(envelope.Params, &params); err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "参数格式不正确"}
+		}
+		return m.noiseWrite(device, "approve", func(ctx context.Context) (string, error) {
+			return approveRemoteTool(ctx, m.controller, params.ConversationID, params.RequestID,
+				params.Approved, params.Scope, params.Choice)
+		})
+
 	default:
 		return noiseEnvelope{Type: "response", OK: false, Error: fmt.Sprintf("未知的方法 %q", envelope.Method)}
 	}
+}
+
+// noiseWrite runs one write under the shared rules and turns the outcome into a response.
+func (m *Manager) noiseWrite(device Device, action string, handler func(ctx context.Context) (string, error)) noiseEnvelope {
+	detail, err := m.performWrite(context.Background(), action, device, handler)
+	if err != nil {
+		return noiseEnvelope{Type: "response", OK: false, Error: err.Error()}
+	}
+	return noiseEnvelope{Type: "response", OK: true, Detail: detail}
+}
+
+// noiseResponse encodes one projection as the response payload.
+func noiseResponse(value any) noiseEnvelope {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return noiseEnvelope{Type: "response", OK: false, Error: err.Error()}
+	}
+	return noiseEnvelope{Type: "response", OK: true, Data: encoded}
 }
 
 // readNoiseMessage reads one WebSocket frame and decrypts it.
