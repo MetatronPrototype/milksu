@@ -30,9 +30,12 @@ import (
 // WebSocket 流量误当成这个协议。
 var noisePrologue = []byte("milksu-remote-v1")
 
-// noiseSuite 是这条通道的密码套件：X25519 + ChaCha20-Poly1305 + BLAKE2s。
-// 这是 Noise 的标准组合，移动端和 Go 都有成熟实现。
-var noiseSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s)
+// noiseSuite 是这条通道的密码套件：X25519 + ChaCha20-Poly1305 + SHA-256。
+//
+// 用 SHA-256 而不是 Noise 默认的 BLAKE2s：苹果的 CryptoKit 没有 BLAKE2s，换成
+// SHA-256 之后 iOS 端用系统自带的加密就能实现整个握手，不必在手机上引第三方加密库。
+// Noise_XX_25519_ChaChaPoly_SHA256 是 Noise 规范里的标准套件，不是自创组合。
+var noiseSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
 
 const (
 	// noiseFrameLimit bounds one decrypted application message.

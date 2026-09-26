@@ -32,7 +32,9 @@ import (
 	"github.com/MilkSU-Official/milksu/internal/remotecontrol"
 )
 
-var probeSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s)
+// probeSuite 必须和 internal/remotecontrol 的 noiseSuite 一致：换套件两边要同时换，
+// 否则握手会在第一包就失败。用 SHA-256 是为了让 iOS 端能用 CryptoKit 实现。
+var probeSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
 
 var probePrologue = []byte("milksu-remote-v1")
 
