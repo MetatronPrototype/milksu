@@ -348,6 +348,94 @@ func TestNoiseChannelStopsWorkingWhenTheDeviceIsRevoked(t *testing.T) {
 	}
 }
 
+// 剩下五个动作也要在加密通道上可用，而且和 HTTP 通道走同一套校验与审计。
+func TestNoiseChannelCarriesTheRemainingActions(t *testing.T) {
+	manager, status, controller := startManager(t)
+	code, _ := manager.IssuePairingCode()
+	client := dialNoise(t, status)
+	enrolled := client.exchange(t, noiseEnvelope{Type: "enrol", Code: code})
+	if !enrolled.OK {
+		t.Fatalf("enrol refused: %s", enrolled.Error)
+	}
+	if err := manager.SetDeviceCapability(enrolled.Device.ID, CapabilityControl); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+
+	for _, step := range []struct {
+		method string
+		params string
+	}{
+		{"queue.withdraw", `{"conversation_id":"conversation-1","queue":"steering","index":2,"expected":"排队的那句"}`},
+		{"queue.clear", `{"conversation_id":"conversation-1"}`},
+		{"model", `{"provider":"deepseek","model":"deepseek-chat"}`},
+		{"policy", `{"conversation_id":"conversation-1","policy":"ask"}`},
+		{"conversation.create", `{"title":"手机新建","workspace_path":"/tmp/ws"}`},
+	} {
+		reply := client.exchange(t, noiseEnvelope{Type: "request", Method: step.method, Params: json.RawMessage(step.params)})
+		if !reply.OK {
+			t.Fatalf("%s refused: %s", step.method, reply.Error)
+		}
+	}
+
+	if len(controller.withdrawn) != 1 || controller.withdrawn[0] != "conversation-1:steering:排队的那句" {
+		t.Fatalf("withdrawn = %#v", controller.withdrawn)
+	}
+	if len(controller.withdrawnIndex) != 1 || controller.withdrawnIndex[0] != 2 {
+		t.Fatalf("withdrawn index = %#v", controller.withdrawnIndex)
+	}
+	if len(controller.cleared) != 1 || controller.cleared[0] != "conversation-1" {
+		t.Fatalf("cleared = %#v", controller.cleared)
+	}
+	if len(controller.models) != 1 || controller.models[0] != "deepseek/deepseek-chat" {
+		t.Fatalf("models = %#v", controller.models)
+	}
+	if len(controller.policies) != 1 || controller.policies[0] != "conversation-1=ask" {
+		t.Fatalf("policies = %#v", controller.policies)
+	}
+	if len(controller.created) != 1 || controller.created[0] != "手机新建@/tmp/ws" {
+		t.Fatalf("created = %#v", controller.created)
+	}
+
+	actions := make([]string, 0, 16)
+	for _, entry := range manager.Audit(30) {
+		actions = append(actions, entry.Action)
+	}
+	for _, want := range []string{"queue-withdraw", "queue-clear", "model", "policy", "conversation"} {
+		if !slices.Contains(actions, want) {
+			t.Fatalf("audit is missing %s: %#v", want, actions)
+		}
+	}
+}
+
+// 只读设备对新增的写动作同样要被拒，不能碰控制器。
+func TestNoiseChannelRefusesTheRemainingWritesWhenReadOnly(t *testing.T) {
+	manager, status, controller := startManager(t)
+	code, _ := manager.IssuePairingCode()
+	client := dialNoise(t, status)
+	if reply := client.exchange(t, noiseEnvelope{Type: "enrol", Code: code}); !reply.OK {
+		t.Fatalf("enrol refused: %s", reply.Error)
+	}
+
+	for _, step := range []struct {
+		method string
+		params string
+	}{
+		{"queue.withdraw", `{"conversation_id":"conversation-1","queue":"steering","index":0}`},
+		{"queue.clear", `{"conversation_id":"conversation-1"}`},
+		{"model", `{"provider":"deepseek","model":"deepseek-chat"}`},
+		{"policy", `{"conversation_id":"conversation-1","policy":"ask"}`},
+		{"conversation.create", `{"title":"手机新建"}`},
+	} {
+		reply := client.exchange(t, noiseEnvelope{Type: "request", Method: step.method, Params: json.RawMessage(step.params)})
+		if reply.OK {
+			t.Fatalf("%s must be refused for a read-only device", step.method)
+		}
+	}
+	if len(controller.withdrawn)+len(controller.cleared)+len(controller.models)+len(controller.policies)+len(controller.created) != 0 {
+		t.Fatal("a read-only device reached the controller")
+	}
+}
+
 func TestMatchesFingerprintRejectsAnotherHost(t *testing.T) {
 	_, hostPublic, err := generateHostKey()
 	if err != nil {

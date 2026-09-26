@@ -462,6 +462,67 @@ func (m *Manager) handleNoiseRequest(envelope noiseEnvelope, device Device, ip s
 				params.Approved, params.Scope, params.Choice)
 		})
 
+	case "queue.withdraw":
+		var params struct {
+			ConversationID string `json:"conversation_id"`
+			Queue          string `json:"queue"`
+			Index          int    `json:"index"`
+			Expected       string `json:"expected"`
+		}
+		if err := json.Unmarshal(envelope.Params, &params); err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "参数格式不正确"}
+		}
+		return m.noiseWrite(device, "queue-withdraw", func(ctx context.Context) (string, error) {
+			return withdrawQueuedMessage(ctx, m.controller, params.ConversationID, params.Queue, params.Index, params.Expected)
+		})
+
+	case "queue.clear":
+		var params struct {
+			ConversationID string `json:"conversation_id"`
+		}
+		if err := json.Unmarshal(envelope.Params, &params); err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "参数格式不正确"}
+		}
+		return m.noiseWrite(device, "queue-clear", func(ctx context.Context) (string, error) {
+			return clearQueuedMessages(ctx, m.controller, params.ConversationID)
+		})
+
+	case "model":
+		var params struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		}
+		if err := json.Unmarshal(envelope.Params, &params); err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "参数格式不正确"}
+		}
+		return m.noiseWrite(device, "model", func(ctx context.Context) (string, error) {
+			return selectRemoteModel(ctx, m.controller, params.Provider, params.Model)
+		})
+
+	case "policy":
+		var params struct {
+			ConversationID string `json:"conversation_id"`
+			Policy         string `json:"policy"`
+		}
+		if err := json.Unmarshal(envelope.Params, &params); err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "参数格式不正确"}
+		}
+		return m.noiseWrite(device, "policy", func(ctx context.Context) (string, error) {
+			return selectRemotePolicy(ctx, m.controller, params.ConversationID, params.Policy)
+		})
+
+	case "conversation.create":
+		var params struct {
+			Title         string `json:"title"`
+			WorkspacePath string `json:"workspace_path"`
+		}
+		if err := json.Unmarshal(envelope.Params, &params); err != nil {
+			return noiseEnvelope{Type: "response", OK: false, Error: "参数格式不正确"}
+		}
+		return m.noiseWrite(device, "conversation", func(ctx context.Context) (string, error) {
+			return createRemoteConversation(ctx, m.controller, params.Title, params.WorkspacePath)
+		})
+
 	default:
 		return noiseEnvelope{Type: "response", OK: false, Error: fmt.Sprintf("未知的方法 %q", envelope.Method)}
 	}

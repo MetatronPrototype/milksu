@@ -1300,6 +1300,61 @@ func approveRemoteTool(ctx context.Context, controller Controller, conversationI
 	return verdict + " " + requestID, nil
 }
 
+// The helpers below hold the argument handling for the remaining remote actions. Each one is
+// called by the HTTP channel and the encrypted channel, so the two cannot accept different
+// input or report a different detail line.
+func withdrawQueuedMessage(ctx context.Context, controller Controller, conversationID, queue string, index int, expected string) (string, error) {
+	if controller == nil {
+		return "", errNoController
+	}
+	if err := controller.RemoteWithdrawQueued(ctx, strings.TrimSpace(conversationID), strings.TrimSpace(queue), index, expected); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("撤回排队 #%d", index), nil
+}
+
+func clearQueuedMessages(ctx context.Context, controller Controller, conversationID string) (string, error) {
+	if controller == nil {
+		return "", errNoController
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if err := controller.RemoteClearQueued(ctx, conversationID); err != nil {
+		return "", err
+	}
+	return "清空排队 " + conversationID, nil
+}
+
+func selectRemoteModel(ctx context.Context, controller Controller, provider, model string) (string, error) {
+	if controller == nil {
+		return "", errNoController
+	}
+	if err := controller.RemoteSelectModel(ctx, provider, model); err != nil {
+		return "", err
+	}
+	return provider + "/" + model, nil
+}
+
+func selectRemotePolicy(ctx context.Context, controller Controller, conversationID, policy string) (string, error) {
+	if controller == nil {
+		return "", errNoController
+	}
+	if err := controller.RemoteSelectApprovalPolicy(ctx, conversationID, policy); err != nil {
+		return "", err
+	}
+	return conversationID + " → " + policy, nil
+}
+
+func createRemoteConversation(ctx context.Context, controller Controller, title, workspacePath string) (string, error) {
+	if controller == nil {
+		return "", errNoController
+	}
+	id, err := controller.RemoteCreateConversation(ctx, title, workspacePath)
+	if err != nil {
+		return "", err
+	}
+	return "新建对话 " + id, nil
+}
+
 func (m *Manager) handleSend(writer http.ResponseWriter, request *http.Request) {
 	var payload struct {
 		ConversationID string `json:"conversation_id"`
@@ -1445,16 +1500,7 @@ func (m *Manager) handleWithdrawQueued(writer http.ResponseWriter, request *http
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10)).Decode(&payload); err != nil {
 			return "", errors.New("请求格式不正确")
 		}
-		if err := m.controller.RemoteWithdrawQueued(
-			ctx,
-			strings.TrimSpace(payload.ConversationID),
-			strings.TrimSpace(payload.Queue),
-			payload.Index,
-			payload.Expected,
-		); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("撤回排队 #%d", payload.Index), nil
+		return withdrawQueuedMessage(ctx, m.controller, payload.ConversationID, payload.Queue, payload.Index, payload.Expected)
 	})
 }
 
@@ -1467,11 +1513,7 @@ func (m *Manager) handleClearQueued(writer http.ResponseWriter, request *http.Re
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10)).Decode(&payload); err != nil {
 			return "", errors.New("请求格式不正确")
 		}
-		conversationID := strings.TrimSpace(payload.ConversationID)
-		if err := m.controller.RemoteClearQueued(ctx, conversationID); err != nil {
-			return "", err
-		}
-		return "清空排队 " + conversationID, nil
+		return clearQueuedMessages(ctx, m.controller, payload.ConversationID)
 	})
 }
 
@@ -1484,10 +1526,7 @@ func (m *Manager) handleSelectModel(writer http.ResponseWriter, request *http.Re
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10)).Decode(&payload); err != nil {
 			return "", errors.New("请求格式不正确")
 		}
-		if err := m.controller.RemoteSelectModel(ctx, payload.Provider, payload.Model); err != nil {
-			return "", err
-		}
-		return payload.Provider + "/" + payload.Model, nil
+		return selectRemoteModel(ctx, m.controller, payload.Provider, payload.Model)
 	})
 }
 
@@ -1500,10 +1539,7 @@ func (m *Manager) handleSelectPolicy(writer http.ResponseWriter, request *http.R
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10)).Decode(&payload); err != nil {
 			return "", errors.New("请求格式不正确")
 		}
-		if err := m.controller.RemoteSelectApprovalPolicy(ctx, payload.ConversationID, payload.Policy); err != nil {
-			return "", err
-		}
-		return payload.ConversationID + " → " + payload.Policy, nil
+		return selectRemotePolicy(ctx, m.controller, payload.ConversationID, payload.Policy)
 	})
 }
 
@@ -1516,11 +1552,7 @@ func (m *Manager) handleCreateConversation(writer http.ResponseWriter, request *
 		if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8<<10)).Decode(&payload); err != nil {
 			return "", errors.New("请求格式不正确")
 		}
-		id, err := m.controller.RemoteCreateConversation(ctx, payload.Title, payload.WorkspacePath)
-		if err != nil {
-			return "", err
-		}
-		return "新建对话 " + id, nil
+		return createRemoteConversation(ctx, m.controller, payload.Title, payload.WorkspacePath)
 	})
 }
 
