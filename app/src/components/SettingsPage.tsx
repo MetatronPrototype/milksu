@@ -487,9 +487,11 @@ export default function SettingsPage({
     )
   })()
 
-  // 二维码的内容就是页面读的那个约定：去掉尾部斜杠的网址 + ?pair=绑定码。
+  // 二维码的内容就是页面读的那个约定：去掉尾部斜杠的网址 + ?pair=绑定码，
+  // 再带上主机指纹给原生客户端钉住（网页忽略 h，只读 pair）。
   const remotePairUrl = remoteStatus?.url && remoteStatus?.pairing_code
     ? `${remoteStatus.url.replace(/\/+$/, '')}/?pair=${remoteStatus.pairing_code}`
+      + (remoteStatus.fingerprint ? `&h=${remoteStatus.fingerprint}` : '')
     : ''
 
   // 进「网络 / 远端控制」时才读一次远端状态与审计，和 Vue 版的分类 watch 同口径。

@@ -588,9 +588,12 @@ $('code').addEventListener('keydown', event => { if (event.key === 'Enter') void
   try {
     const current = new URL(location.href)
     const code = (current.searchParams.get('pair') || '').trim().toUpperCase()
-    if (!code) return
+    const pinned = current.searchParams.get('h')
+    if (!code && !pinned) return
     current.searchParams.delete('pair')
+    current.searchParams.delete('h')
     history.replaceState(null, '', current.pathname + (current.search || '') + current.hash)
+    if (!code) return
     const field = $('code')
     if (field) field.value = code
     void pair()

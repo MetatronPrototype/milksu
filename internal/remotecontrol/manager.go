@@ -138,7 +138,10 @@ type Status struct {
 	PairingCode      string `json:"pairing_code,omitempty"`
 	PairingExpiresAt string `json:"pairing_expires_at,omitempty"`
 	// PairingDeviceID is set when the current code was issued for one specific device.
-	PairingDeviceID string   `json:"pairing_device_id,omitempty"`
+	PairingDeviceID string `json:"pairing_device_id,omitempty"`
+	// Fingerprint is the host static public key's short fingerprint. Clients pin it, so the
+	// settings page puts it in the pairing QR; the browser page ignores it.
+	Fingerprint     string   `json:"fingerprint,omitempty"`
 	SessionTTLHours int      `json:"session_ttl_hours"`
 	Devices         []Device `json:"devices"`
 	Error           string   `json:"error,omitempty"`
@@ -312,9 +315,13 @@ type Manager struct {
 	provider      Provider
 	controller    Controller
 
-	mu          sync.Mutex
-	password    string
-	devices     []deviceRecord
+	mu       sync.Mutex
+	password string
+	devices  []deviceRecord
+	// hostPrivate and hostPublic are the host's Noise static keypair. They are created on
+	// first use and persisted with the rest of the state.
+	hostPrivate []byte
+	hostPublic  []byte
 	pairingCode string
 	pairingAt   time.Time
 	pairingUsed bool
@@ -352,11 +359,18 @@ type deviceRecord struct {
 	// LegacySubnet carries the single bound network written by earlier versions, so an
 	// existing pairing keeps working after the upgrade.
 	LegacySubnet string `json:"subnet,omitempty"`
+	// NoisePublicKey is the static public key this device proved over the encrypted
+	// channel, in hex. A device enrolled through the browser page has none.
+	NoisePublicKey string `json:"noise_public_key,omitempty"`
 }
 
 type persistedState struct {
 	Password string         `json:"password"`
 	Devices  []deviceRecord `json:"devices"`
+	// HostPrivateKey is the host's Noise static private key in hex. Its public half is what
+	// the pairing QR pins, so an app client can tell it really reached this computer.
+	// Older state files have no value here; one is generated on first use.
+	HostPrivateKey string `json:"host_private_key,omitempty"`
 }
 
 // New prepares a manager. Nothing is served until Apply enables it.
@@ -387,6 +401,10 @@ func (m *Manager) load() {
 		if json.Unmarshal(raw, &parsed) == nil && strings.TrimSpace(parsed.Password) != "" {
 			m.password = parsed.Password
 			m.devices = parsed.Devices
+			if key, decodeErr := hex.DecodeString(strings.TrimSpace(parsed.HostPrivateKey)); decodeErr == nil && len(key) == 32 {
+				m.hostPrivate = key
+				m.hostPublic = hostPublicFromPrivate(key)
+			}
 			for index := range m.devices {
 				if len(m.devices[index].Networks) == 0 && strings.TrimSpace(m.devices[index].LegacySubnet) != "" {
 					m.devices[index].Networks = []string{strings.TrimSpace(m.devices[index].LegacySubnet)}
@@ -399,11 +417,25 @@ func (m *Manager) load() {
 	_ = m.persistLocked()
 }
 
+// persistLocked writes the state file. The host key is minted here when it is missing, so a
+// state file written before this feature existed gains one on the first save.
 func (m *Manager) persistLocked() error {
 	if err := os.MkdirAll(m.dataDirectory, 0o700); err != nil {
 		return err
 	}
-	payload, err := json.MarshalIndent(persistedState{Password: m.password, Devices: m.devices}, "", "  ")
+	if len(m.hostPrivate) != 32 {
+		private, public, err := generateHostKey()
+		if err != nil {
+			return err
+		}
+		m.hostPrivate = private
+		m.hostPublic = public
+	}
+	payload, err := json.MarshalIndent(persistedState{
+		Password:       m.password,
+		Devices:        m.devices,
+		HostPrivateKey: hex.EncodeToString(m.hostPrivate),
+	}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -668,6 +700,7 @@ func (m *Manager) Status() Status {
 		Port:            m.port,
 		URL:             m.url,
 		Password:        m.password,
+		Fingerprint:     hostFingerprint(m.hostPublic),
 		SessionTTLHours: int(m.sessionTTL.Hours()),
 		Error:           m.lastError,
 		Devices:         make([]Device, 0, len(m.devices)),
@@ -870,6 +903,7 @@ func (m *Manager) routes() http.Handler {
 	mux.HandleFunc("/api/conversation", m.handleConversation)
 	mux.HandleFunc("/api/action/send", m.handleSend)
 	mux.HandleFunc("/api/pair", m.handlePair)
+	mux.HandleFunc("/api/noise", m.handleNoiseChannel)
 	mux.HandleFunc("/api/login", m.handleLogin)
 	mux.HandleFunc("/api/logout", m.handleLogout)
 	mux.HandleFunc("/api/action/approve", m.handleApprove)

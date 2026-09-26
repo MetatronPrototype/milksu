@@ -394,6 +394,9 @@ export interface RemoteControlStatus {
   password?: string
   pairing_code?: string
   pairing_expires_at?: string
+  // fingerprint is the host's static public key fingerprint. Clients pin it, so it goes
+  // into the pairing QR; the companion page ignores it.
+  fingerprint?: string
   // pairing_device_id is set when the code was issued for one specific device.
   pairing_device_id?: string
   session_ttl_hours: number

@@ -40,6 +40,7 @@ function statusPayload(overrides: Partial<RemoteControlStatus> = {}): RemoteCont
     port: 58993,
     url: 'http://192.168.0.126:58993',
     pairing_code: 'AB12CD34EF',
+    fingerprint: '1a2b3c4d5e6f7788',
     session_ttl_hours: 168,
     devices: [
       {
@@ -176,7 +177,7 @@ describe('SettingsPage remote control panel', () => {
     expect(path).not.toBeNull()
 
     const expected = qrcode(0, 'M')
-    expected.addData('http://192.168.0.126:58993/?pair=AB12CD34EF')
+    expected.addData('http://192.168.0.126:58993/?pair=AB12CD34EF&h=1a2b3c4d5e6f7788')
     expected.make()
     let modules = ''
     for (let row = 0; row < expected.getModuleCount(); row += 1) {
