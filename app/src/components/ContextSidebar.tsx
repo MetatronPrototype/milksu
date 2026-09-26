@@ -61,6 +61,7 @@ import {
   SunMoon,
   Trash2,
   UserRound,
+  Wifi,
 } from 'lucide-react'
 import {
   groupWorkspaceConversations,
@@ -131,6 +132,7 @@ const settingsNavIcons = {
   chats: Archive,
   memory: Brain,
   browser: Globe2,
+  network: Wifi,
   eval: Gauge,
   companion: Star,
   plugins: Puzzle,
