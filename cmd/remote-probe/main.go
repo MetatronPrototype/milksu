@@ -62,6 +62,7 @@ func main() {
 	method := flag.String("method", "snapshot", "握手后要调的方法")
 	params := flag.String("params", "", "方法参数（JSON）；不给就是空对象")
 	name := flag.String("name", "remote-probe", "报给主机的设备名")
+	pause := flag.Duration("pause", 0, "配对后等多久再发第一个请求（验证主机侧升级用）")
 	timeout := flag.Duration("timeout", 20*time.Second, "整体超时")
 	flag.Parse()
 
@@ -178,6 +179,11 @@ func main() {
 			reply.Device.ID, reply.Device.Capability, reply.Device.State)
 	} else {
 		fmt.Println("配对成功")
+	}
+
+	if *pause > 0 {
+		fmt.Printf("等 %s 再发请求\n", *pause)
+		time.Sleep(*pause)
 	}
 
 	if err := sendEnvelope(connection, send, envelope{
