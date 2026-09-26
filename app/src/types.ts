@@ -348,6 +348,59 @@ export interface ModelCatalogSnapshot {
 export type ModelSource = 'account' | 'personal'
 export type ModelSourcePreference = 'auto' | ModelSource
 
+// The LAN companion server. The access password and the paired devices are held by the
+// backend manager, so they are not part of the settings payload.
+export interface RemoteControlConfig {
+  enabled: boolean
+  bind_mode?: 'lan' | 'local'
+  port?: number
+  // Absent means allowed; turning it off keeps bash/edit/write approvals local.
+  allow_dangerous_tools?: boolean
+}
+
+export interface RemoteControlDevice {
+  id: string
+  name: string
+  ip: string
+  // Networks the host approved for this device; a new one needs verification.
+  networks?: string[]
+  pending_subnet?: string
+  capability: 'view' | 'control' | string
+  state: 'active' | 'expired' | 'network-changed' | string
+  expires_at: string
+  first_seen_at: string
+  last_seen_at: string
+  can_control: boolean
+}
+
+export interface RemoteAuditEntry {
+  at: string
+  device_id: string
+  device_name: string
+  ip: string
+  action: string
+  detail?: string
+  ok: boolean
+  error?: string
+}
+
+// RemoteControlStatus is the LAN companion server state shown in Settings.
+export interface RemoteControlStatus {
+  enabled: boolean
+  running: boolean
+  bind_mode: 'lan' | 'local' | string
+  port: number
+  url?: string
+  password?: string
+  pairing_code?: string
+  pairing_expires_at?: string
+  // pairing_device_id is set when the code was issued for one specific device.
+  pairing_device_id?: string
+  session_ttl_hours: number
+  devices: RemoteControlDevice[]
+  error?: string
+}
+
 export interface ModelRoutingConfig {
   source_order: ModelSource[]
   auto_fallback: boolean
@@ -371,6 +424,7 @@ export interface AppSettings {
   model_failures?: Array<{ provider: string; model: string; reason?: string; at?: string }>
   model_routing: ModelRoutingConfig
   relay?: RelayConfig
+  remote_control?: RemoteControlConfig
   nssctf_arena?: NSSCTFArenaConfig
   locale?: 'en' | 'zh'
   disabled_skills?: string[]

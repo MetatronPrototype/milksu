@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MilkSU-Official/milksu/internal/agentresources"
@@ -37,6 +38,7 @@ import (
 	"github.com/MilkSU-Official/milksu/internal/modelusage"
 	"github.com/MilkSU-Official/milksu/internal/nssctf"
 	pluginruntime "github.com/MilkSU-Official/milksu/internal/plugin"
+	"github.com/MilkSU-Official/milksu/internal/remotecontrol"
 	"github.com/MilkSU-Official/milksu/internal/securityruntime"
 	"github.com/MilkSU-Official/milksu/internal/securitytools"
 	"github.com/MilkSU-Official/milksu/internal/sessionindex"
@@ -84,6 +86,26 @@ type App struct {
 	evalSuite         *evalsuite.Service
 	lifespanStart     appdata.LifespanStart
 	lifespanHandle    appdata.LifespanHandle
+	// remoteControls serves the LAN companion page; it is created on first use so a
+	// user who never enables it never gets a state file either.
+	remoteControlMu sync.Mutex
+	remoteControls  *remotecontrol.Manager
+	// approvalMu guards the permission prompts waiting for the user, which the remote
+	// page may show.
+	approvalMu       sync.Mutex
+	pendingApprovals map[string]remotecontrol.Approval
+	// remoteQueueMu guards the prompts parked behind each conversation's running turn, which
+	// the remote page shows and may withdraw.
+	remoteQueueMu sync.Mutex
+	remoteQueues  map[string][]remotecontrol.QueuedMessage
+	// turnActivity records when a conversation last produced an engine event, so the
+	// remote page can mark the conversations that are actually working. The engine's
+	// own status is per kernel, not per conversation.
+	turnActivityMu sync.Mutex
+	turnActivity   map[string]time.Time
+	// remoteTurns records the turns a remote device started, because the renderer is
+	// what normally persists conversation messages.
+	remoteTurns *remoteTurnRecorder
 }
 
 func newAppWithDesktopHost(host desktopHost) (*App, error) {
@@ -455,9 +477,17 @@ func (a *App) Startup(ctx context.Context) {
 		time.Since(vulnRecoverStarted).Milliseconds(),
 		time.Since(startupBegan).Milliseconds(),
 	)
+	// The LAN companion page only listens when the user turned it on; Apply is a no-op
+	// while it is off.
+	if status := a.syncRemoteControl(); status.Enabled && status.Error != "" {
+		a.diagnostics.Record("remote-control", "warning", "remote control did not start: "+status.Error)
+	}
 }
 
 func (a *App) Shutdown(_ context.Context) {
+	if a.remoteControls != nil {
+		_ = a.remoteControls.Close()
+	}
 	if a.companion != nil {
 		_ = a.companion.Stop()
 	}
@@ -1110,6 +1140,11 @@ func (a *App) ListConversations() ([]conversation.StoredConversation, error) {
 }
 
 func (a *App) SaveConversation(value conversation.StoredConversation) error {
+	// The renderer owns this conversation from now on, so the backend must stop
+	// recording it: two writers would duplicate messages.
+	if a.remoteTurns != nil {
+		a.remoteTurns.release(value.ID)
+	}
 	value.Kernel = conversation.NormalizeKernel(value.Kernel)
 	existing, existedErr := a.conversations.GetAny(value.ID)
 	if existedErr == nil && existing.ArchivedAt != 0 {
@@ -1799,6 +1834,11 @@ func (a *App) ControlDshGoal(conversationID, action, objective string) error {
 
 func (a *App) KillDshJob(conversationID, jobID string) error {
 	return a.engines.KillDshJob(conversationID, jobID)
+}
+
+// ClearQueuedMessages drops the steering messages Pi still holds for a conversation.
+func (a *App) ClearQueuedMessages(conversationID string) error {
+	return a.engines.ClearQueuedMessages(conversationID)
 }
 
 func (a *App) RemoveQueuedMessage(
@@ -2593,6 +2633,8 @@ func (a *App) CancelVulnJob(id string) error {
 }
 
 func (a *App) emitEngineEvent(event engine.Event) {
+	a.trackRemoteViewEvent(event)
+	a.recordRemoteTurnEvent(event)
 	// A real model failure marks that model in the picker; a successful call clears it again.
 	a.applyModelCallOutcome(event)
 	if event.Error != "" {

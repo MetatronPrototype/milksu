@@ -49,6 +49,21 @@ type ProviderConfig struct {
 	API          string   `json:"api,omitempty"`
 }
 
+// RemoteControlConfig describes the LAN companion server. The access password and the
+// paired devices live in the manager's own state file, so they never travel inside the
+// settings payload.
+type RemoteControlConfig struct {
+	Enabled bool `json:"enabled"`
+	// BindMode is "lan" (default) or "local".
+	BindMode string `json:"bind_mode,omitempty"`
+	// Port is the preferred listen port; 0 lets the manager choose one.
+	Port int `json:"port,omitempty"`
+	// AllowDangerousTools lets a control-capable device approve bash/edit/write and
+	// switch to an auto-approving policy. Nil means allowed (the user asked for remote
+	// approval); turning it off keeps those actions on this machine.
+	AllowDangerousTools *bool `json:"allow_dangerous_tools,omitempty"`
+}
+
 type NSSCTFArenaConfig struct {
 	Token       string `json:"token,omitempty"`
 	HasToken    bool   `json:"has_token"`
@@ -145,6 +160,7 @@ type AppSettings struct {
 	ModelRouting             ModelRoutingConfig   `json:"model_routing"`
 	Relay                    *RelayConfig         `json:"relay,omitempty"`
 	NSSCTFArena              *NSSCTFArenaConfig   `json:"nssctf_arena,omitempty"`
+	RemoteControl            *RemoteControlConfig `json:"remote_control,omitempty"`
 	Locale                   *string              `json:"locale,omitempty"`
 	DisabledSkills           []string             `json:"disabled_skills"`
 	DisabledAccountModels    []string             `json:"disabled_account_models,omitempty"`
@@ -1527,6 +1543,14 @@ func clone(value AppSettings) AppSettings {
 	if value.NSSCTFArena != nil {
 		arena := *value.NSSCTFArena
 		copy.NSSCTFArena = &arena
+	}
+	if value.RemoteControl != nil {
+		remote := *value.RemoteControl
+		if value.RemoteControl.AllowDangerousTools != nil {
+			allowed := *value.RemoteControl.AllowDangerousTools
+			remote.AllowDangerousTools = &allowed
+		}
+		copy.RemoteControl = &remote
 	}
 	if value.Jev != nil {
 		jevConfig := *value.Jev

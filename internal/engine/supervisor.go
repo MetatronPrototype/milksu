@@ -2579,6 +2579,24 @@ func (s *Supervisor) KillDshJob(sessionID, jobID string) error {
 // for a request-bound receipt. The index and expected text are both sent so a
 // stale renderer cannot accidentally retract a different message after Pi has
 // advanced the live queue.
+// ClearQueuedMessages drops the inbox of a session: the reader removed messages that were
+// waiting for the current turn to end.
+func (s *Supervisor) ClearQueuedMessages(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("session id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.sessions[sessionID]; !exists {
+		return s.sessionMissingError(sessionID)
+	}
+	return s.writeToSessionLocked(sessionID, map[string]any{
+		"action":         "clear_queued_messages",
+		"conversationId": sessionID,
+	})
+}
+
 func (s *Supervisor) RemoveQueuedMessage(
 	sessionID,
 	queue string,

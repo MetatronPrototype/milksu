@@ -2687,6 +2687,19 @@ function currentSessionQueue(session) {
   });
 }
 
+async function clearQueuedMessages(command) {
+  const conversationId = String(command?.conversationId ?? "").trim();
+  if (!conversationId) throw new Error("conversationId is required");
+  const session = sessions.get(conversationId);
+  if (!session) return;
+  try {
+    session.clearQueue?.();
+  } catch {
+    // Older Pi builds may not expose clearQueue; the renderer keeps its own queue.
+  }
+  emit(conversationId, "queue_update", { steering: [], followUp: [] });
+}
+
 async function removeQueuedMessageCommand(command) {
   const conversationId = String(command.conversationId ?? "").trim();
   const requestId = String(command.requestId ?? "").trim();
@@ -2849,6 +2862,9 @@ async function handleCommand(command) {
       break;
     case "remove_queued_message":
       await removeQueuedMessageCommand(command);
+      break;
+    case "clear_queued_messages":
+      await clearQueuedMessages(command);
       break;
     case "abort_session":
       await abortSession(command);

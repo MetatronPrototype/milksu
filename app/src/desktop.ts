@@ -18,6 +18,8 @@ import {
   type LocalDiagnosticExport,
   type ModelProbeResult,
   type ModelCatalogSnapshot,
+  type RemoteAuditEntry,
+  type RemoteControlStatus,
   type StartupRecoveryStatus,
   type UpdateStatus,
   type CompanionArchive,
@@ -209,6 +211,17 @@ interface DesktopAppBindings {
   GetModelCatalog(): Promise<ModelCatalogSnapshot>
   GetImageGenCatalog(): Promise<import('@/lib/imageGenCatalog').ImageGenCatalogSnapshot>
   SaveSettingsCmd(settings: AppSettings): Promise<void>
+  GetRemoteControlStatus(): Promise<RemoteControlStatus>
+  SetRemoteControl(enabled: boolean, bindMode: string, port: number): Promise<void>
+  RotateRemotePassword(): Promise<string>
+  RevokeRemoteDevice(id: string): Promise<void>
+  IssueRemotePairingCode(deviceId: string): Promise<RemoteControlStatus>
+  SetRemoteDeviceCapability(id: string, capability: string): Promise<void>
+  RenewRemoteDevice(id: string): Promise<void>
+  ApproveRemoteDeviceNetwork(id: string): Promise<void>
+  ForgetRemoteDeviceNetwork(id: string, subnet: string): Promise<void>
+  GetRemoteAudit(limit: number): Promise<RemoteAuditEntry[]>
+  SetRemoteDangerousTools(allowed: boolean): Promise<void>
   ListSecurityTools(): Promise<SecurityToolSnapshot[]>
   SetSecurityToolEnabled(id: string, enabled: boolean): Promise<void>
   StartSecurityToolSetup(id: string): Promise<SecurityToolSetupSnapshot>
@@ -523,6 +536,7 @@ interface DesktopAppBindings {
   ControlDshGoal(conversationId: string, action: string, objective?: string): Promise<void>
   KillDshJob(conversationId: string, jobId: string): Promise<void>
   InspectDestructiveTarget(path: string): Promise<DestructiveTargetInspection>
+  ClearQueuedMessages(conversationId: string): Promise<void>
   RemoveQueuedMessage(
     conversationId: string,
     queue: string,
@@ -1024,6 +1038,10 @@ export async function invokeCommand<T = unknown>(command: string, args?: Command
         ) as Promise<T>
       case 'inspect_destructive_target':
         return app.InspectDestructiveTarget(args?.path as string) as Promise<T>
+      case 'clear_queued_messages':
+        return app.ClearQueuedMessages(
+          args?.conversationId as string,
+        ) as Promise<T>
       case 'remove_queued_message':
         return app.RemoveQueuedMessage(
           args?.conversationId as string,
@@ -1288,6 +1306,32 @@ export async function invokeCommand<T = unknown>(command: string, args?: Command
         ) as Promise<T>
       case 'test_agent_model':
         return app.TestAgentModel(args?.settings as AppSettings) as Promise<T>
+      case 'get_remote_control_status':
+        return app.GetRemoteControlStatus() as Promise<T>
+      case 'set_remote_control':
+        return app.SetRemoteControl(
+          args?.enabled as boolean,
+          args?.bindMode as string,
+          args?.port as number,
+        ) as Promise<T>
+      case 'rotate_remote_password':
+        return app.RotateRemotePassword() as Promise<T>
+      case 'revoke_remote_device':
+        return app.RevokeRemoteDevice(args?.id as string) as Promise<T>
+      case 'issue_remote_pairing_code':
+        return app.IssueRemotePairingCode((args?.deviceId as string) ?? '') as Promise<T>
+      case 'set_remote_device_capability':
+        return app.SetRemoteDeviceCapability(args?.id as string, args?.capability as string) as Promise<T>
+      case 'renew_remote_device':
+        return app.RenewRemoteDevice(args?.id as string) as Promise<T>
+      case 'approve_remote_device_network':
+        return app.ApproveRemoteDeviceNetwork(args?.id as string) as Promise<T>
+      case 'forget_remote_device_network':
+        return app.ForgetRemoteDeviceNetwork(args?.id as string, args?.subnet as string) as Promise<T>
+      case 'get_remote_audit':
+        return app.GetRemoteAudit(args?.limit as number) as Promise<T>
+      case 'set_remote_dangerous_tools':
+        return app.SetRemoteDangerousTools(args?.allowed as boolean) as Promise<T>
       case 'list_security_tools':
         return app.ListSecurityTools() as Promise<T>
       case 'set_security_tool_enabled':

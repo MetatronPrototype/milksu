@@ -8,6 +8,7 @@ export type SettingsCategory =
   | 'apikeys'
   | 'runtime'
   | 'browser'
+  | 'network'
   | 'chats'
   | 'memory'
   | 'ctf'
@@ -78,6 +79,7 @@ export const SETTINGS_SIDEBAR_GROUPS: readonly SettingsSidebarGroup[] = [
     id: 'more',
     label: null,
     items: [
+      { value: 'network', label: () => t('网络 / 远端控制', 'Network & remote') },
       { value: 'companion', label: () => t('看板娘', 'Companion') },
       { value: 'eval', label: () => t('评测', 'Eval') },
     ],
