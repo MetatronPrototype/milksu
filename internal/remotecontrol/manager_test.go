@@ -1003,6 +1003,28 @@ func TestChangeSubscriptionReceivesAPing(t *testing.T) {
 
 // The stream is the only push channel the page has, so its route and its client have to stay
 // wired in the page.
+// 扫码配对有两半：设置页把二维码画出来，页面认网址里的 ?pair=。少了后一半，
+// 手机扫到的码只能手输，扫码这一步就没有意义。
+func TestPagePairsFromTheScannedCode(t *testing.T) {
+	_, status, _ := startManager(t)
+	response, err := http.Get(status.URL)
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	page := string(body)
+	for _, marker := range []string{
+		"searchParams.get('pair')",
+		"/api/pair",
+		"history.replaceState",
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("the page is missing %s", marker)
+		}
+	}
+}
+
 func TestPageUsesTheHostPushStream(t *testing.T) {
 	_, status, _ := startManager(t)
 	response, err := http.Get(status.URL)

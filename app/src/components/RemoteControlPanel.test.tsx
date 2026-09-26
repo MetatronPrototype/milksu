@@ -2,6 +2,7 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import qrcode from 'qrcode-generator'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsPage from '@/components/SettingsPage'
 import { SETTINGS_SIDEBAR_ITEMS } from '@/lib/settingsNavigation'
@@ -165,6 +166,25 @@ describe('SettingsPage remote control panel', () => {
     expect(text).toContain('上次活动')
     expect(remoteCalls('GetRemoteControlStatus').length).toBeGreaterThan(0)
     expect(remoteCalls('GetRemoteAudit')[0]?.args[0]).toBe(40)
+  })
+
+  // 二维码里必须是页面读的那个约定：网址 + ?pair=绑定码。用同一个库把期望的字符串
+  // 重新编码一遍再比模块图——只断言「有个二维码」是看不出内容写错的。
+  it('encodes the address and the pairing code the phone scans', async () => {
+    await renderSettings()
+    const path = document.querySelector<SVGPathElement>('[data-testid="remote-qr"] path')
+    expect(path).not.toBeNull()
+
+    const expected = qrcode(0, 'M')
+    expected.addData('http://192.168.0.126:58993/?pair=AB12CD34EF')
+    expected.make()
+    let modules = ''
+    for (let row = 0; row < expected.getModuleCount(); row += 1) {
+      for (let column = 0; column < expected.getModuleCount(); column += 1) {
+        if (expected.isDark(row, column)) modules += `M${column} ${row}h1v1h-1z`
+      }
+    }
+    expect(path?.getAttribute('d')).toBe(modules)
   })
 
   it('warns when dangerous actions are open to remote devices', async () => {

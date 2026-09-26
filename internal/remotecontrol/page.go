@@ -581,6 +581,21 @@ $('messages').addEventListener('toggle', event => {
 }, true)
 $('pairButton').addEventListener('click', () => { void pair() })
 $('code').addEventListener('keydown', event => { if (event.key === 'Enter') void pair() })
+
+// 扫码进来时网址里带 ?pair=<绑定码>：自动填好并直接配对，然后把参数从地址栏抹掉，
+// 免得绑定码留在浏览历史和截图里。读不到就退回手输。
+;(function autoPairFromUrl() {
+  try {
+    const current = new URL(location.href)
+    const code = (current.searchParams.get('pair') || '').trim().toUpperCase()
+    if (!code) return
+    current.searchParams.delete('pair')
+    history.replaceState(null, '', current.pathname + (current.search || '') + current.hash)
+    const field = $('code')
+    if (field) field.value = code
+    void pair()
+  } catch (_) { /* 手输兼底 */ }
+})()
 $('loginButton').addEventListener('click', () => { void login() })
 $('logout').addEventListener('click', () => { void logout() })
 $('menuButton').addEventListener('click', () => {

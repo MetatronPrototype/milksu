@@ -12,6 +12,7 @@ import {
   SunMoon,
   Trash2,
 } from 'lucide-react'
+import qrcode from 'qrcode-generator'
 import {
   Alert,
   AlertDescription,
@@ -485,6 +486,11 @@ export default function SettingsPage({
       `Enter ${remoteStatus.pairing_code} on the other device (valid 5 minutes, single use)`,
     )
   })()
+
+  // 二维码的内容就是页面读的那个约定：去掉尾部斜杠的网址 + ?pair=绑定码。
+  const remotePairUrl = remoteStatus?.url && remoteStatus?.pairing_code
+    ? `${remoteStatus.url.replace(/\/+$/, '')}/?pair=${remoteStatus.pairing_code}`
+    : ''
 
   // 进「网络 / 远端控制」时才读一次远端状态与审计，和 Vue 版的分类 watch 同口径。
   useEffect(() => {
@@ -1095,6 +1101,16 @@ export default function SettingsPage({
                         {remoteValueBox(remoteStatus?.pairing_code, t('绑定码', 'pairing code'), 'remote-value-pairing')}
                       </div>
                     )}
+                  />
+                  <SettingsRow
+                    label={t('扫码配对', 'Scan to pair')}
+                    description={remotePairUrl
+                      ? t(
+                        '用手机的系统相机扫这张码：会直接打开陪看页面并自动配对，不用手输绑定码。绑定码过期后重新生成即可。',
+                        'Scan this with the phone camera: it opens the companion page and pairs automatically, with no code to type. Generate a new one when it expires.',
+                      )
+                      : t('先生成绑定码，二维码才会出现。', 'Generate a pairing code first and the QR code appears here.')}
+                    trailing={(<RemoteQrCode value={remotePairUrl} label={t('扫码配对', 'Scan to pair')} />)}
                   />
                   <SettingsRow
                     label={t('访问地址', 'Address')}
@@ -1958,6 +1974,53 @@ function remoteCodeExpiryLabel(value?: string) {
   const at = new Date(String(value || ''))
   if (!value || Number.isNaN(at.getTime())) return ''
   return at.toLocaleTimeString()
+}
+
+// QR_QUIET_ZONE 是二维码四周必须留的空白，单位是模块。这是 QR 规范要求的静区，
+// 少了它手机相机常常对不上，不是排版留白。
+const QR_QUIET_ZONE = 4
+
+// remotePairingQr 把一段文字画成二维码的模块图。typeNumber 传 0 让库自己按内容挑最小
+// 的版本，M 级纠错对手机屏幕够用。画不出来时返回 null，调用方就不渲染。
+function remotePairingQr(value: string): { path: string; size: number } | null {
+  const text = String(value || '').trim()
+  if (!text) return null
+  try {
+    const code = qrcode(0, 'M')
+    code.addData(text)
+    code.make()
+    const size = code.getModuleCount()
+    let path = ''
+    for (let row = 0; row < size; row += 1) {
+      for (let column = 0; column < size; column += 1) {
+        if (code.isDark(row, column)) path += `M${column} ${row}h1v1h-1z`
+      }
+    }
+    return { path, size }
+  } catch {
+    return null
+  }
+}
+
+// RemoteQrCode 是手机上要扫的那张码。模块自己拼，不把库生成的 SVG 字符串注进 React。
+function RemoteQrCode({ value, label }: { value: string; label: string }) {
+  const qr = remotePairingQr(value)
+  if (!qr) return null
+  const extent = qr.size + QR_QUIET_ZONE * 2
+  const origin = -QR_QUIET_ZONE
+  return (
+    <svg
+      role="img"
+      aria-label={label}
+      data-testid="remote-qr"
+      className="size-40 rounded-md bg-white"
+      viewBox={`${origin} ${origin} ${extent} ${extent}`}
+      shapeRendering="crispEdges"
+    >
+      <rect x={origin} y={origin} width={extent} height={extent} fill="#ffffff" />
+      <path d={qr.path} fill="#000000" />
+    </svg>
+  )
 }
 
 function createSettingsStore(
