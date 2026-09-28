@@ -10,9 +10,9 @@ import {
   detailsToggleOpen,
   hasEmptyVisibleReply,
   latestFinishedThinkingId,
+  thinkingStaysOpen,
   isBlankAssistantMessage,
   retainAssistantAfterEmptyCompletion,
-  thinkingStaysOpen,
   processFoldStepCount,
   settleRunningToolMessages,
   withoutBlankAssistantMessages,
@@ -193,6 +193,9 @@ describe('buildChatTranscript', () => {
     expect(thinkingStaysOpen('a1', transcript)).toBe(false)
     expect(thinkingStaysOpen('a2', transcript)).toBe(true)
     expect(thinkingStaysOpen('a3', transcript)).toBe(true)
+    // 思考段不折叠成过程块、仍以消息行留在正文里（转写形状回归）。
+    expect(transcript.filter(block => block.kind === 'process')).toHaveLength(0)
+    expect(transcript.filter(block => block.kind === 'message' && block.message.id === 'a3')).toHaveLength(1)
     expect(latestFinishedThinkingId(transcript)).toBe('a2')
   })
 

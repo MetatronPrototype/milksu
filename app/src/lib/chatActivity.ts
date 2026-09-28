@@ -424,22 +424,29 @@ function messageHasThinking(message: Message) {
 
 // Only the latest finished thinking stays open. A live burst stays open too.
 // When the next burst finishes, the previous one collapses.
+// 实现注意：单次扫描（不复用 `latestFinishedThinkingId` 的循环，避免两遍），
+// 但**渲染循环不要逐段调它**（段落数 × 全表长 = O(n²)）——调用点应先
+// `latestFinishedThinkingId(blocks)` 预计算一次，再逐段 O(1) 比较。
 export function thinkingStaysOpen(messageId: string, blocks: readonly ChatTranscriptBlock[]) {
-  const thoughts: Message[] = []
+  let seenRunning = false
+  let seenFinished = false
+  let finishedAfter = false
   for (const block of blocks) {
-    if (block.kind === 'message' && messageHasThinking(block.message)) {
-      thoughts.push(block.message)
+    if (block.kind !== 'message' || !messageHasThinking(block.message)) continue
+    const message = block.message
+    if (message.id === messageId) {
+      if (message.thinkingStatus === 'running') seenRunning = true
+      else if (message.thinkingStatus === 'done' && Boolean(String(message.thinking ?? '').trim())) seenFinished = true
+      continue
+    }
+    if ((seenRunning || seenFinished) && message.thinkingStatus === 'done' && Boolean(String(message.thinking ?? '').trim())) {
+      finishedAfter = true
     }
   }
-  const index = thoughts.findIndex(item => item.id === messageId)
-  if (index < 0) return false
-  const message = thoughts[index]!
-  if (message.thinkingStatus === 'running') return true
-  return !thoughts.slice(index + 1).some(item => (
-    item.thinkingStatus === 'done' && Boolean(String(item.thinking ?? '').trim())
-  ))
+  if (seenRunning) return true
+  if (!seenFinished) return false
+  return !finishedAfter
 }
-
 export function latestFinishedThinkingId(blocks: readonly ChatTranscriptBlock[]) {
   let id = ''
   for (const block of blocks) {

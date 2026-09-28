@@ -6,7 +6,9 @@ import {
 import {
   forwardRef,
   lazy,
+  memo,
   Suspense,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -120,8 +122,8 @@ import {
   LOCAL_CODING_SHELL_ID,
   shouldRememberCodingProject,
 } from '@/lib/codingProjectMemory'
-import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, latestFinishedThinkingId, thinkingStaysOpen } from '@/lib/chatActivity'
-import { chatFoldModel } from '@/lib/chatWorkStatus'
+import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, latestFinishedThinkingId } from '@/lib/chatActivity'
+import { createChatFoldEvaluator } from '@/lib/chatWorkStatus'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
 import { latestCodingPlan } from '@/lib/codingPlan'
 import {
@@ -189,6 +191,7 @@ import type {
   Conversation,
   CTFChatAction,
   ModelThinkingLevel,
+  SubagentTask,
 } from '@/types'
 import {
   lastRewindableUserMessageId,
@@ -1000,7 +1003,47 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     buildChatTranscript(conversation?.messages ?? [], running)
   ), [conversation?.messages, running])
   const thinkingFoldKey = useMemo(() => latestFinishedThinkingId(chatTranscript), [chatTranscript])
+  // 折叠模型预计算：索引只建一次（O(n)，实测 ~1ms），渲染循环里每段 O(1) 查表。
+  // 旧写法 `chatFoldModel(chatTranscript, item.id, running)` 每段都做 findIndex +
+  // 全表找 live 锚点 ⇒ 万条级对话里是 O(n²)，单次渲染（可见窗口 400 段）实测 ~102ms。
+  const chatFoldEvaluator = useMemo(() => createChatFoldEvaluator(chatTranscript), [chatTranscript])
   chatTranscriptLengthRef.current = chatTranscript.length
+  // 打字卡顿的根：runClockNow / waitingNow 每秒变一次 ⇒ ChatPage 每秒整体重渲染；而消息条目
+  // 没有 memo、下面这些回调每次渲染都是新身份 ⇒ 2300+ 条消息每秒被全部重渲染一次（真机实测：
+  // 属性写入约 265 次/秒、最长一次卡 744ms、每秒新增约 77 个 DOM 节点）。
+  // 这里把回调身份钉死（永远调用"最新的那一份"），并让消息条目 memo 化，
+  // 这样"每秒一次的页面重渲染"就不会传导到每一条消息上。
+  const latestTranscriptHandlers = useRef({
+    onRespondApproval,
+    onEditUser,
+    onRewindContext,
+    resumeAfterFailure,
+    branchFromAssistantMessage,
+  })
+  useEffect(() => {
+    latestTranscriptHandlers.current = {
+      onRespondApproval,
+      onEditUser,
+      onRewindContext,
+      resumeAfterFailure,
+      branchFromAssistantMessage,
+    }
+  })
+  const transcriptHandlers = useMemo(() => ({
+    onRespondApproval: (requestId: string, approved: boolean, scope?: 'once' | 'conversation', choice?: string) =>
+      latestTranscriptHandlers.current.onRespondApproval?.(requestId, approved, scope, choice),
+    onRetry: () => latestTranscriptHandlers.current.resumeAfterFailure(),
+    onEditUser: (messageId: string, content: string) =>
+      latestTranscriptHandlers.current.onEditUser?.(messageId, content),
+    onRewindContext: () => latestTranscriptHandlers.current.onRewindContext?.(),
+    onBranchAssistant: (messageId: string) =>
+      latestTranscriptHandlers.current.branchFromAssistantMessage(messageId),
+  }), [])
+  const MemoChatMessageItem = useMemo(() => memo(ChatMessageItem), [])
+  // 折叠块也要 memo：每秒一次的时钟重渲染（runClockNow）不该把整棵折叠子树重新渲染一遍。
+  // 前提是上面那组 ref 稳定化的回调 + 折叠模型的稳定模型身份。
+  const MemoChatProcessFold = useMemo(() => memo(ChatProcessFold), [])
+  const MemoChatActivityGroup = useMemo(() => memo(ChatActivityGroup), [])
   const recoverableFailureId = useMemo(() => (
     recoverableAgentFailureId(conversation?.messages ?? [], running)
   ), [conversation?.messages, running])
@@ -1082,6 +1125,18 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     () => chatTranscript.slice(transcriptWindow.start, transcriptWindow.end),
     [chatTranscript, transcriptWindow.start, transcriptWindow.end],
   )
+  // 模型只为**可见窗口**（≤400 段）建：整份转写建一遍是 ~64ms，流式每个 delta 都付一次。
+  // 窗口内建一遍实测 <1ms；而且时钟每秒重渲染时 visibleTranscript 引用不变，模型身份也不变，
+  // 于是下面 memo 掉的折叠块能整块跳过。
+  const chatFoldModels = useMemo(() => {
+    const models = new Map<string, ReturnType<typeof chatFoldEvaluator.modelFor>>()
+    for (const block of visibleTranscript) {
+      if (block.kind === 'process' || block.kind === 'activity') {
+        models.set(block.id, chatFoldEvaluator.modelFor(block.id, running))
+      }
+    }
+    return models
+  }, [chatFoldEvaluator, visibleTranscript, running])
   const hasEarlierTranscript = transcriptWindow.hiddenBefore > 0
   const hasLaterTranscript = transcriptWindow.hiddenAfter > 0
 
@@ -1141,35 +1196,48 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                 : value
   }
 
+  // 开合状态通过 ref 读取，下面四个回调的身份才能恒定：
+  // 否则渲染循环里每个折叠块都拿到新箭头函数，ChatProcessFold/ChatActivityGroup 的 memo 全被击穿。
+  const activityExpansionStateRef = useRef(chatActivityExpansion)
+  activityExpansionStateRef.current = chatActivityExpansion
+  const activityConversationIdRef = useRef(conversation?.id ?? '')
+  activityConversationIdRef.current = conversation?.id ?? ''
+
   function currentActivityExpansion(): ChatActivityExpansionState {
-    return chatActivityExpansion.get(conversation?.id ?? '') ?? emptyActivityExpansion
+    return activityExpansionStateRef.current.get(activityConversationIdRef.current) ?? emptyActivityExpansion
   }
 
-  function chatActivityGroupIsOpen(activityId: string): boolean {
-    return chatActivityGroupOpen(currentActivityExpansion(), activityId)
-  }
+  const chatActivityGroupIsOpen = useCallback((activityId: string): boolean => (
+    chatActivityGroupOpen(currentActivityExpansion(), activityId)
+  ), [])
 
-  function chatActivityOpenEntries(activityId: string): ReadonlySet<string> {
-    return chatActivityOpenEntryIds(currentActivityExpansion(), activityId)
-  }
+  const chatActivityOpenEntries = useCallback((activityId: string): ReadonlySet<string> => (
+    chatActivityOpenEntryIds(currentActivityExpansion(), activityId)
+  ), [])
 
-  function applyActivityExpansion(next: ChatActivityExpansionState) {
-    const conversationId = conversation?.id ?? ''
-    const states = new Map(chatActivityExpansion)
-    states.set(conversationId, next)
-    setChatActivityExpansion(states)
+  const applyActivityExpansion = useCallback((next: ChatActivityExpansionState) => {
+    setChatActivityExpansion(previous => {
+      const states = new Map(previous)
+      states.set(activityConversationIdRef.current, next)
+      return states
+    })
     setActivityExpansionRev(value => value + 1)
-  }
+  }, [])
 
-  function handleActivityGroupToggle(activityId: string, open: boolean) {
+  const handleActivityGroupToggle = useCallback((activityId: string, open: boolean) => {
     applyActivityExpansion(setChatActivityGroupOpen(currentActivityExpansion(), activityId, open))
-  }
+  }, [applyActivityExpansion])
 
-  function handleActivityEntryToggle(activityId: string, entryId: string, open: boolean) {
+  const handleActivityEntryToggle = useCallback((activityId: string, entryId: string, open: boolean) => {
     applyActivityExpansion(
       setChatActivityEntryOpen(currentActivityExpansion(), activityId, entryId, open),
     )
-  }
+  }, [applyActivityExpansion])
+
+  // 子代理引用同样要恒定（折叠块的 memo 依赖它）。
+  const openSubagentCitation = useCallback((task: SubagentTask) => {
+    composer.current?.appendQuote(subagentCitationText(task))
+  }, [])
 
   async function refreshUserSkills() {
     try {
@@ -2866,9 +2934,9 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                   // 无样式 wrapper：子段的 mb-7 margin 照常塌陷，布局不变；key 和锚定 id 都挂在它上面。
                   <div key={item.id} data-transcript-block={item.id}>
                   {item.kind === 'process' ? (
-                    <ChatProcessFold
+                    <MemoChatProcessFold
                       process={item}
-                      model={chatFoldModel(chatTranscript, item.id, running)}
+                      model={chatFoldModels.get(item.id) ?? chatFoldEvaluator.modelFor(item.id, running)}
                       recoverableFailureId={recoverableFailureId}
                       recoveryContext={ctfSession ? 'ctf' : 'coding'}
                       rewindableUserMessageId={rewindableUserMessageId}
@@ -2880,12 +2948,12 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       memoKey={transcriptMemoKey}
                       onToggleGroup={handleActivityGroupToggle}
                       onToggleEntry={handleActivityEntryToggle}
-                      onRespondApproval={(requestId, approved, scope, choice) => onRespondApproval?.(requestId, approved, scope, choice)}
-                      onRetry={resumeAfterFailure}
-                      onEditUser={(messageId, content) => onEditUser?.(messageId, content)}
-                      onRewindContext={() => onRewindContext?.()}
-                      onBranchAssistant={branchFromAssistantMessage}
-                      onOpenSubagent={task => composer.current?.appendQuote(subagentCitationText(task))}
+                      onRespondApproval={transcriptHandlers.onRespondApproval}
+                      onRetry={transcriptHandlers.onRetry}
+                      onEditUser={transcriptHandlers.onEditUser}
+                      onRewindContext={transcriptHandlers.onRewindContext}
+                      onBranchAssistant={transcriptHandlers.onBranchAssistant}
+                      onOpenSubagent={openSubagentCitation}
                     />
                   ) : item.kind === 'image' ? (
                     <ChatGeneratedImage
@@ -2893,15 +2961,15 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       path={item.path}
                     />
                   ) : item.kind === 'activity' ? (
-                    <ChatActivityGroup
+                    <MemoChatActivityGroup
                       activity={item}
-                      model={chatFoldModel(chatTranscript, item.id, running)}
+                      model={chatFoldModels.get(item.id) ?? chatFoldEvaluator.modelFor(item.id, running)}
                       open={chatActivityGroupIsOpen(item.id)}
                       openEntryIds={chatActivityOpenEntries(item.id)}
                       subagentTasks={conversation?.subagentTasks}
-                      onToggleGroup={open => handleActivityGroupToggle(item.id, open)}
-                      onToggleEntry={(entryId, open) => handleActivityEntryToggle(item.id, entryId, open)}
-                      onOpenSubagent={task => composer.current?.appendQuote(subagentCitationText(task))}
+                      onToggleGroup={handleActivityGroupToggle}
+                      onToggleEntry={handleActivityEntryToggle}
+                      onOpenSubagent={openSubagentCitation}
                     />
                   ) : (
                     <ChatMessageItem
@@ -2911,13 +2979,15 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       canRewind={item.message.id === rewindableUserMessageId}
                       rewindDisabled={rewindUnavailable}
                       kernel={agentKernel}
-                      thinkingDefaultOpen={thinkingStaysOpen(item.message.id, chatTranscript)}
-                      thinkingFoldKey={thinkingFoldKey}
-                      onRespondApproval={(requestId, approved, scope, choice) => onRespondApproval?.(requestId, approved, scope, choice)}
-                      onRetry={resumeAfterFailure}
-                      onEditUser={(messageId, content) => onEditUser?.(messageId, content)}
-                      onRewindContext={() => onRewindContext?.()}
-                      onBranchAssistant={branchFromAssistantMessage}
+                      // 「最新一段已完成的思考保持展开、进行中的展开」（上游原行为），
+                      // 但不在渲染循环里逐段全表扫：thinkingFoldKey 已按转写预计算一次（O(n)），
+                      // 这里每段只做 O(1) 比较。
+                      thinkingDefaultOpen={item.message.thinkingStatus === 'running' || item.message.id === thinkingFoldKey}
+                      onRespondApproval={transcriptHandlers.onRespondApproval}
+                      onRetry={transcriptHandlers.onRetry}
+                      onEditUser={transcriptHandlers.onEditUser}
+                      onRewindContext={transcriptHandlers.onRewindContext}
+                      onBranchAssistant={transcriptHandlers.onBranchAssistant}
                     />
                   )}
                   </div>

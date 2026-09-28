@@ -35,24 +35,72 @@ function toolMessages(block: ChatTranscriptBlock): Message[] {
   return []
 }
 
-function turnBounds(blocks: readonly ChatTranscriptBlock[], index: number) {
-  let start = 0
-  for (let cursor = index; cursor >= 0; cursor -= 1) {
-    const block = blocks[cursor]
-    if (block?.kind === 'message' && block.message.role === 'user') {
-      start = cursor + 1
-      break
+interface ChatFoldTurn {
+  start: number
+  end: number
+  workCount: number
+  lastWork: string
+}
+
+// 渲染循环里每段都问一次「这一段属于哪一轮、谁是 live 锚点、这一轮有几个过程块」。
+// 以前每次都要对整份转写做 findIndex + 全表扫锚点（万条级对话里单次渲染上百毫秒）。
+// 这里一次扫描把答案都建好，之后 modelFor 只做 O(1) 查表。
+interface ChatFoldIndex {
+  blocks: readonly ChatTranscriptBlock[]
+  indexById: Map<string, number>
+  turnStartByIndex: number[]
+  turns: Map<number, ChatFoldTurn>
+  liveAnchorId: string
+}
+
+function buildChatFoldIndex(blocks: readonly ChatTranscriptBlock[]): ChatFoldIndex {
+  const indexById = new Map<string, number>()
+  for (let cursor = 0; cursor < blocks.length; cursor += 1) {
+    const id = blocks[cursor]!.id
+    if (!indexById.has(id)) indexById.set(id, cursor)
+  }
+  // 与旧的 turnBounds 逐字同义：从自己往前找最近的 user 块，起点取它的下一格；
+  // 自己就是 user 块时起点是自己下一格。
+  const turnStartByIndex: number[] = new Array(blocks.length)
+  let lastUser = -1
+  for (let cursor = 0; cursor < blocks.length; cursor += 1) {
+    const block = blocks[cursor]!
+    if (block.kind === 'message' && block.message.role === 'user') {
+      turnStartByIndex[cursor] = cursor + 1
+      lastUser = cursor
+    } else {
+      turnStartByIndex[cursor] = lastUser + 1
     }
   }
-  let end = blocks.length
-  for (let cursor = start; cursor < blocks.length; cursor += 1) {
-    const block = blocks[cursor]
-    if (block?.kind === 'message' && block.message.role === 'user') {
-      end = cursor
-      break
+  const nextUserAtOrAfter: number[] = new Array(blocks.length + 1)
+  nextUserAtOrAfter[blocks.length] = blocks.length
+  for (let cursor = blocks.length - 1; cursor >= 0; cursor -= 1) {
+    const block = blocks[cursor]!
+    const isUser = block.kind === 'message' && block.message.role === 'user'
+    nextUserAtOrAfter[cursor] = isUser ? cursor : nextUserAtOrAfter[cursor + 1]!
+  }
+  const turns = new Map<number, ChatFoldTurn>()
+  for (let cursor = 0; cursor < blocks.length; cursor += 1) {
+    const block = blocks[cursor]!
+    const start = turnStartByIndex[cursor]!
+    let turn = turns.get(start)
+    if (!turn) {
+      const isUser = block.kind === 'message' && block.message.role === 'user'
+      // 终点是「这一轮里的下一个 user 块」，与旧 turnBounds 的正向扫描一致。
+      turn = {
+        start,
+        end: isUser ? nextUserAtOrAfter[cursor + 1]! : nextUserAtOrAfter[cursor]!,
+        workCount: 0,
+        lastWork: '',
+      }
+      turns.set(start, turn)
+    }
+    if (block.kind === 'process' || block.kind === 'activity') {
+      turn.workCount += 1
+      turn.lastWork = block.id
     }
   }
-  return { start, end }
+  return { blocks, indexById, turnStartByIndex, turns, liveAnchorId: chatLiveAnchorId(blocks) }
 }
 
 export function chatLiveAnchorId(blocks: readonly ChatTranscriptBlock[]) {
@@ -168,35 +216,29 @@ function ownThinkingMs(block: ChatTranscriptBlock | undefined): number {
   )
 }
 
-export function chatFoldModel(
-  blocks: readonly ChatTranscriptBlock[],
+function foldModel(
+  index: ChatFoldIndex,
   blockId: string,
   conversationRunning: boolean,
-  now = Date.now(),
+  now: number,
 ): ChatFoldModel {
-  const index = blocks.findIndex(block => block.id === blockId)
-  const own = index >= 0 ? toolMessages(blocks[index]!) : []
+  const blocks = index.blocks
+  const at = index.indexById.get(blockId) ?? -1
+  const own = at >= 0 ? toolMessages(blocks[at]!) : []
   const ownEntries = buildChatActivityEntries(own)
-  const empty = {
+  const empty: ChatFoldModel = {
     entries: ownEntries,
-    thinkingMs: ownThinkingMs(index >= 0 ? blocks[index] : undefined),
+    thinkingMs: ownThinkingMs(at >= 0 ? blocks[at] : undefined),
     thinkingRunning: false,
     liveLabel: '',
   }
-  if (index < 0) return empty
-  const { start, end } = turnBounds(blocks, index)
-  let lastWork = ''
-  let workCount = 0
-  for (let cursor = start; cursor < end; cursor += 1) {
-    const block = blocks[cursor]!
-    if (block.kind === 'process' || block.kind === 'activity') {
-      workCount += 1
-      lastWork = block.id
-    }
-  }
-  const live = conversationRunning && chatLiveAnchorId(blocks) === blockId
-  const wide = live || (lastWork === blockId && workCount === 1)
+  if (at < 0) return empty
+  const turn = index.turns.get(index.turnStartByIndex[at]!)
+  if (!turn) return empty
+  const live = conversationRunning && index.liveAnchorId === blockId
+  const wide = live || (turn.lastWork === blockId && turn.workCount === 1)
   if (!wide) return empty
+  const { start, end } = turn
 
   const messages: Message[] = []
   let thinkingMs = 0
@@ -245,6 +287,35 @@ export function chatFoldModel(
     thinkingStartedAt: live ? thinkingStartedAt : undefined,
     liveLabel,
   }
+}
+
+/**
+ * 渲染循环专用的预计算评估器：索引只建一次，之后每段查询 O(1)。
+ * ChatPage 用 `useMemo([chatTranscript])` 建一份，在 visibleTranscript 循环里直接取值，
+ * 避免下游此前「每段一次全表扫描」的 O(n²)。
+ */
+export interface ChatFoldEvaluator {
+  modelFor(blockId: string, conversationRunning: boolean, now?: number): ChatFoldModel
+}
+
+export function createChatFoldEvaluator(blocks: readonly ChatTranscriptBlock[]): ChatFoldEvaluator {
+  const index = buildChatFoldIndex(blocks)
+  return {
+    modelFor: (blockId, conversationRunning, now = Date.now()) => (
+      foldModel(index, blockId, conversationRunning, now)
+    ),
+  }
+}
+
+// 单次调用的旧签名保留（测试与非渲染路径仍可用）。它每次自建索引，
+// 所以**不要在渲染循环里直接调用**——循环里请用 createChatFoldEvaluator。
+export function chatFoldModel(
+  blocks: readonly ChatTranscriptBlock[],
+  blockId: string,
+  conversationRunning: boolean,
+  now = Date.now(),
+): ChatFoldModel {
+  return foldModel(buildChatFoldIndex(blocks), blockId, conversationRunning, now)
 }
 
 export function chatFoldElapsedLabel(model: ChatFoldModel, now = Date.now()) {

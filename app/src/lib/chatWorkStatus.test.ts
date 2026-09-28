@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildChatTranscript } from '@/lib/chatActivity'
-import { chatFoldModel, chatWorkTotalsLabel } from '@/lib/chatWorkStatus'
+import { chatFoldModel, chatWorkTotalsLabel, createChatFoldEvaluator } from '@/lib/chatWorkStatus'
 import { applyUiLocale } from '@/lib/uiLocale'
 import type { Message } from '@/types'
 
@@ -21,6 +21,35 @@ function message(
 }
 
 describe('chatWorkStatus', () => {
+  // 渲染循环用的是预计算评估器（索引建一次、每段 O(1)）；它必须与单次调用的
+  // `chatFoldModel` 给出**逐字相同**的结果 —— 否则"性能修好了、显示变了"就白改了。
+  it('预计算评估器与单次调用 chatFoldModel 结果一致（多轮 + 两种 running）', () => {
+    applyUiLocale('zh')
+    const transcript = buildChatTranscript([
+      message('u1', 'user', '第一轮'),
+      message('a1', 'assistant', '', { thinking: '想一下。', thinkingStatus: 'done', thinkingDurationMs: 300 }),
+      message('t1', 'tool', '/repo/a.ts', { toolName: 'read' }),
+      message('t2', 'tool', 'npm test', { toolName: 'bash' }),
+      message('a2', 'assistant', '第一轮完成。'),
+      message('u2', 'user', '第二轮'),
+      message('a3', 'assistant', '', { thinking: '还在想。', thinkingStatus: 'running', status: 'running' }),
+      message('t3', 'tool', 'src/x.py', { toolName: 'read', status: 'running' }),
+      message('u3', 'user', '第三轮'),
+      message('t4', 'tool', 'git status', { toolName: 'bash' }),
+      message('a4', 'assistant', '结束。'),
+    ], false)
+    const evaluator = createChatFoldEvaluator(transcript)
+    for (const running of [false, true]) {
+      for (const block of transcript) {
+        const direct = chatFoldModel(transcript, block.id, running, 1_000)
+        const cached = evaluator.modelFor(block.id, running, 1_000)
+        expect(JSON.stringify(cached), `block=${block.id} running=${running}`)
+          .toBe(JSON.stringify(direct))
+      }
+    }
+    expect(evaluator.modelFor('no-such-block', true, 1_000).entries).toEqual([])
+  })
+
   it('counts a finished turn as thinking, files, and commands', () => {
     applyUiLocale('zh')
     const transcript = buildChatTranscript([
