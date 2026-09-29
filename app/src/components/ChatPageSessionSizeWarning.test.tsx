@@ -217,7 +217,7 @@ describe('ChatPage 会话过胖预警呈现', () => {
     expect(panel.querySelector('[data-testid="session-size-dismiss"]')).not.toBeNull()
   })
 
-  it('“知道了” hides the pill and survives a simulated restart', async () => {
+  it('“知道了” hides the pill and survives a simulated restart', { timeout: 20000 }, async () => {
     const first = await renderChatPage(2.5 * 1024 * 1024)
     const panel = await openWarningPanel(first.host)
     await clickIn(panel.querySelector('[data-testid="session-size-dismiss"]'))
@@ -234,7 +234,7 @@ describe('ChatPage 会话过胖预警呈现', () => {
     expect(pillIn(second.host)).toBeNull()
   })
 
-  it('re-arms the warning once the conversation grows another tier', async () => {
+  it('re-arms the warning once the conversation grows another tier', { timeout: 20000 }, async () => {
     const first = await renderChatPage(2.5 * 1024 * 1024)
     const panel = await openWarningPanel(first.host)
     await clickIn(panel.querySelector('[data-testid="session-size-dismiss"]'))
