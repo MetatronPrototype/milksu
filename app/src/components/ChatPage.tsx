@@ -3004,7 +3004,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       onOpenSubagent={openSubagentCitation}
                     />
                   ) : (
-                    <ChatMessageItem
+                    <MemoChatMessageItem
                       message={item.message}
                       recoverable={item.message.id === recoverableFailureId}
                       recoveryContext={ctfSession ? 'ctf' : 'coding'}
