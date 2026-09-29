@@ -122,7 +122,7 @@ import {
   LOCAL_CODING_SHELL_ID,
   shouldRememberCodingProject,
 } from '@/lib/codingProjectMemory'
-import { buildChatActivityEntries, createChatTranscriptBuilder, hasEmptyVisibleReply, latestFinishedThinkingId, type ChatTranscriptBlock } from '@/lib/chatActivity'
+import { buildChatActivityEntries, createChatTranscriptBuilder, hasEmptyVisibleReply, isContentOnlyMessageChange, latestFinishedThinkingId, type ChatTranscriptBlock } from '@/lib/chatActivity'
 import { createChatFoldEvaluator, type ChatFoldModel } from '@/lib/chatWorkStatus'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
 import { latestCodingPlan } from '@/lib/codingPlan'
@@ -190,6 +190,7 @@ import type {
   CodingProductActionRequest,
   Conversation,
   CTFChatAction,
+  Message,
   ModelThinkingLevel,
   SubagentTask,
 } from '@/types'
@@ -328,6 +329,22 @@ export type ChatPageProps = {
 export type ChatPageHandle = {
   focusComposer: () => Promise<void>
   revealTranscriptMessage: (messageId: string) => Promise<boolean>
+}
+
+/**
+ * 只在「结构变化」时换引用的 messages 视图。
+ *
+ * 流式每来一个正文/思考增量，`conversation.messages` 都会换成新数组（只换了尾部那一条）。
+ * 按全量消息聚合的派生值（文件 diff 预览、computer-use 证据）本来会跟着每个增量重扫 2 万条；
+ * 这里把它们钉在「上一个结构版本」的数组上：打字不会多出一次编辑、也不会多出一条证据，
+ * 所以结果原样有效。判定只做对象身份比较（万条级 ~0.03ms）。
+ */
+function useStructuralMessages(messages: Message[]): Message[] {
+  const stateRef = useRef({ previous: messages, stable: messages })
+  const state = stateRef.current
+  if (!isContentOnlyMessageChange(state.previous, messages)) state.stable = messages
+  state.previous = messages
+  return state.stable
 }
 
 const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
@@ -996,9 +1013,11 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     pickerGroups,
     providers: settings?.providers,
   }), [currentModelSelection, conversation?.modelSource, pickerGroups, settings?.providers])
+  // 全量聚合派生值的输入：只在结构变化时换引用（正文/思考增量不击穿它们）。
+  const structuralMessages = useStructuralMessages(conversation?.messages ?? [])
   const computerUseOperationEvidence = useMemo(() => (
-    extractLatestComputerUseOperationEvidence(conversation?.messages ?? [])
-  ), [conversation?.messages])
+    extractLatestComputerUseOperationEvidence(structuralMessages)
+  ), [structuralMessages])
   // 转写构建：每次增量都用同一个 builder，未变的块会拿回上一次的**同一个对象** ——
   // 这是 ChatProcessFold/ChatActivityGroup 的 memo 能在流式里命中的前提（否则每个 delta 整窗重渲染）。
   const chatTranscriptBuilder = useMemo(() => createChatTranscriptBuilder(), [])
@@ -1068,8 +1087,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     (conversation?.subagentTasks ?? []).map(task => `${task.id}:${task.status}`).join(','),
   ].join('|')
   const conversationFileDiffs = useMemo(() => (
-    agentFileDiffChips(buildChatActivityEntries(conversation?.messages ?? []))
-  ), [conversation?.messages])
+    agentFileDiffChips(buildChatActivityEntries(structuralMessages))
+  ), [structuralMessages])
   const hasExecutionPlan = Boolean(latestCodingPlan(conversation?.messages ?? []))
   const hasComposerDock = hasExecutionPlan || Boolean(composerGitSummary)
   const waitingForModel = useMemo(() => {

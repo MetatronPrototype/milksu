@@ -311,8 +311,12 @@ export function detailsToggleOpen(event: { target: EventTarget | null; currentTa
   return typeof details?.open === 'boolean' ? details.open : undefined
 }
 
-export function buildChatTranscript(
-  messages: Message[],
+/**
+ * 未折叠的回合块。`buildChatTranscript` 与增量构建器共用这一段，保证两条路
+ * 逐字节同义（只有最后那一次 `foldChatTranscriptProcess` 分开做）。
+ */
+function buildChatTurnBlocks(
+  messages: readonly Message[],
   conversationRunning: boolean,
 ): ChatTranscriptBlock[] {
   const blocks: ChatTranscriptBlock[] = []
@@ -353,7 +357,44 @@ export function buildChatTranscript(
   }
   flush()
 
-  return foldChatTranscriptProcess(blocks)
+  return blocks
+}
+
+/**
+ * 「只是尾部消息被换了一段内容」：长度不变，且前面每一条都还是同一个对象。
+ * 流式的 `assistant.delta` / `thinking_delta` 都长这样。
+ *
+ * 用途：`conversationFileDiffs` / `extractLatestComputerUseOperationEvidence` 这类
+ * **按全量消息聚合**的派生值，不必为一次正文增量重扫 2 万条消息 —— 打字不会多出一次编辑、
+ * 也不会多出一条 computer-use 证据。判定本身只做对象身份比较（万条级 ~0.03ms）。
+ */
+export function isContentOnlyMessageChange(
+  previous: readonly Message[],
+  next: readonly Message[],
+): boolean {
+  if (previous.length !== next.length) return false
+  for (let index = 0; index < next.length - 1; index += 1) {
+    if (previous[index] !== next[index]) return false
+  }
+  return true
+}
+
+/** 转写里最后一个**真正显示**的用户消息下标（排队中的不算；没有则 -1）。 */
+function lastRenderedUserIndex(messages: readonly Message[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (!message || message.role !== 'user') continue
+    if (message.status === 'queued') continue
+    return index
+  }
+  return -1
+}
+
+export function buildChatTranscript(
+  messages: Message[],
+  conversationRunning: boolean,
+): ChatTranscriptBlock[] {
+  return foldChatTranscriptProcess(buildChatTurnBlocks(messages, conversationRunning))
 }
 
 export function isThinkingOnlyAssistant(message: Message) {
@@ -605,14 +646,18 @@ function sameMemoRefs(first: readonly unknown[], second: readonly unknown[]): bo
 }
 
 /**
- * 增量转写构建器：`buildChatTranscript` 每次都会重建**所有**块对象，流式每来一个增量，
- * 全窗的 `process`/`activity` 块身份就全变一次。下游 `ChatProcessFold`/`ChatActivityGroup`
- * 都是 `memo`，靠对象身份判断，于是每个增量都整窗重渲染（真机 2.1 万条对话里 185 个折叠块
- * 每个增量全部重渲染，主线程被流式喂满、看起来就是死机）。
+ * 转写构建器（第五单改造）。两道保险：
  *
- * 这里按块 id 记住上一次的块：只要这一块的**记忆引用**（`chatTranscriptBlockMemoRefs`，只认
- * 消息对象身份，不认每次重建的数组）没变，就直接把旧对象还回去。消息对象只在内容真的变了
- * 时才被替换（流式只替换尾部那一条），所以未变块的身份在增量之间保持稳定，memo 真正生效。
+ * 1) **回合级增量**：`buildChatTranscript` 每个增量都从 2 万条消息重头扫一遍（含折叠前的
+ *    分块与 `foldChatTranscriptProcess`），万条级对话实测 ~6ms，叠加身份复用的 Map 开销
+ *    ~14ms/增量。流式只动**最后一个回合**，所以这里把「最后一个真正显示的用户消息」当作
+ *    回合边界：边界之前的前缀只在边界/内容变化时重建一次，每个增量只重建边界之后的尾巴。
+ *    折叠是逐回合独立的（`foldChatTranscriptProcess` 遇到 user 块就开新回合），
+ *    `fold(前缀) ++ fold(尾巴)` 与 `fold(全体)` 逐段同义。
+ *
+ * 2) **身份复用**：按块 id 记住上一次的块，只要这一块的**记忆引用**
+ *    （`chatTranscriptBlockMemoRefs`，只认消息对象身份）没变，就把旧对象还回去，
+ *    下游 `ChatProcessFold`/`ChatActivityGroup` 的 `memo` 才真正命中。
  *
  * 用法：每个 ChatPage 实例建一份（`useMemo(() => createChatTranscriptBuilder(), [])`），
  * 不要放到模块级共享，否则跨会话互相污染缓存。
@@ -621,24 +666,59 @@ export interface ChatTranscriptBuilder {
   build(messages: Message[], conversationRunning: boolean): ChatTranscriptBlock[]
 }
 
+/** 前缀 [0, end) 是否与缓存逐条同身份。 */
+function sameMessagePrefix(
+  messages: readonly Message[],
+  cached: readonly Message[],
+  end: number,
+): boolean {
+  if (cached.length < end) return false
+  for (let index = 0; index < end; index += 1) {
+    if (messages[index] !== cached[index]) return false
+  }
+  return true
+}
+
 export function createChatTranscriptBuilder(): ChatTranscriptBuilder {
   // 常量 sharedKey：块自己的渲染只由“这一块的内容”决定，sharedKey 那批开关（恢复失败、
   // 可回退、折叠展开版本等）是以独立 prop 传进组件的，不该由这里决定块身份是否复用。
   const REF_KEY = 'chatTranscriptBlock'
-  let previous = new Map<string, { refs: readonly unknown[]; block: ChatTranscriptBlock }>()
+  const previous = new Map<string, { refs: readonly unknown[]; block: ChatTranscriptBlock }>()
+  const stabilize = (blocks: ChatTranscriptBlock[]): ChatTranscriptBlock[] => blocks.map(block => {
+    const refs = chatTranscriptBlockMemoRefs(block, REF_KEY)
+    const cached = previous.get(block.id)
+    const reused = cached && sameMemoRefs(cached.refs, refs) ? cached.block : block
+    previous.set(block.id, { refs, block: reused })
+    return reused
+  })
+
+  // 前缀缓存：messages[0, prefixEnd) 的转写块（已折叠、已稳定）。
+  let prefixEnd = -1
+  let prefixMessages: readonly Message[] = []
+  let prefixBlocks: ChatTranscriptBlock[] = []
+  let sawMessages = false
+
   return {
     build(messages, conversationRunning) {
-      const blocks = buildChatTranscript(messages, conversationRunning)
-      const next = new Map<string, { refs: readonly unknown[]; block: ChatTranscriptBlock }>()
-      const stable = blocks.map(block => {
-        const refs = chatTranscriptBlockMemoRefs(block, REF_KEY)
-        const cached = previous.get(block.id)
-        const reused = cached && sameMemoRefs(cached.refs, refs) ? cached.block : block
-        next.set(block.id, { refs, block: reused })
-        return reused
-      })
-      previous = next
-      return stable
+      const lastUser = lastRenderedUserIndex(messages)
+      const boundary = lastUser < 0 ? 0 : lastUser
+      const reusePrefix = sawMessages
+        && prefixEnd === boundary
+        && sameMessagePrefix(messages, prefixMessages, boundary)
+
+      if (!reusePrefix) {
+        prefixBlocks = stabilize(foldChatTranscriptProcess(
+          buildChatTurnBlocks(messages.slice(0, boundary), conversationRunning),
+        ))
+        prefixMessages = messages
+        prefixEnd = boundary
+        sawMessages = true
+      }
+
+      const tailBlocks = stabilize(foldChatTranscriptProcess(
+        buildChatTurnBlocks(messages.slice(boundary), conversationRunning),
+      ))
+      return prefixBlocks.length ? prefixBlocks.concat(tailBlocks) : tailBlocks
     },
   }
 }
