@@ -120,7 +120,7 @@ import {
   LOCAL_CODING_SHELL_ID,
   shouldRememberCodingProject,
 } from '@/lib/codingProjectMemory'
-import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, latestFinishedThinkingId, thinkingStaysOpen } from '@/lib/chatActivity'
+import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, thinkingStaysOpen } from '@/lib/chatActivity'
 import { chatFoldModel } from '@/lib/chatWorkStatus'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
 import { latestCodingPlan } from '@/lib/codingPlan'
@@ -196,6 +196,11 @@ import {
 } from '@/composables/useConversations'
 import { useConversations } from '@/stores/conversationsStore'
 import { composerDraftKey } from '@/lib/composerDraftStore'
+import {
+  formatSessionSize,
+  sessionSizeReport,
+  sessionSizeWarningKey,
+} from '@/lib/sessionSizeWarning'
 import { subagentCitationText } from '@/lib/subagentRoster'
 import { conversationWorkspaceHome } from '@/lib/workspaceSessionRouting'
 import {
@@ -525,6 +530,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const artifactPanel = useRef<CodingArtifactPreviewPanelHandle | null>(null)
   const [requestedArtifactPath, setRequestedArtifactPath] = useState('')
   const [imageGalleryRefreshToken, setImageGalleryRefreshToken] = useState(0)
+  // 会话过胖预警被「知道了」关掉的档位（按会话 + 体积档位，涨一档会重新提醒）。
+  const [dismissedSessionSizeKeys, setDismissedSessionSizeKeys] = useState<Set<string>>(() => new Set())
   const [, setEnvironmentLoading] = useState(false)
   const [environmentError, setEnvironmentError] = useState('')
   const [browserPanelError, setBrowserPanelError] = useState('')
@@ -993,13 +1000,20 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     pickerGroups,
     providers: settings?.providers,
   }), [currentModelSelection, conversation?.modelSource, pickerGroups, settings?.providers])
+  // 预警口径：待发上下文体积（正文/思考/工具/附件），结构变化时重算。
+  const sessionSize = useMemo(() => sessionSizeReport(conversation?.messages ?? []), [conversation?.messages])
+  const sessionSizeWarningKeyValue = conversation?.id
+    ? sessionSizeWarningKey(conversation.id, sessionSize)
+    : ''
+  const sessionSizeWarningVisible = sessionSize.over
+    && Boolean(conversation?.id)
+    && !dismissedSessionSizeKeys.has(sessionSizeWarningKeyValue)
   const computerUseOperationEvidence = useMemo(() => (
     extractLatestComputerUseOperationEvidence(conversation?.messages ?? [])
   ), [conversation?.messages])
   const chatTranscript = useMemo(() => (
     buildChatTranscript(conversation?.messages ?? [], running)
   ), [conversation?.messages, running])
-  const thinkingFoldKey = useMemo(() => latestFinishedThinkingId(chatTranscript), [chatTranscript])
   chatTranscriptLengthRef.current = chatTranscript.length
   const recoverableFailureId = useMemo(() => (
     recoverableAgentFailureId(conversation?.messages ?? [], running)
@@ -2912,7 +2926,6 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       rewindDisabled={rewindUnavailable}
                       kernel={agentKernel}
                       thinkingDefaultOpen={thinkingStaysOpen(item.message.id, chatTranscript)}
-                      thinkingFoldKey={thinkingFoldKey}
                       onRespondApproval={(requestId, approved, scope, choice) => onRespondApproval?.(requestId, approved, scope, choice)}
                       onRetry={resumeAfterFailure}
                       onEditUser={(messageId, content) => onEditUser?.(messageId, content)}
@@ -3006,6 +3019,48 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             >
               {compactionError}
             </p>
+          ) : null}
+
+          {/* 会话过胖预警：非阻断，随时可继续用；提醒读者请求容易超时，可压缩或新开。 */}
+          {sessionSizeWarningVisible ? (
+            <div
+              className="mx-auto mb-2 flex w-[min(46rem,100%)] flex-wrap items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-caption text-amber-700 dark:text-amber-300"
+              data-testid="session-size-warning"
+              role="status"
+            >
+              <span className="min-w-0 flex-1">
+                {t(
+                  `该会话已约 ${formatSessionSize(sessionSize.chars)}，请求容易超时。建议压缩上下文，或新开一个会话继续。`,
+                  `This conversation is about ${formatSessionSize(sessionSize.chars)}, so requests can time out. Compact the context, or continue in a new chat.`,
+                )}
+              </span>
+              {onCompactContext && !compacting ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  data-testid="session-size-compact"
+                  onClick={() => onCompactContext()}
+                >
+                  {t('压缩上下文', 'Compact')}
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                data-testid="session-size-dismiss"
+                onClick={() => {
+                  setDismissedSessionSizeKeys(previous => {
+                    const next = new Set(previous)
+                    next.add(sessionSizeWarningKeyValue)
+                    return next
+                  })
+                }}
+              >
+                {t('知道了', 'Got it')}
+              </Button>
+            </div>
           ) : null}
 
           {hasComposerDock ? (
