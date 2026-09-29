@@ -77,3 +77,51 @@ export function formatSessionSize(chars: number): string {
 export function sessionSizeWarningKey(conversationId: string, report: SessionSizeReport): string {
   return `${conversationId}:${Math.floor(report.ratio)}`
 }
+
+/**
+ * 「知道了」关掉的档位要能扛住重启：原来只存在 ChatPage 的 useState 里，重开就丢，
+ * 同一档预警又冒出来。这里落盘到 localStorage，键沿用 sessionSizeWarningKey 的格式。
+ * 上限只是防无限增长；键都很短（会话 id + 档位），到不了配额。
+ */
+export const SESSION_SIZE_DISMISS_STORAGE_KEY = 'milksu.session-size-dismissed.v1'
+export const MAX_DISMISSED_SESSION_SIZE_KEYS = 200
+
+function warningStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
+  try {
+    return typeof window === 'undefined' ? null : window.localStorage ?? null
+  } catch {
+    // 隐私模式 / 配额：读不到就退化成「没关过」，写成纯内存态，不影响预警本身。
+    return null
+  }
+}
+
+function normalizeDismissedKeys(values: Iterable<string>): string[] {
+  return [...values]
+    .filter(value => typeof value === 'string' && value.length > 0)
+    .slice(-MAX_DISMISSED_SESSION_SIZE_KEYS)
+}
+
+export function readDismissedSessionSizeKeys(
+  storage: Pick<Storage, 'getItem'> | null = warningStorage(),
+): Set<string> {
+  try {
+    const raw = storage?.getItem(SESSION_SIZE_DISMISS_STORAGE_KEY)
+    if (!raw) return new Set()
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(normalizeDismissedKeys(parsed as string[]))
+  } catch {
+    return new Set()
+  }
+}
+
+export function writeDismissedSessionSizeKeys(
+  keys: Iterable<string>,
+  storage: Pick<Storage, 'setItem'> | null = warningStorage(),
+): void {
+  try {
+    storage?.setItem(SESSION_SIZE_DISMISS_STORAGE_KEY, JSON.stringify(normalizeDismissedKeys(keys)))
+  } catch {
+    // 落盘失败不该阻断交互：内存里的这份仍然生效。
+  }
+}

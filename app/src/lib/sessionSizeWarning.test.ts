@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { Message } from '@/types'
 import {
+  MAX_DISMISSED_SESSION_SIZE_KEYS,
+  SESSION_SIZE_DISMISS_STORAGE_KEY,
   SESSION_SIZE_WARNING_BYTES,
   formatSessionSize,
   messageSizeChars,
+  readDismissedSessionSizeKeys,
   sessionPendingContextChars,
   sessionSizeReport,
   sessionSizeWarningKey,
+  writeDismissedSessionSizeKeys,
 } from './sessionSizeWarning'
 
 function message(overrides: Partial<Message> = {}): Message {
@@ -69,5 +73,49 @@ describe('sessionSizeWarning', () => {
     const bigger = sessionSizeReport([message({ content: 'x'.repeat(SESSION_SIZE_WARNING_BYTES * 3) })])
     expect(sessionSizeWarningKey('conv', small)).not.toBe(sessionSizeWarningKey('conv', bigger))
     expect(sessionSizeWarningKey('a', small)).not.toBe(sessionSizeWarningKey('b', small))
+  })
+})
+
+describe('dismissed session-size warnings persist across restarts', () => {
+  function fakeStorage(initial: Record<string, string> = {}) {
+    const map = new Map(Object.entries(initial))
+    return {
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => { map.set(key, value) },
+    }
+  }
+
+  it('round-trips the dismissed tiers through storage', () => {
+    const storage = fakeStorage()
+    writeDismissedSessionSizeKeys(['conv:1', 'conv:2'], storage)
+    expect(readDismissedSessionSizeKeys(storage)).toEqual(new Set(['conv:1', 'conv:2']))
+  })
+
+  it('reads an empty set when nothing was written or the payload is malformed', () => {
+    expect(readDismissedSessionSizeKeys(fakeStorage()).size).toBe(0)
+    expect(readDismissedSessionSizeKeys(fakeStorage({ [SESSION_SIZE_DISMISS_STORAGE_KEY]: '{oops' })).size).toBe(0)
+    expect(readDismissedSessionSizeKeys(fakeStorage({ [SESSION_SIZE_DISMISS_STORAGE_KEY]: '"nope"' })).size).toBe(0)
+    expect(readDismissedSessionSizeKeys(fakeStorage({ [SESSION_SIZE_DISMISS_STORAGE_KEY]: '["ok", 7, null]' })))
+      .toEqual(new Set(['ok']))
+  })
+
+  it('drops non-string entries and keeps only the newest capped tiers', () => {
+    const keys = Array.from({ length: MAX_DISMISSED_SESSION_SIZE_KEYS + 25 }, (_, index) => `conv:${index}`)
+    const storage = fakeStorage()
+    writeDismissedSessionSizeKeys(keys, storage)
+    const restored = readDismissedSessionSizeKeys(storage)
+    expect(restored.size).toBe(MAX_DISMISSED_SESSION_SIZE_KEYS)
+    // 淘汰最旧的：最新的那档一定还在，最早的已经不在了。
+    expect(restored.has(`conv:${keys.length - 1}`)).toBe(true)
+    expect(restored.has('conv:0')).toBe(false)
+  })
+
+  it('degrades to an empty set when storage throws (private mode / quota)', () => {
+    const throwing = {
+      getItem: () => { throw new Error('denied') },
+      setItem: () => { throw new Error('denied') },
+    }
+    expect(readDismissedSessionSizeKeys(throwing).size).toBe(0)
+    expect(() => writeDismissedSessionSizeKeys(['conv:1'], throwing)).not.toThrow()
   })
 })
