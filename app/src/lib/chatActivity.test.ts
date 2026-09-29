@@ -6,6 +6,7 @@ import {
   buildChatActivityEntries,
   visibleChatActivityEntries,
   buildChatTranscript,
+  createChatTranscriptBuilder,
   chatTranscriptBlockMemoRefs,
   detailsToggleOpen,
   hasEmptyVisibleReply,
@@ -851,5 +852,58 @@ describe('chatTranscriptBlockMemoRefs', () => {
       ],
     })
     expect(sameMemoRefs(before, appended)).toBe(false)
+  })
+})
+
+// 第四条卡死路径的根：`buildChatTranscript` 每次重建所有块对象，流式每来一个增量，
+// 可见窗口里每个 ChatProcessFold 的 process/model prop 身份就变一次 ⇒ memo 全被击穿。
+// 增量构建器要保证：未变块拿回**同一个对象**，只有真正变了的尾部块换新对象。
+describe('createChatTranscriptBuilder', () => {
+  const turn = (index: number) => [
+    message(`u-${index}`, 'user', `问题 ${index}`),
+    message(`t-${index}`, 'assistant', '', {
+      thinking: `第 ${index} 轮思考`,
+      thinkingStatus: 'done' as const,
+      thinkingDurationMs: 1000,
+    }),
+    message(`r-${index}`, 'tool', `/repo/file-${index}.ts`, { toolName: 'read', toolCallId: `call-${index}` }),
+  ]
+
+  it('hands back the same block objects while nothing changed', () => {
+    const builder = createChatTranscriptBuilder()
+    const messages = [...turn(0), ...turn(1)]
+    const first = builder.build(messages, true)
+    const second = builder.build(messages, true)
+    expect(second.map(block => block.id)).toEqual(first.map(block => block.id))
+    first.forEach((block, index) => {
+      expect(second[index]).toBe(block)
+    })
+  })
+
+  it('only replaces the block whose message actually changed', () => {
+    const builder = createChatTranscriptBuilder()
+    const messages = [...turn(0), ...turn(1)]
+    const first = builder.build(messages, true)
+
+    // 只有尾部的工具消息换了对象（流式追加），其余消息对象原样保留。
+    const next = messages.slice()
+    const tail = next[next.length - 1]!
+    next[next.length - 1] = { ...tail, content: `${String(tail.content)}…追加` }
+    const second = builder.build(next, true)
+
+    expect(first).toHaveLength(second.length)
+    expect(second[0]).toBe(first[0])
+    // 受影响的是最后一个（含该工具消息的）折叠块。
+    expect(second[second.length - 1]).not.toBe(first[first.length - 1])
+  })
+
+  it('notices the running flag even when the messages array is rebuilt', () => {
+    const builder = createChatTranscriptBuilder()
+    const messages = turn(0)
+    const running = builder.build(messages, true)
+    // 同一条工具消息：只把 status 改成 done（新的消息对象）。
+    const settled = messages.map(item => (item.role === 'tool' ? { ...item, status: 'done' as const } : item))
+    const done = builder.build(settled, true)
+    expect(done[done.length - 1]).not.toBe(running[running.length - 1])
   })
 })

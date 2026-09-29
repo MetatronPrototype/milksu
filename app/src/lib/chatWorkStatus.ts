@@ -296,14 +296,40 @@ function foldModel(
  */
 export interface ChatFoldEvaluator {
   modelFor(blockId: string, conversationRunning: boolean, now?: number): ChatFoldModel
+  /**
+   * 这一块的模型只由「块自身内容 + 它在哪一轮 / 是不是 live / 这一轮几个过程块」决定。
+   * 块内容不变时，只要这个签名字符串也不变，`modelFor` 的结果就逐字段相同；
+   * 调用方据此复用上一次的 model 对象，让下游 `memo`（ChatProcessFold → ChatWorkFold）真正命中。
+   */
+  modelContextKey(blockId: string, conversationRunning: boolean): string
 }
 
 export function createChatFoldEvaluator(blocks: readonly ChatTranscriptBlock[]): ChatFoldEvaluator {
   const index = buildChatFoldIndex(blocks)
+  const modelContextKey = (blockId: string, conversationRunning: boolean): string => {
+    const at = index.indexById.get(blockId) ?? -1
+    if (at < 0) return 'absent'
+    const block = blocks[at]!
+    const turnStart = index.turnStartByIndex[at]!
+    const turn = index.turns.get(turnStart)
+    if (!turn) return `turn:none:${turnStart}`
+    const live = conversationRunning && index.liveAnchorId === blockId
+    const wide = live || (turn.lastWork === blockId && turn.workCount === 1)
+    return [
+      turn.start,
+      turn.end,
+      turn.workCount,
+      turn.lastWork,
+      live ? 1 : 0,
+      wide ? 1 : 0,
+      block.kind === 'activity' ? (block.running ? 1 : 0) : 0,
+    ].join(':')
+  }
   return {
     modelFor: (blockId, conversationRunning, now = Date.now()) => (
       foldModel(index, blockId, conversationRunning, now)
     ),
+    modelContextKey,
   }
 }
 

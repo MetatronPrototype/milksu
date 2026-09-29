@@ -122,8 +122,8 @@ import {
   LOCAL_CODING_SHELL_ID,
   shouldRememberCodingProject,
 } from '@/lib/codingProjectMemory'
-import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, latestFinishedThinkingId } from '@/lib/chatActivity'
-import { createChatFoldEvaluator } from '@/lib/chatWorkStatus'
+import { buildChatActivityEntries, createChatTranscriptBuilder, hasEmptyVisibleReply, latestFinishedThinkingId, type ChatTranscriptBlock } from '@/lib/chatActivity'
+import { createChatFoldEvaluator, type ChatFoldModel } from '@/lib/chatWorkStatus'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
 import { latestCodingPlan } from '@/lib/codingPlan'
 import {
@@ -999,9 +999,12 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const computerUseOperationEvidence = useMemo(() => (
     extractLatestComputerUseOperationEvidence(conversation?.messages ?? [])
   ), [conversation?.messages])
+  // 转写构建：每次增量都用同一个 builder，未变的块会拿回上一次的**同一个对象** ——
+  // 这是 ChatProcessFold/ChatActivityGroup 的 memo 能在流式里命中的前提（否则每个 delta 整窗重渲染）。
+  const chatTranscriptBuilder = useMemo(() => createChatTranscriptBuilder(), [])
   const chatTranscript = useMemo(() => (
-    buildChatTranscript(conversation?.messages ?? [], running)
-  ), [conversation?.messages, running])
+    chatTranscriptBuilder.build(conversation?.messages ?? [], running)
+  ), [chatTranscriptBuilder, conversation?.messages, running])
   const thinkingFoldKey = useMemo(() => latestFinishedThinkingId(chatTranscript), [chatTranscript])
   // 折叠模型预计算：索引只建一次（O(n)，实测 ~1ms），渲染循环里每段 O(1) 查表。
   // 旧写法 `chatFoldModel(chatTranscript, item.id, running)` 每段都做 findIndex +
@@ -1126,15 +1129,25 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     [chatTranscript, transcriptWindow.start, transcriptWindow.end],
   )
   // 模型只为**可见窗口**（≤400 段）建：整份转写建一遍是 ~64ms，流式每个 delta 都付一次。
-  // 窗口内建一遍实测 <1ms；而且时钟每秒重渲染时 visibleTranscript 引用不变，模型身份也不变，
-  // 于是下面 memo 掉的折叠块能整块跳过。
+  // 窗口内建一遍实测 <1ms；而且时钟每秒重渲染时 visibleTranscript 引用不变，模型身份也不变。
+  // 关键：按 (块对象身份 + 上下文签名) 复用上一次的 model 对象。否则每个 delta 重建 185 份模型，
+  // ChatProcessFold 的 model prop 身份就变 → memo 失效 → 又是一次整窗重渲染。
+  const foldModelCacheRef = useRef<Map<string, { block: ChatTranscriptBlock; contextKey: string; model: ChatFoldModel }>>(new Map())
   const chatFoldModels = useMemo(() => {
-    const models = new Map<string, ReturnType<typeof chatFoldEvaluator.modelFor>>()
+    const models = new Map<string, ChatFoldModel>()
+    const cache = foldModelCacheRef.current
+    const next = new Map<string, { block: ChatTranscriptBlock; contextKey: string; model: ChatFoldModel }>()
     for (const block of visibleTranscript) {
-      if (block.kind === 'process' || block.kind === 'activity') {
-        models.set(block.id, chatFoldEvaluator.modelFor(block.id, running))
-      }
+      if (block.kind !== 'process' && block.kind !== 'activity') continue
+      const contextKey = chatFoldEvaluator.modelContextKey(block.id, running)
+      const cached = cache.get(block.id)
+      const model = cached && cached.block === block && cached.contextKey === contextKey
+        ? cached.model
+        : chatFoldEvaluator.modelFor(block.id, running)
+      models.set(block.id, model)
+      next.set(block.id, { block, contextKey, model })
     }
+    foldModelCacheRef.current = next
     return models
   }, [chatFoldEvaluator, visibleTranscript, running])
   const hasEarlierTranscript = transcriptWindow.hiddenBefore > 0

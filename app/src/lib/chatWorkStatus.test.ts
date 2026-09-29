@@ -141,3 +141,47 @@ describe('chatWorkStatus', () => {
     expect(chatWorkTotalsLabel(model.entries, model.thinkingMs)).toBe('1 个文件 · 1 次检索')
   })
 })
+
+// 模型复用靠这个签名：块对象身份没变、签名也没变，才能把上一次的 model 对象还回去。
+// 签名一旦漏了该变的维度（比如 live 锚点移动），折叠块就会显示旧状态。
+describe('createChatFoldEvaluator.modelContextKey', () => {
+  const turn = (index: number) => [
+    message(`u-${index}`, 'user', `问题 ${index}`),
+    message(`t-${index}`, 'assistant', '', {
+      thinking: `第 ${index} 轮思考`,
+      thinkingStatus: 'done',
+      thinkingDurationMs: 1000,
+    }),
+    message(`r-${index}`, 'tool', `/repo/file-${index}.ts`, { toolName: 'read', toolCallId: `call-${index}` }),
+  ]
+
+  function processIds(messages: Message[]) {
+    return buildChatTranscript(messages, true)
+      .filter(block => block.kind === 'process')
+      .map(block => block.id)
+  }
+
+  it('keeps an untouched early block’s key stable when the tail grows', () => {
+    const before = createChatFoldEvaluator(buildChatTranscript([...turn(0), ...turn(1)], true))
+    const afterMessages = [...turn(0), ...turn(1), ...turn(2)]
+    const after = createChatFoldEvaluator(buildChatTranscript(afterMessages, true))
+    const early = processIds([...turn(0), ...turn(1)])[0]!
+    expect(after.modelContextKey(early, true)).toBe(before.modelContextKey(early, true))
+
+    // 上一轮的 live 块会因为 live 锦点移走而变签名 —— 这正是必要的重算。
+    const wasLive = processIds([...turn(0), ...turn(1)])[1]!
+    expect(after.modelContextKey(wasLive, true)).not.toBe(before.modelContextKey(wasLive, true))
+  })
+
+  it('changes when the conversation stops running', () => {
+    const messages = [...turn(0), ...turn(1)]
+    const evaluator = createChatFoldEvaluator(buildChatTranscript(messages, true))
+    const live = processIds(messages)[1]!
+    expect(evaluator.modelContextKey(live, false)).not.toBe(evaluator.modelContextKey(live, true))
+  })
+
+  it('returns absent for an unknown block', () => {
+    const evaluator = createChatFoldEvaluator(buildChatTranscript(turn(0), true))
+    expect(evaluator.modelContextKey('nope', true)).toBe('absent')
+  })
+})

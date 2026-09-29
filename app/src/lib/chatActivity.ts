@@ -599,6 +599,50 @@ export function chatTranscriptBlockMemoRefs(
   return refs
 }
 
+function sameMemoRefs(first: readonly unknown[], second: readonly unknown[]): boolean {
+  return first.length === second.length
+    && first.every((value, index) => value === second[index])
+}
+
+/**
+ * 增量转写构建器：`buildChatTranscript` 每次都会重建**所有**块对象，流式每来一个增量，
+ * 全窗的 `process`/`activity` 块身份就全变一次。下游 `ChatProcessFold`/`ChatActivityGroup`
+ * 都是 `memo`，靠对象身份判断，于是每个增量都整窗重渲染（真机 2.1 万条对话里 185 个折叠块
+ * 每个增量全部重渲染，主线程被流式喂满、看起来就是死机）。
+ *
+ * 这里按块 id 记住上一次的块：只要这一块的**记忆引用**（`chatTranscriptBlockMemoRefs`，只认
+ * 消息对象身份，不认每次重建的数组）没变，就直接把旧对象还回去。消息对象只在内容真的变了
+ * 时才被替换（流式只替换尾部那一条），所以未变块的身份在增量之间保持稳定，memo 真正生效。
+ *
+ * 用法：每个 ChatPage 实例建一份（`useMemo(() => createChatTranscriptBuilder(), [])`），
+ * 不要放到模块级共享，否则跨会话互相污染缓存。
+ */
+export interface ChatTranscriptBuilder {
+  build(messages: Message[], conversationRunning: boolean): ChatTranscriptBlock[]
+}
+
+export function createChatTranscriptBuilder(): ChatTranscriptBuilder {
+  // 常量 sharedKey：块自己的渲染只由“这一块的内容”决定，sharedKey 那批开关（恢复失败、
+  // 可回退、折叠展开版本等）是以独立 prop 传进组件的，不该由这里决定块身份是否复用。
+  const REF_KEY = 'chatTranscriptBlock'
+  let previous = new Map<string, { refs: readonly unknown[]; block: ChatTranscriptBlock }>()
+  return {
+    build(messages, conversationRunning) {
+      const blocks = buildChatTranscript(messages, conversationRunning)
+      const next = new Map<string, { refs: readonly unknown[]; block: ChatTranscriptBlock }>()
+      const stable = blocks.map(block => {
+        const refs = chatTranscriptBlockMemoRefs(block, REF_KEY)
+        const cached = previous.get(block.id)
+        const reused = cached && sameMemoRefs(cached.refs, refs) ? cached.block : block
+        next.set(block.id, { refs, block: reused })
+        return reused
+      })
+      previous = next
+      return stable
+    },
+  }
+}
+
 
 export function visibleChatActivityEntries(
   entries: ChatActivityEntry[],
