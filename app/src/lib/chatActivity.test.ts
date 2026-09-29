@@ -906,4 +906,91 @@ describe('createChatTranscriptBuilder', () => {
     const done = builder.build(settled, true)
     expect(done[done.length - 1]).not.toBe(running[running.length - 1])
   })
+
+  // 第五单：回合级增量（前缀复用 + 只重建尾巴）必须与全量 buildChatTranscript 逐段同义。
+  // 这里在**同一份 builder** 上跑完整流式生命周期，每一步都深比对两条路。
+  it('回合级增量与全量 buildChatTranscript 逐段同义（含正文/思考/工具/新回合/排队用户）', () => {
+    const shape = (blocks: ReturnType<typeof buildChatTranscript>): string => blocks.map(block => {
+      if (block.kind === 'image') return `img|${block.id}|${block.path}`
+      if (block.kind === 'message') {
+        const x = block.message
+        return `msg|${block.id}|${x.id}|${x.role}|${x.status ?? ''}|${String(x.content ?? '').length}|${String(x.thinking ?? '').length}`
+      }
+      if (block.kind === 'activity') {
+        return `act|${block.id}|${block.running}|${block.messages.map(x => `${x.id}:${x.status ?? ''}:${String(x.content ?? '').length}`).join(',')}`
+      }
+      return `proc|${block.id}|` + block.blocks.map(inner => (
+        inner.kind === 'activity'
+          ? `act|${inner.id}|${inner.running}|${inner.messages.map(x => `${x.id}:${x.status ?? ''}:${String(x.content ?? '').length}`).join(',')}`
+          : `msg|${inner.id}|${inner.message.id}|${inner.message.status ?? ''}|${String(inner.message.content ?? '').length}|${String(inner.message.thinking ?? '').length}`
+      )).join('~')
+    }).join('\n')
+
+    const builder = createChatTranscriptBuilder()
+    let messages: Message[] = [
+      ...turn(0),
+      ...turn(1),
+      message('u-live', 'user', '继续'),
+      message('a-live', 'assistant', '', { status: 'running' as const }),
+    ]
+
+    const check = (label: string, running: boolean) => {
+      const incremental = builder.build(messages, running)
+      const full = buildChatTranscript(messages, running)
+      expect(`${label}\n${shape(incremental)}`).toBe(`${label}\n${shape(full)}`)
+    }
+
+    check('初始 running', true)
+
+    // 正文流
+    for (let i = 0; i < 6; i += 1) {
+      const last = messages[messages.length - 1]!
+      messages = messages.slice(0, -1).concat([{ ...last, content: `${String(last.content)}增量${i} ` }])
+      check(`正文增量 ${i}`, true)
+    }
+
+    // 思考流
+    messages = applyAssistantThinkingEvent(messages, { type: 'assistant.thinking_delta', text: '想' })
+    check('思考增量', true)
+    messages = applyAssistantThinkingEvent(messages, { type: 'assistant.thinking_completed', durationMs: 500 })
+    check('思考完成', true)
+
+    // 工具开始 → 输出 → 完成
+    messages = applyCodingToolEvent(messages, { type: 'tool.started', text: '$ cat big.log', toolName: 'bash', toolCallId: 'call-live' })
+    check('工具开始', true)
+    for (let i = 0; i < 4; i += 1) {
+      const at = messages.findIndex(x => x.toolCallId === 'call-live' && x.status === 'running')
+      messages = messages.slice()
+      messages[at] = { ...messages[at]!, content: `${String(messages[at]!.content ?? '')}\n${'x'.repeat(64)}` }
+      check(`工具输出 ${i}`, true)
+    }
+    messages = applyCodingToolEvent(messages, { type: 'tool.completed', text: 'done', toolName: 'bash', toolCallId: 'call-live', durationMs: 3 })
+    check('工具完成', true)
+
+    // 回合结束
+    check('回合结束 running=false', false)
+
+    // 排队中的用户消息不进转写；转正后进转写
+    const queued = messages.concat([message('u-q', 'user', '排队', { status: 'queued' as const })])
+    const beforeQueue = messages
+    messages = queued
+    check('排队用户追加', false)
+    messages = beforeQueue
+    check('排队用户回退', false)
+    messages = queued.map(item => (item.id === 'u-q' ? { ...item, status: 'done' as const } : item))
+    check('排队用户转正', true)
+
+    // 新回合（前缀增长；上一回合转入稳定前缀）
+    messages = messages.concat([
+      message('u-2', 'user', '再来一轮'),
+      message('a-2', 'assistant', '', { thinking: '想想', thinkingStatus: 'done' as const, thinkingDurationMs: 400 }),
+    ])
+    check('新回合', true)
+    for (let i = 0; i < 3; i += 1) {
+      messages = messages.concat([message(`r-2-${i}`, 'tool', `$ run ${i}`, { toolName: 'bash', toolCallId: `call-2-${i}`, status: 'running' as const })])
+      check(`新回合工具 ${i}`, true)
+      messages = applyCodingToolEvent(messages, { type: 'tool.completed', text: 'y'.repeat(200), toolName: 'bash', toolCallId: `call-2-${i}`, durationMs: 1 })
+      check(`新回合工具完成 ${i}`, true)
+    }
+  })
 })
