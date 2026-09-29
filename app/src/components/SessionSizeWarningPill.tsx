@@ -58,7 +58,7 @@ export default function SessionSizeWarningPill({
           )}
         >
           <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
-          <span className="font-mono tabular-nums">{size}</span>
+          <span className="font-mono tabular-nums">{t('会话', 'Chat')}&nbsp;{size}</span>
         </button>
       </PopoverTrigger>
       <PopoverContent
