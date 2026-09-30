@@ -6,7 +6,9 @@ import {
 import {
   forwardRef,
   lazy,
+  memo,
   Suspense,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -60,7 +62,7 @@ import { toastError } from '@/lib/appToast'
 import { toggleWindowMaximize } from '@/lib/hostPlatform'
 import { isAskMessage } from '@/lib/agentAsk'
 import { nextChatAutoScrollPinned } from '@/lib/chatAutoScroll'
-import { applyChatEdgeChrome } from '@/lib/chatEdgeFade'
+import { applyChatEdgeChrome } from '@/lib/chatEdgeChrome'
 import { assessApprovalRequest } from '@/lib/destructiveTarget'
 import {
   computeTranscriptWindow,
@@ -75,8 +77,8 @@ import AkLoadingMark from '@/components/AkLoadingMark'
 import ChatActivityGroup from '@/components/ChatActivityGroup'
 import ChatProcessFold from '@/components/ChatProcessFold'
 import WindowFileDrop from '@/components/WindowFileDrop'
-import ChatComposer, { type ChatComposerHandle } from '@/components/ChatComposer'
 import { ChatEdgeFade } from '@/components/ChatEdgeFade'
+import ChatComposer, { type ChatComposerHandle } from '@/components/ChatComposer'
 import { ConversationQuoteMenu, selectionQuotePoint } from '@/components/ConversationQuoteMenu'
 import WorkingTray from '@/components/WorkingTray'
 import ChatGeneratedImage from '@/components/ChatGeneratedImage'
@@ -121,8 +123,8 @@ import {
   LOCAL_CODING_SHELL_ID,
   shouldRememberCodingProject,
 } from '@/lib/codingProjectMemory'
-import { buildChatActivityEntries, buildChatTranscript, hasEmptyVisibleReply, latestFinishedThinkingId, thinkingStaysOpen } from '@/lib/chatActivity'
-import { chatFoldModel } from '@/lib/chatWorkStatus'
+import { buildChatActivityEntries, createChatTranscriptBuilder, hasEmptyVisibleReply, isContentOnlyMessageChange, latestFinishedThinkingId, type ChatTranscriptBlock } from '@/lib/chatActivity'
+import { createChatFoldEvaluator, type ChatFoldModel } from '@/lib/chatWorkStatus'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
 import { latestCodingPlan } from '@/lib/codingPlan'
 import {
@@ -149,6 +151,7 @@ import {
 import AgentChangeSummary from '@/components/AgentChangeSummary'
 import AgentExecutionPlan from '@/components/AgentExecutionPlan'
 import ContextUsageMeter from '@/components/ContextUsageMeter'
+import SessionSizeWarningPill from '@/components/SessionSizeWarningPill'
 import {
   agentRecoveryPrompt,
   emptyVisibleReplyRecoveryPrompt,
@@ -189,7 +192,9 @@ import type {
   CodingProductActionRequest,
   Conversation,
   CTFChatAction,
+  Message,
   ModelThinkingLevel,
+  SubagentTask,
 } from '@/types'
 import {
   lastRewindableUserMessageId,
@@ -197,6 +202,12 @@ import {
 } from '@/composables/useConversations'
 import { useConversations } from '@/stores/conversationsStore'
 import { composerDraftKey } from '@/lib/composerDraftStore'
+import {
+  readDismissedSessionSizeKeys,
+  sessionSizeReport,
+  sessionSizeWarningKey,
+  writeDismissedSessionSizeKeys,
+} from '@/lib/sessionSizeWarning'
 import { subagentCitationText } from '@/lib/subagentRoster'
 import { conversationWorkspaceHome } from '@/lib/workspaceSessionRouting'
 import {
@@ -332,6 +343,22 @@ export type ChatPageHandle = {
   revealTranscriptMessage: (messageId: string) => Promise<boolean>
 }
 
+/**
+ * 只在「结构变化」时换引用的 messages 视图。
+ *
+ * 流式每来一个正文/思考增量，`conversation.messages` 都会换成新数组（只换了尾部那一条）。
+ * 按全量消息聚合的派生值（文件 diff 预览、computer-use 证据）本来会跟着每个增量重扫 2 万条；
+ * 这里把它们钉在「上一个结构版本」的数组上：打字不会多出一次编辑、也不会多出一条证据，
+ * 所以结果原样有效。判定只做对象身份比较（万条级 ~0.03ms）。
+ */
+function useStructuralMessages(messages: Message[]): Message[] {
+  const stateRef = useRef({ previous: messages, stable: messages })
+  const state = stateRef.current
+  if (!isContentOnlyMessageChange(state.previous, messages)) state.stable = messages
+  state.previous = messages
+  return state.stable
+}
+
 const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   className,
   conversation,
@@ -445,9 +472,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   }, [])
   const scrollArea = useRef<HTMLDivElement | null>(null)
   const chatColumnRef = useRef<HTMLDivElement | null>(null)
-  const topChromeRef = useRef<HTMLDivElement | null>(null)
   const bottomChromeRef = useRef<HTMLDivElement | null>(null)
-  const bottomFrostRef = useRef<HTMLDivElement | null>(null)
   const APPROVAL_CONFIRM_TIMEOUT_MS = 3000
   const pendingApprovalMessage = conversation?.messages.find(message => (
     message.approvalState === 'pending'
@@ -532,6 +557,11 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const artifactPanel = useRef<CodingArtifactPreviewPanelHandle | null>(null)
   const [requestedArtifactPath, setRequestedArtifactPath] = useState('')
   const [imageGalleryRefreshToken, setImageGalleryRefreshToken] = useState(0)
+  // 会话过胖预警被「知道了」关掉的档位（按会话 + 体积档位，涨一档会重新提醒）。
+  // 持久化到 localStorage：重开后同一档位不该再冒出来（2026-09-30 修复）。
+  const [dismissedSessionSizeKeys, setDismissedSessionSizeKeys] = useState<Set<string>>(
+    () => readDismissedSessionSizeKeys(),
+  )
   const [, setEnvironmentLoading] = useState(false)
   const [environmentError, setEnvironmentError] = useState('')
   const [browserPanelError, setBrowserPanelError] = useState('')
@@ -608,6 +638,11 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const chatTranscriptLengthRef = useRef(0)
   const transcriptWindowStartRef = useRef(0)
   const transcriptAnchorRef = useRef<{ id: string; offset: number } | null>(null)
+  // 用户滚动意图：手势/惯性进行中绝不写 scrollTop —— 程序写入会打断浏览器正在滑行的惯性滚动。
+  const userScrollActiveRef = useRef(false)
+  // 手势期间被推迟的窗口滑动（哨兵触发），等滚动结束后再补，避免补偿写入掐断惯性。
+  const pendingTranscriptSlideRef = useRef<'earlier' | 'later' | null>(null)
+  const userScrollEndTimerRef = useRef<number | null>(null)
   const transcriptTopSentinelRef = useRef<HTMLDivElement | null>(null)
   const transcriptBottomSentinelRef = useRef<HTMLDivElement | null>(null)
   const codingBrowserResizeObserver = useRef<ResizeObserver | null>(null)
@@ -1000,14 +1035,79 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     pickerGroups,
     providers: settings?.providers,
   }), [currentModelSelection, conversation?.modelSource, pickerGroups, settings?.providers])
+  // 全量聚合派生值的输入：只在结构变化时换引用（正文/思考增量不击穿它们）。
+  const structuralMessages = useStructuralMessages(conversation?.messages ?? [])
+  // 预警口径：待发上下文体积（正文/思考/工具/附件），结构变化时重算。
+  // 输入用 structuralMessages：流式每个 delta 都换 messages 引用，但打字不会显著改变
+  // 体积档位；全量求和挂在结构版本上，避免每个增量重扫万条消息（与 #202 同一纪律）。
+  const sessionSize = useMemo(() => sessionSizeReport(structuralMessages), [structuralMessages])
+  const sessionSizeWarningKeyValue = conversation?.id
+    ? sessionSizeWarningKey(conversation.id, sessionSize)
+    : ''
+  const sessionSizeWarningVisible = sessionSize.over
+    && Boolean(conversation?.id)
+    && !dismissedSessionSizeKeys.has(sessionSizeWarningKeyValue)
+  // 「知道了」：关掉当前档位并落盘（重开时 readDismissedSessionSizeKeys 读回）。
+  const dismissSessionSizeWarning = useCallback(() => {
+    if (!sessionSizeWarningKeyValue) return
+    setDismissedSessionSizeKeys(previous => {
+      const next = new Set(previous)
+      next.add(sessionSizeWarningKeyValue)
+      writeDismissedSessionSizeKeys(next)
+      return next
+    })
+  }, [sessionSizeWarningKeyValue])
   const computerUseOperationEvidence = useMemo(() => (
-    extractLatestComputerUseOperationEvidence(conversation?.messages ?? [])
-  ), [conversation?.messages])
+    extractLatestComputerUseOperationEvidence(structuralMessages)
+  ), [structuralMessages])
+  // 转写构建：每次增量都用同一个 builder，未变的块会拿回上一次的**同一个对象** ——
+  // 这是 ChatProcessFold/ChatActivityGroup 的 memo 能在流式里命中的前提（否则每个 delta 整窗重渲染）。
+  const chatTranscriptBuilder = useMemo(() => createChatTranscriptBuilder(), [])
   const chatTranscript = useMemo(() => (
-    buildChatTranscript(conversation?.messages ?? [], running)
-  ), [conversation?.messages, running])
+    chatTranscriptBuilder.build(conversation?.messages ?? [], running)
+  ), [chatTranscriptBuilder, conversation?.messages, running])
   const thinkingFoldKey = useMemo(() => latestFinishedThinkingId(chatTranscript), [chatTranscript])
+  // 折叠模型预计算：索引只建一次（O(n)，实测 ~1ms），渲染循环里每段 O(1) 查表。
+  // 旧写法 `chatFoldModel(chatTranscript, item.id, running)` 每段都做 findIndex +
+  // 全表找 live 锚点 ⇒ 万条级对话里是 O(n²)，单次渲染（可见窗口 400 段）实测 ~102ms。
+  const chatFoldEvaluator = useMemo(() => createChatFoldEvaluator(chatTranscript), [chatTranscript])
   chatTranscriptLengthRef.current = chatTranscript.length
+  // 打字卡顿的根：runClockNow / waitingNow 每秒变一次 ⇒ ChatPage 每秒整体重渲染；而消息条目
+  // 没有 memo、下面这些回调每次渲染都是新身份 ⇒ 2300+ 条消息每秒被全部重渲染一次（真机实测：
+  // 属性写入约 265 次/秒、最长一次卡 744ms、每秒新增约 77 个 DOM 节点）。
+  // 这里把回调身份钉死（永远调用"最新的那一份"），并让消息条目 memo 化，
+  // 这样"每秒一次的页面重渲染"就不会传导到每一条消息上。
+  const latestTranscriptHandlers = useRef({
+    onRespondApproval,
+    onEditUser,
+    onRewindContext,
+    resumeAfterFailure,
+    branchFromAssistantMessage,
+  })
+  useEffect(() => {
+    latestTranscriptHandlers.current = {
+      onRespondApproval,
+      onEditUser,
+      onRewindContext,
+      resumeAfterFailure,
+      branchFromAssistantMessage,
+    }
+  })
+  const transcriptHandlers = useMemo(() => ({
+    onRespondApproval: (requestId: string, approved: boolean, scope?: 'once' | 'conversation', choice?: string) =>
+      latestTranscriptHandlers.current.onRespondApproval?.(requestId, approved, scope, choice),
+    onRetry: () => latestTranscriptHandlers.current.resumeAfterFailure(),
+    onEditUser: (messageId: string, content: string) =>
+      latestTranscriptHandlers.current.onEditUser?.(messageId, content),
+    onRewindContext: () => latestTranscriptHandlers.current.onRewindContext?.(),
+    onBranchAssistant: (messageId: string) =>
+      latestTranscriptHandlers.current.branchFromAssistantMessage(messageId),
+  }), [])
+  const MemoChatMessageItem = useMemo(() => memo(ChatMessageItem), [])
+  // 折叠块也要 memo：每秒一次的时钟重渲染（runClockNow）不该把整棵折叠子树重新渲染一遍。
+  // 前提是上面那组 ref 稳定化的回调 + 折叠模型的稳定模型身份。
+  const MemoChatProcessFold = useMemo(() => memo(ChatProcessFold), [])
+  const MemoChatActivityGroup = useMemo(() => memo(ChatActivityGroup), [])
   const recoverableFailureId = useMemo(() => (
     recoverableAgentFailureId(conversation?.messages ?? [], running)
   ), [conversation?.messages, running])
@@ -1029,8 +1129,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     (conversation?.subagentTasks ?? []).map(task => `${task.id}:${task.status}`).join(','),
   ].join('|')
   const conversationFileDiffs = useMemo(() => (
-    agentFileDiffChips(buildChatActivityEntries(conversation?.messages ?? []))
-  ), [conversation?.messages])
+    agentFileDiffChips(buildChatActivityEntries(structuralMessages))
+  ), [structuralMessages])
   const hasExecutionPlan = Boolean(latestCodingPlan(conversation?.messages ?? []))
   const hasComposerDock = hasExecutionPlan || Boolean(composerGitSummary)
   const waitingForModel = useMemo(() => {
@@ -1051,6 +1151,50 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const waitingElapsed = waitingStartedAt == null
     ? ''
     : formatDemoElapsed(Math.max(0, waitingNow - waitingStartedAt))
+  // ---- 搬运自本地分支：诚实文案 ----
+  // “事件=有进展”与“心跳=引擎还在”是两件事。以前只看安静，于是长工具/慢模型都被读成
+  // “连接掉了”；现在分开，并且只有“安静 + 没有工具在跑 + 引擎心跳也没了”才说引擎没响应。
+  const streamStale = conversations.streamStale
+  const streamStaleSeconds = conversations.streamStaleSeconds
+  const runningToolActive = conversations.activeToolRunning
+  // E 队列可见性：当前对话排在谁后面（空串=没排队）。
+  const queuedBehindLabel = conversations.activeQueuedBehind
+  // 停滞看门狗：阈值与纯判定都在 composable/@/lib/turnStall，这里只负责呈现与动作。
+  // engine-gone = 心跳已停（进程大概率没了）；model-stalled = 心跳还在但请求静默太久。
+  // 两种都不再继续装活着，而是给“重试 / 停止”的真实出口。
+  const stallKind = conversations.activeStallKind
+  const stalled = stallKind === 'engine-gone' || stallKind === 'model-stalled'
+  const stalledElapsed = formatDemoElapsed(streamStaleSeconds * 1000)
+  // 停滞进入边沿：从“没停滞”变成停滞的那一刻发一条系统通知（重试还是停止）。
+  // 依赖只有 stalled 翻转 + 会话切换 ⇒ 每秒重渲染不会重复发；
+  // 去重再兜一层：composable 按 会话+回合起点 记账（重入/StrictMode 也不会重复投递）。
+  useEffect(() => {
+    if (!stalled) return
+    conversations.notifyTurnStall?.({
+      conversationId: conversation?.id ?? '',
+      stallKind,
+      quietMs: streamStaleSeconds * 1000,
+    })
+    // 时长等每秒变化的值故意不进依赖：它们不属于“进入停滞”这个事件。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stalled, conversation?.id])
+  /** “等待”必须说清在等什么；无声地计数就是在说“模型正在回复”——那和连接断了一模一样。 */
+  const waitingLabel = (() => {
+    // 排在同一个 sidecar 的另一个对话后面是「排队」，不是「停滞」：
+    // 在这里说“连接丢了”就是横幅以前撒的那个谎。
+    if (queuedBehindLabel) {
+      return t('排队中（同工作区另一个会话在跑）', 'Queued (another conversation in this workspace is running)')
+    }
+    // 工具正在跑就直说：引擎这时候正在干活，说成“等待引擎响应”是假话。
+    if (runningToolActive) return t('工具执行中…', 'Tool running…')
+    if (stalled) {
+      return stallKind === 'model-stalled'
+        ? t('模型请求已停滞…', 'The model request has stalled…')
+        : t('引擎没有响应…', 'The engine is not responding…')
+    }
+    if (streamStale) return t('等待中…', 'Waiting…')
+    return t('等待引擎响应…', 'Waiting for the engine…')
+  })()
   const latestJudge = ctfProjection?.judgeReceipts.at(-1)
   const contextPanelTitle = ({
     domain: ctfSession ? t('CTF 领域上下文', 'CTF domain context') : vulnerabilitySession ? t('CVE 领域上下文', 'CVE domain context') : t('领域上下文', 'Domain context'),
@@ -1089,6 +1233,28 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     () => chatTranscript.slice(transcriptWindow.start, transcriptWindow.end),
     [chatTranscript, transcriptWindow.start, transcriptWindow.end],
   )
+  // 模型只为**可见窗口**（≤400 段）建：整份转写建一遍是 ~64ms，流式每个 delta 都付一次。
+  // 窗口内建一遍实测 <1ms；而且时钟每秒重渲染时 visibleTranscript 引用不变，模型身份也不变。
+  // 关键：按 (块对象身份 + 上下文签名) 复用上一次的 model 对象。否则每个 delta 重建 185 份模型，
+  // ChatProcessFold 的 model prop 身份就变 → memo 失效 → 又是一次整窗重渲染。
+  const foldModelCacheRef = useRef<Map<string, { block: ChatTranscriptBlock; contextKey: string; model: ChatFoldModel }>>(new Map())
+  const chatFoldModels = useMemo(() => {
+    const models = new Map<string, ChatFoldModel>()
+    const cache = foldModelCacheRef.current
+    const next = new Map<string, { block: ChatTranscriptBlock; contextKey: string; model: ChatFoldModel }>()
+    for (const block of visibleTranscript) {
+      if (block.kind !== 'process' && block.kind !== 'activity') continue
+      const contextKey = chatFoldEvaluator.modelContextKey(block.id, running)
+      const cached = cache.get(block.id)
+      const model = cached && cached.block === block && cached.contextKey === contextKey
+        ? cached.model
+        : chatFoldEvaluator.modelFor(block.id, running)
+      models.set(block.id, model)
+      next.set(block.id, { block, contextKey, model })
+    }
+    foldModelCacheRef.current = next
+    return models
+  }, [chatFoldEvaluator, visibleTranscript, running])
   const hasEarlierTranscript = transcriptWindow.hiddenBefore > 0
   const hasLaterTranscript = transcriptWindow.hiddenAfter > 0
 
@@ -1148,35 +1314,48 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                 : value
   }
 
+  // 开合状态通过 ref 读取，下面四个回调的身份才能恒定：
+  // 否则渲染循环里每个折叠块都拿到新箭头函数，ChatProcessFold/ChatActivityGroup 的 memo 全被击穿。
+  const activityExpansionStateRef = useRef(chatActivityExpansion)
+  activityExpansionStateRef.current = chatActivityExpansion
+  const activityConversationIdRef = useRef(conversation?.id ?? '')
+  activityConversationIdRef.current = conversation?.id ?? ''
+
   function currentActivityExpansion(): ChatActivityExpansionState {
-    return chatActivityExpansion.get(conversation?.id ?? '') ?? emptyActivityExpansion
+    return activityExpansionStateRef.current.get(activityConversationIdRef.current) ?? emptyActivityExpansion
   }
 
-  function chatActivityGroupIsOpen(activityId: string): boolean {
-    return chatActivityGroupOpen(currentActivityExpansion(), activityId)
-  }
+  const chatActivityGroupIsOpen = useCallback((activityId: string): boolean => (
+    chatActivityGroupOpen(currentActivityExpansion(), activityId)
+  ), [])
 
-  function chatActivityOpenEntries(activityId: string): ReadonlySet<string> {
-    return chatActivityOpenEntryIds(currentActivityExpansion(), activityId)
-  }
+  const chatActivityOpenEntries = useCallback((activityId: string): ReadonlySet<string> => (
+    chatActivityOpenEntryIds(currentActivityExpansion(), activityId)
+  ), [])
 
-  function applyActivityExpansion(next: ChatActivityExpansionState) {
-    const conversationId = conversation?.id ?? ''
-    const states = new Map(chatActivityExpansion)
-    states.set(conversationId, next)
-    setChatActivityExpansion(states)
+  const applyActivityExpansion = useCallback((next: ChatActivityExpansionState) => {
+    setChatActivityExpansion(previous => {
+      const states = new Map(previous)
+      states.set(activityConversationIdRef.current, next)
+      return states
+    })
     setActivityExpansionRev(value => value + 1)
-  }
+  }, [])
 
-  function handleActivityGroupToggle(activityId: string, open: boolean) {
+  const handleActivityGroupToggle = useCallback((activityId: string, open: boolean) => {
     applyActivityExpansion(setChatActivityGroupOpen(currentActivityExpansion(), activityId, open))
-  }
+  }, [applyActivityExpansion])
 
-  function handleActivityEntryToggle(activityId: string, entryId: string, open: boolean) {
+  const handleActivityEntryToggle = useCallback((activityId: string, entryId: string, open: boolean) => {
     applyActivityExpansion(
       setChatActivityEntryOpen(currentActivityExpansion(), activityId, entryId, open),
     )
-  }
+  }, [applyActivityExpansion])
+
+  // 子代理引用同样要恒定（折叠块的 memo 依赖它）。
+  const openSubagentCitation = useCallback((task: SubagentTask) => {
+    composer.current?.appendQuote(subagentCitationText(task))
+  }, [])
 
   async function refreshUserSkills() {
     try {
@@ -2256,6 +2435,29 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     setTranscriptWindowStart(next)
   }
 
+  // 滚动结束后清掉用户意图，并把手势期间攒下的窗口滑动补上（此时写 scrollTop 不再打断惯性）。
+  function endUserScroll() {
+    if (userScrollEndTimerRef.current !== null) {
+      window.clearTimeout(userScrollEndTimerRef.current)
+      userScrollEndTimerRef.current = null
+    }
+    if (!userScrollActiveRef.current && !pendingTranscriptSlideRef.current) return
+    userScrollActiveRef.current = false
+    const pending = pendingTranscriptSlideRef.current
+    pendingTranscriptSlideRef.current = null
+    if (pending) slideTranscript(pending)
+    // 手势期间可能还在钉底但内容长了（贴尾被压制）：结束后立刻补一次，别让读者掉出底部。
+    if (chatAutoScrollPinned.current) void scrollChatToBottom()
+  }
+
+  function markUserScrollActive() {
+    userScrollActiveRef.current = true
+    if (userScrollEndTimerRef.current !== null) window.clearTimeout(userScrollEndTimerRef.current)
+    // 兜底：不依赖 scrollend 的内核里，滚动静默一段时间后也要恢复补偿，别把它永久冻结。
+    // 惯性期间 scroll 事件持续触发并顺延这个计时器，所以不会在半路误判结束。
+    userScrollEndTimerRef.current = window.setTimeout(endUserScroll, 320)
+  }
+
   function jumpToLatestTranscript() {
     chatAutoScrollPinned.current = true
     setChatAutoScrollPinnedState(true)
@@ -2274,27 +2476,30 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       element.clientHeight,
       element.scrollHeight,
     )
-    if (chatAutoScrollPinned.current && !nextPinned) {
-      // 刚从底部翻上来：把贴尾窗口固化成当前窗口，挂载区间保持连续。
-      const tail = tailTranscriptStart(chatTranscriptLengthRef.current)
-      transcriptWindowStartRef.current = tail
-      setTranscriptWindowStart(tail)
-      setChatAutoScrollPinnedState(false)
+    if (chatAutoScrollPinned.current !== nextPinned) {
+      if (chatAutoScrollPinned.current && !nextPinned) {
+        // 刚从底部翻上来：把贴尾窗口固化成当前窗口，挂载区间保持连续。
+        const tail = tailTranscriptStart(chatTranscriptLengthRef.current)
+        transcriptWindowStartRef.current = tail
+        setTranscriptWindowStart(tail)
+      }
+      setChatAutoScrollPinnedState(nextPinned)
     }
     chatAutoScrollPinned.current = nextPinned
     lastChatScrollTop.current = element.scrollTop
   }
 
   async function scrollChatToBottom(force = false) {
-    if (!force && !chatAutoScrollPinned.current) return
+    if (!force && (userScrollActiveRef.current || !chatAutoScrollPinned.current)) return
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-    if (!force && !chatAutoScrollPinned.current) return
+    // 等 rAF 期间用户可能已经开始滚动：手势/惯性中绝不补写，否则会打断惯性。
+    if (!force && (userScrollActiveRef.current || !chatAutoScrollPinned.current)) return
     const element = scrollArea.current
     if (!element) return
     element.scrollTop = element.scrollHeight
     lastChatScrollTop.current = element.scrollTop
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-    if (!force && !chatAutoScrollPinned.current) return
+    if (!force && (userScrollActiveRef.current || !chatAutoScrollPinned.current)) return
     if (scrollArea.current) {
       scrollArea.current.scrollTop = scrollArea.current.scrollHeight
       lastChatScrollTop.current = scrollArea.current.scrollTop
@@ -2351,11 +2556,12 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     const column = chatColumnRef.current
     if (!column || emptyCanvas) return undefined
     const apply = () => {
-      const bottom = bottomChromeRef.current?.offsetHeight ?? 0
+      const dock = bottomChromeRef.current
+      const composer = dock?.querySelector<HTMLElement>('.chat-composer')
       applyChatEdgeChrome(column, {
-        top: dockSurface ? 0 : (topChromeRef.current?.offsetHeight ?? 0),
-        bottom,
-        frostBottom: bottomFrostRef.current?.offsetHeight ?? bottom,
+        top: 0,
+        bottom: dock?.offsetHeight ?? 0,
+        frostBottom: composer?.offsetHeight ?? dock?.offsetHeight ?? 0,
       })
     }
     apply()
@@ -2369,15 +2575,9 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     }
     const observer = new ResizeObserver(apply)
     const watch = bottomChromeRef.current
-    const frostWatch = bottomFrostRef.current
-    if (topChromeRef.current) observer.observe(topChromeRef.current)
     if (watch) {
       observer.observe(watch)
       for (const child of watch.children) observer.observe(child)
-    }
-    if (frostWatch) {
-      observer.observe(frostWatch)
-      for (const child of frostWatch.children) observer.observe(child)
     }
     const mutations = typeof MutationObserver === 'undefined' || !watch
       ? null
@@ -2567,12 +2767,50 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     const thread = element?.querySelector('.agent-thread')
     if (!element || !thread) return undefined
     const observer = new ResizeObserver(() => {
+      // 用户手势/惯性期间绝不写 scrollTop：贴尾补偿会把正在滑行的滚动掐断。
+      if (userScrollActiveRef.current) return
       if (!chatAutoScrollPinned.current) return
       element.scrollTop = element.scrollHeight
       lastChatScrollTop.current = element.scrollTop
     })
     observer.observe(thread)
     return () => observer.disconnect()
+  }, [emptyCanvas])
+
+  // 用户滚动意图：wheel/touch/pointer 标记开始，scrollend（或滚动静默兜底）标记结束。
+  // 手势与惯性期间不写 scrollTop，是保住原生惯性滚动的关键。
+  useEffect(() => {
+    if (emptyCanvas) return undefined
+    const element = scrollArea.current
+    if (!element) return undefined
+    const onWheel = () => markUserScrollActive()
+    const onTouchStart = () => markUserScrollActive()
+    const onTouchMove = () => markUserScrollActive()
+    const onPointerDown = () => markUserScrollActive()
+    const onScroll = () => {
+      if (userScrollActiveRef.current) markUserScrollActive()
+    }
+    const onScrollEnd = () => endUserScroll()
+    element.addEventListener('wheel', onWheel, { passive: true })
+    element.addEventListener('touchstart', onTouchStart, { passive: true })
+    element.addEventListener('touchmove', onTouchMove, { passive: true })
+    element.addEventListener('pointerdown', onPointerDown, { passive: true })
+    element.addEventListener('scroll', onScroll, { passive: true })
+    element.addEventListener('scrollend', onScrollEnd)
+    return () => {
+      element.removeEventListener('wheel', onWheel)
+      element.removeEventListener('touchstart', onTouchStart)
+      element.removeEventListener('touchmove', onTouchMove)
+      element.removeEventListener('pointerdown', onPointerDown)
+      element.removeEventListener('scroll', onScroll)
+      element.removeEventListener('scrollend', onScrollEnd)
+      if (userScrollEndTimerRef.current !== null) {
+        window.clearTimeout(userScrollEndTimerRef.current)
+        userScrollEndTimerRef.current = null
+      }
+      userScrollActiveRef.current = false
+      pendingTranscriptSlideRef.current = null
+    }
   }, [emptyCanvas])
 
   // 哨兵：接近窗口上/下缘 800px 内时把窗口整体滑动一格，挂载量保持恒定。
@@ -2584,8 +2822,16 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue
-        if (entry.target === transcriptTopSentinelRef.current) slideTranscript('earlier')
-        else if (entry.target === transcriptBottomSentinelRef.current) slideTranscript('later')
+        const direction = entry.target === transcriptTopSentinelRef.current
+          ? 'earlier'
+          : entry.target === transcriptBottomSentinelRef.current ? 'later' : null
+        if (!direction) continue
+        // 用户正在滚：先记账，等滚动结束再滑动窗口并做锚定补偿。
+        if (userScrollActiveRef.current) {
+          pendingTranscriptSlideRef.current = direction
+          continue
+        }
+        slideTranscript(direction)
       }
     }, { root: element, rootMargin: '800px 0px' })
     if (transcriptTopSentinelRef.current) observer.observe(transcriptTopSentinelRef.current)
@@ -2766,31 +3012,30 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
           </button>
         </div>
       ) : null}
+      {!dockSurface ? (
+        <div className="chat-page__titlebar" aria-label={topbarPresentation.title}>
+          <WorkspaceModuleTopBar
+            module={topbarModule}
+            title={topbarPresentation.title}
+            subtitle={topbarPresentation.subtitle}
+            hideIdentity={codingDraftIdle}
+            windowCaptionEdge={!environmentOpen}
+            actions={restorable ? (
+              <button
+                type="button"
+                className="agent-chrome-icon app-no-drag"
+                aria-label={t('还原小窗', 'Restore window')}
+                title={t('还原小窗', 'Restore window')}
+                onClick={() => onRestore?.()}
+              >
+                <Minimize2 className="size-4" />
+              </button>
+            ) : undefined}
+          />
+        </div>
+      ) : null}
       <div className="coding-workspace relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
         <main className="chat-main relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface-editor">
-          {!dockSurface ? (
-            <div ref={topChromeRef} className={cn(!emptyCanvas && 'chat-column__top')}>
-            <WorkspaceModuleTopBar
-              module={topbarModule}
-              title={topbarPresentation.title}
-              subtitle={topbarPresentation.subtitle}
-              hideIdentity={codingDraftIdle}
-              windowCaptionEdge={!environmentOpen}
-              actions={restorable ? (
-                <button
-                  type="button"
-                  className="agent-chrome-icon app-no-drag"
-                  aria-label={t('还原小窗', 'Restore window')}
-                  title={t('还原小窗', 'Restore window')}
-                  onClick={() => onRestore?.()}
-                >
-                  <Minimize2 className="size-4" />
-                </button>
-              ) : undefined}
-            />
-            </div>
-          ) : null}
-
           <div
             ref={chatColumnRef}
             className={cn(
@@ -2805,6 +3050,65 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             className="chat-edge-scroll absolute inset-0 overflow-x-hidden overflow-y-auto"
             onScroll={handleChatScroll}
           >
+            {streamStale || queuedBehindLabel ? (
+              <div
+                className={cn(
+                  'mx-auto mb-2 w-[72%] rounded-xl border px-3 py-1.5 text-caption',
+                  stalled
+                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                    : 'border-border/70 bg-muted/50 text-muted-foreground',
+                )}
+                data-testid="stream-stale"
+              >
+                {queuedBehindLabel ? (
+                  <span data-testid="queued-behind">
+                    {t(
+                      `排队中：同工作区「${queuedBehindLabel}」正在运行。`,
+                      `Queued: "${queuedBehindLabel}" in this workspace is running.`,
+                    )}
+                  </span>
+                ) : runningToolActive ? (
+                  t(
+                    `工具执行中…（已 ${streamStaleSeconds}s 无输出）`,
+                    `Tool running… (${streamStaleSeconds}s without output)`,
+                  )
+                ) : stalled ? (
+                  <span className="flex flex-wrap items-center gap-2" data-testid="stalled-turn">
+                    <span data-testid="stalled-turn-label">
+                      {stallKind === 'model-stalled'
+                        ? t(
+                            `已停滞 ${stalledElapsed}：模型请求没有再输出，引擎进程还在。`,
+                            `Stalled for ${stalledElapsed}: the model request stopped producing output while the engine process is still alive.`,
+                          )
+                        : t(
+                            `已停滞 ${stalledElapsed}：引擎进程的心跳已停。`,
+                            `Stalled for ${stalledElapsed}: the engine process stopped sending heartbeats.`,
+                          )}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      data-testid="wake-stuck-turn"
+                      onClick={() => void conversations.wakeStuckTurn(conversation?.id ?? '')}
+                    >
+                      {t('重试', 'Retry')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      data-testid="cancel-stuck-turn"
+                      onClick={() => void conversations.forceStopConversation(conversation?.id ?? '')}
+                    >
+                      {t('停止', 'Stop')}
+                    </Button>
+                  </span>
+                ) : (
+                  t(`等待中（已 ${streamStaleSeconds}s）`, `Waiting… (${streamStaleSeconds}s)`)
+                )}
+              </div>
+            ) : null}
             {engineNotice ? (
               <div
                 className="mx-auto mb-2 w-[72%] rounded-xl border border-border/70 bg-muted/50 px-3 py-1.5 text-caption text-muted-foreground"
@@ -2901,9 +3205,9 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                   // 无样式 wrapper：子段的 mb-7 margin 照常塌陷，布局不变；key 和锚定 id 都挂在它上面。
                   <div key={item.id} data-transcript-block={item.id}>
                   {item.kind === 'process' ? (
-                    <ChatProcessFold
+                    <MemoChatProcessFold
                       process={item}
-                      model={chatFoldModel(chatTranscript, item.id, running)}
+                      model={chatFoldModels.get(item.id) ?? chatFoldEvaluator.modelFor(item.id, running)}
                       recoverableFailureId={recoverableFailureId}
                       recoveryContext={ctfSession ? 'ctf' : 'coding'}
                       rewindableUserMessageId={rewindableUserMessageId}
@@ -2915,12 +3219,12 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       memoKey={transcriptMemoKey}
                       onToggleGroup={handleActivityGroupToggle}
                       onToggleEntry={handleActivityEntryToggle}
-                      onRespondApproval={(requestId, approved, scope, choice) => onRespondApproval?.(requestId, approved, scope, choice)}
-                      onRetry={resumeAfterFailure}
-                      onEditUser={(messageId, content) => onEditUser?.(messageId, content)}
-                      onRewindContext={() => onRewindContext?.()}
-                      onBranchAssistant={branchFromAssistantMessage}
-                      onOpenSubagent={task => composer.current?.appendQuote(subagentCitationText(task))}
+                      onRespondApproval={transcriptHandlers.onRespondApproval}
+                      onRetry={transcriptHandlers.onRetry}
+                      onEditUser={transcriptHandlers.onEditUser}
+                      onRewindContext={transcriptHandlers.onRewindContext}
+                      onBranchAssistant={transcriptHandlers.onBranchAssistant}
+                      onOpenSubagent={openSubagentCitation}
                     />
                   ) : item.kind === 'image' ? (
                     <ChatGeneratedImage
@@ -2928,31 +3232,33 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       path={item.path}
                     />
                   ) : item.kind === 'activity' ? (
-                    <ChatActivityGroup
+                    <MemoChatActivityGroup
                       activity={item}
-                      model={chatFoldModel(chatTranscript, item.id, running)}
+                      model={chatFoldModels.get(item.id) ?? chatFoldEvaluator.modelFor(item.id, running)}
                       open={chatActivityGroupIsOpen(item.id)}
                       openEntryIds={chatActivityOpenEntries(item.id)}
                       subagentTasks={conversation?.subagentTasks}
-                      onToggleGroup={open => handleActivityGroupToggle(item.id, open)}
-                      onToggleEntry={(entryId, open) => handleActivityEntryToggle(item.id, entryId, open)}
-                      onOpenSubagent={task => composer.current?.appendQuote(subagentCitationText(task))}
+                      onToggleGroup={handleActivityGroupToggle}
+                      onToggleEntry={handleActivityEntryToggle}
+                      onOpenSubagent={openSubagentCitation}
                     />
                   ) : (
-                    <ChatMessageItem
+                    <MemoChatMessageItem
                       message={item.message}
                       recoverable={item.message.id === recoverableFailureId}
                       recoveryContext={ctfSession ? 'ctf' : 'coding'}
                       canRewind={item.message.id === rewindableUserMessageId}
                       rewindDisabled={rewindUnavailable}
                       kernel={agentKernel}
-                      thinkingDefaultOpen={thinkingStaysOpen(item.message.id, chatTranscript)}
-                      thinkingFoldKey={thinkingFoldKey}
-                      onRespondApproval={(requestId, approved, scope, choice) => onRespondApproval?.(requestId, approved, scope, choice)}
-                      onRetry={resumeAfterFailure}
-                      onEditUser={(messageId, content) => onEditUser?.(messageId, content)}
-                      onRewindContext={() => onRewindContext?.()}
-                      onBranchAssistant={branchFromAssistantMessage}
+                      // 「最新一段已完成的思考保持展开、进行中的展开」（上游原行为），
+                      // 但不在渲染循环里逐段全表扫：thinkingFoldKey 已按转写预计算一次（O(n)），
+                      // 这里每段只做 O(1) 比较。
+                      thinkingDefaultOpen={item.message.thinkingStatus === 'running' || item.message.id === thinkingFoldKey}
+                      onRespondApproval={transcriptHandlers.onRespondApproval}
+                      onRetry={transcriptHandlers.onRetry}
+                      onEditUser={transcriptHandlers.onEditUser}
+                      onRewindContext={transcriptHandlers.onRewindContext}
+                      onBranchAssistant={transcriptHandlers.onBranchAssistant}
                     />
                   )}
                   </div>
@@ -2976,7 +3282,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                 {waitingForModel && !compacting ? (
                   <p className="chat-model-loading">
                     <AgentPixelLoader
-                      label={t('模型回复中', 'Model is replying')}
+                      label={waitingLabel}
                       elapsed={waitingElapsed}
                       running
                     />
@@ -2997,7 +3303,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
               {t('回到最新', 'Latest')}
             </Button>
           ) : null}
-          <ChatEdgeFade showTop={!dockSurface} />
+          <ChatEdgeFade />
           </>
           ) : (
             <div className="flex w-full flex-col items-center px-8">
@@ -3083,9 +3389,6 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             }}
           />
 
-          {/* 磨砂玻璃只盖输入栏这一截：状态胶囊（第 N/N 步、代码变更、进行中）
-              浮在玻璃上方，出现与否不改变玻璃带高度。滚动停靠仍按整个 dock 量。 */}
-          <div ref={bottomFrostRef}>
           {/* 整窗拖拽加附件（监听在 window 上 ⇒ 拖到窗口任意处都生效；遮罩 fixed inset-0）。
               文件交给 composer 现成的 importCodingFiles（经 ref）⇒ 上限/体积/报错都由它负责。 */}
           <WindowFileDrop
@@ -3179,6 +3482,14 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             onToggleMultitask={enabled => conversations.setMultitask(enabled)}
             compactDisabled={continuity.compactDisabled}
             contextUsage={contextUsagePresentation}
+            sessionSizeWarning={sessionSizeWarningVisible ? (
+              <SessionSizeWarningPill
+                report={sessionSize}
+                compacting={compacting}
+                onCompactContext={onCompactContext}
+                onDismiss={dismissSessionSizeWarning}
+              />
+            ) : undefined}
             workspaceReady={Boolean(workspacePath)}
             workspaceLocked={workspaceLocked}
             workspaceName={workspaceName}
@@ -3225,7 +3536,6 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             onControlGoal={controlComposerGoal}
             onChangeMcpServers={(servers, digest) => onChangeMcpServers?.(servers, digest)}
           />
-          </div>
           {emptyCanvas && !imageHome && !ctfSession ? (
             <div
               className="agent-thread mt-5 flex flex-wrap items-center justify-center gap-2"
@@ -4075,6 +4385,27 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
 export default ChatPage
 
 const chatPageCss = `
+.chat-page__titlebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 30;
+  height: var(--shell-title-safe-top);
+  transform: translateY(0.25rem);
+  pointer-events: none;
+}
+
+.chat-page__titlebar > * {
+  pointer-events: auto;
+}
+
+.chat-page__titlebar .workspace-topbar {
+  min-height: var(--shell-title-safe-top);
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+
 .chat-window-drag-region {
   display: none;
 }
