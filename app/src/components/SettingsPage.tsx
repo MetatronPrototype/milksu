@@ -119,7 +119,7 @@ import {
 import ExternalEditorIcon from '@/components/ExternalEditorIcon'
 import { explainModelVerificationFailure } from '@/lib/tokenFluxError'
 import { applyUiLocale, normalizeUiLocale, t } from '@/lib/uiLocale'
-import { toggleWindowMaximize } from '@/lib/hostPlatform'
+import { readHostPlatform, toggleWindowMaximize } from '@/lib/hostPlatform'
 import {
   CATALOG_MODEL_PROVIDERS,
   MODEL_PROVIDER_API_LABELS,
@@ -970,6 +970,14 @@ export default function SettingsPage({
                       />
                     )}
                   />
+                  {readHostPlatform() === 'linux' ? (
+                    <p className="px-4 pb-3 text-caption text-muted-foreground">
+                      {t(
+                        'Linux 暂不支持桌面通知，以上开关只在 macOS / Windows 生效。',
+                        'Desktop notifications are not supported on Linux yet; these switches only take effect on macOS and Windows.',
+                      )}
+                    </p>
+                  ) : null}
                 </SettingsSection>
               </>
             ) : working && category === 'skills' ? (
