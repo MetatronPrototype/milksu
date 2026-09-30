@@ -1051,6 +1051,18 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     conversationActionError: '',
     pendingComposerDraft: null,
     conversationActionIds: new Set<string>(),
+  }, {
+    // 第五单：流式爆发期把一帧内的多次状态写入合并成**一次** React 渲染。
+    // 注意状态本身仍然同步更新（getState/各 getter 立刻可见，业务逻辑与测试断言不受影响），
+    // 被合并的只是“通知订阅者重新渲染”。真机上这叫从「每个 delta 一次整页渲染」变成「每帧一次」。
+    schedulePublish: (flush) => {
+      if (typeof requestAnimationFrame === 'function') {
+        const frame = requestAnimationFrame(flush)
+        return () => cancelAnimationFrame(frame)
+      }
+      const timer = setTimeout(flush, 0)
+      return () => clearTimeout(timer)
+    },
   })
   const s = {
     get conversations() { return store.getState().conversations },
@@ -1340,7 +1352,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
   ))
 
   // ---- 存活与卡住指示（搬运自本地分支）----
-  // 以前界面只能从“安静”推出“引擎没响应”，于是一个长时间的工其或慢模型调用就被读成
+  // 以前界面只能从“安静”推出“引擎没响应”，于是一个长时间的工具或慢模型调用就被读成
   // “连接掉了”。现在分开两件事：事件=有进展；心跳=引擎还在，但不是进展。
   // 阈值集中在一处（app/src/lib/turnStall.ts），这里只读一次快照。
   const TURN_STALL = resolveTurnStallConfig()
@@ -1375,7 +1387,7 @@ export function createConversationsRuntime(options?: { live?: boolean }) {
     if (!conversationId) return 0
     return lastStreamEventByConversation.get(conversationId) ?? 0
   }
-  // 这三个在渲染时用 Date.now() 求职：重渲染的节奏由页面上已有的“每秒时钟”驱动，
+  // 这三个在渲染时用 Date.now() 求值：重渲染的节奏由页面上已有的“每秒时钟”驱动，
   // 不在 store 里再造一个时钟。
   const streamStale = (() => {
     const conversationId = s.activeId
