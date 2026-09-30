@@ -3031,7 +3031,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                 {waitingForModel && !compacting ? (
                   <p className="chat-model-loading">
                     <AgentLiveStatus
-                      label={t('模型回复中', 'Model is replying')}
+                      label={waitingLabel}
                       elapsed={waitingElapsed}
                     />
                   </p>
