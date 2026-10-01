@@ -3155,6 +3155,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             {pendingApprovalMessage ? (
               <div
                 className="sticky z-30 mx-auto mb-2 flex w-[72%] items-center gap-2 rounded-xl border border-primary/40 bg-popover px-3 py-2 shadow-sm"
+                style={{ top: 'var(--chat-edge-top)' }}
                 data-testid="approval-bar"
               >
                 <span className="min-w-0 flex-1 truncate text-caption font-medium text-foreground">

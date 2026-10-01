@@ -155,6 +155,9 @@ describe('审批条底色', () => {
     expect(bar.className).toContain('bg-popover')
     expect(bar.className).not.toContain('bg-background/95')
     expect(bar.className.match(TRANSLUCENT_BG)).toBeNull()
+    // sticky 必须带 top 偏移（`--chat-edge-top`）：没有 top 的 sticky 不吸顶，条会随正文滚走。
+    // （重放本修复时这行曾被误删 ⇒ 这里守着，别让它再静默丢失。）
+    expect(bar.getAttribute('style') ?? '').toContain('--chat-edge-top')
   })
 
   it('破坏性命令时也不换回半透明底（提示照旧，底色仍是实色）', async () => {
