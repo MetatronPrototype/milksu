@@ -205,6 +205,17 @@ describe('接线源码守卫（不写组件 class/文案断言）', () => {
     expect(useConversationsCode).toMatch(/setTaskNotifySource: \(source\?/)
   })
 
+  // 真机实测（读者日常：agent 在后台会话跑、人在前台看别的会话）：窗口级 isFocused 把**所有**会话的
+  // 通知都压掉 ⇒ 审批卡通知没发。会话级压制要求每个调用点都现读"正在看的会话"并透传，一处漏了就退回窗口级。
+  // 本分支基于 origin/main，只有 3 处通知调用点（停滞/终态/审批卡）。
+  // 第 4 处「后台任务终态」来自 PR #211（a2-background-notify，仍在开着）；
+  // 若 #211 先合，此数应同步为 4，并在那处调用点也透传 activeConversationId（否则那处退回窗口级压制 ✗）。
+  it('三处调用点都现读"正在看的会话"并透传（漏一处就退回窗口级压制 ✗）', () => {
+    expect(useConversationsCode.match(/activeConversationId: activeConversationIdForNotify\(\)/g)?.length).toBe(3)
+    // 来源必须是 store 的 activeId（现读，不用快照），不是别的字段
+    expect(useConversationsCode).toMatch(/function activeConversationIdForNotify\(\): string \{\n\s*return String\(store\.getState\(\)\.activeId \?\? ''\)\.trim\(\)/)
+  })
+
   it('前端 AppSettings 的 task_notify 字段名与 Go 侧 JSON 名一致', () => {
     expect(typesSource).toMatch(/task_notify\?: \{ needs_input\?: boolean; failed\?: boolean; completed\?: boolean; stalled\?: boolean; sound\?: boolean \}/)
   })
