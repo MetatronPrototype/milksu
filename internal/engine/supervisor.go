@@ -3859,6 +3859,9 @@ func normalizeBridgeEvent(raw bridgeEvent, kernels ...string) Event {
 		event.Type = "context.composition"
 	case "approval_requested":
 		event.Type = "approval.requested"
+	case "turn.heartbeat":
+		// 回合心跳：渲染层据此判定“卡住/仍在跑”。以前它被改成 engine.raw.turn.heartbeat ✗ ⇒ 永远收不到。
+		event.Type = "turn.heartbeat"
 	case "turn.stall_warning":
 		// 预算软告警：到点先告警、不判死，决定权交回读者。渲染层按这个名字分支 ⇒ 必须原样
 		// 透传并带上阶段与体积，否则它落到 default 变成 engine.raw.* ⇒ 永远不会举牌。
