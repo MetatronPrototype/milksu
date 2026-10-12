@@ -233,8 +233,6 @@ test("deferred families project to nothing in the minimal glue", () => {
     { type: "snapshot", entries: [], tools: [], compactions: [], inbox: [], agent: {}, usage: {} },
     { type: "inbox_update", items: [{ id: 5, mode: "followUp" }] },
     { type: "submission", record: { id: 5, status: "queued" } },
-    { type: "auto_retry_start", attempt: 1, at: 1, errorMessage: "x" },
-    { type: "auto_retry_end", attempt: 1 },
     { type: "entry_appended", entry: { id: 1 } },
     { type: "agent_changed", agent: {} },
     { type: "usage_changed", usage: {} },
@@ -245,6 +243,45 @@ test("deferred families project to nothing in the minimal glue", () => {
   ]) {
     assert.deepEqual(projector.project(event), [], `no projection for ${event.type}`);
   }
+});
+
+// R1a：引擎 durable 重试排程投影成 model_retry（「网络波动，重试中 x/N」）。
+// 中文断言按仓库纪律写 \uXXXX 转义（esbuild 会转义非 ASCII，B2f 踩过的坑）。
+test("auto_retry events project to model_retry notices", () => {
+  const projector = createHarnessEventProjector({ retryMax: 5 });
+  // attempt = 刚失败的尝试号 = 即将进行的重试序号：1/5、2/5 …
+  assert.deepEqual(projector.project({ type: "auto_retry_start", attempt: 1, at: 123, errorMessage: "boom" }), [{
+    type: "model_retry",
+    data: {
+      phase: "start",
+      attempt: 1,
+      maxRetries: 5,
+      message: "\u7f51\u7edc\u6ce2\u52a8\uff0c\u91cd\u8bd5\u4e2d 1/5",
+      messageEnglish: "Network trouble, retrying 1/5",
+      errorMessage: "boom",
+      retryAt: 123,
+    },
+  }]);
+  assert.deepEqual(
+    projector.project({ type: "auto_retry_start", attempt: 3, at: 9, errorMessage: "ECONNRESET" })[0].data,
+    {
+      phase: "start",
+      attempt: 3,
+      maxRetries: 5,
+      message: "\u7f51\u7edc\u6ce2\u52a8\uff0c\u91cd\u8bd5\u4e2d 3/5",
+      messageEnglish: "Network trouble, retrying 3/5",
+      errorMessage: "ECONNRESET",
+      retryAt: 9,
+    },
+  );
+  assert.deepEqual(projector.project({ type: "auto_retry_end", attempt: 1 }), [{
+    type: "model_retry",
+    data: { phase: "end", attempt: 1 },
+  }]);
+  // 缺省 retryMax 用 HARNESS_RETRY_POLICY 预算（5）；坏 attempt 回退 1。
+  const fallback = createHarnessEventProjector().project({ type: "auto_retry_start", attempt: "x" });
+  assert.equal(fallback[0].data.attempt, 1);
+  assert.equal(fallback[0].data.maxRetries, 5);
 });
 
 test("projectBatch keeps intra-batch order across families", () => {

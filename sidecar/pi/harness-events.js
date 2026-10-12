@@ -24,8 +24,13 @@
 //   tool_execution_update → tool_call_progress（进度心跳；工具输出仍按现状只在结束时给）
 //   tool_execution_end → tool_call_end {toolCallId, toolName, content, durationMs, isError, module}
 //   task_failed → error（唯一失败可见面；auto_retry 的重试期间也可能触发，见 docs）
+//   auto_retry_start → model_retry（R1a：引擎 durable 重试排程，「网络波动，重试中
+//     x/5」；x = 刚失败的 attempt 号 = 即将进行的第 x 次重试，max 来自接线层传的
+//     retryMax = harnessRetryPolicy().maxRetries）
+//   auto_retry_end → model_retry { phase: "end" }（退避结束/下一尝试开始，渲染层据此
+//     收横幅；与 start 同一事件类型，最小新增面）
 //   snapshot/inbox_update/submission/entry_appended/agent_changed/usage_changed/
-//     compaction_*/auto_retry_*/deferred_poll/turn_* → 本版不投影（见模块尾部 NOTES）
+//     compaction_*/deferred_poll/turn_* → 本版不投影（见模块尾部 NOTES）
 //
 // 已知取舍（批次 B/D 补齐）：
 //   - inbox_update 不映射：pi-durable 的 QueuedItem 只有 {id, mode}，bridge queue_update 需要
@@ -40,6 +45,7 @@
 
 import { projectAssistantMessageEnd } from "./bridge-message-view.js";
 import { projectAssistantUsage } from "./bridge-usage-view.js";
+import { HARNESS_RETRY_POLICY } from "./harness-network-resilience.js";
 
 /**
  * 工具耗时融合（pi-durable/pi-coding-agent 1.1.0）：内核在执行现场用单调时钟记录
@@ -66,6 +72,8 @@ function toolResultContent(message) {
  *   module: "coding" | "ctf"（usage/tool 事件的 module 字段，对齐 bridge usageModule）
  *   conversationId: usage_recorded 里 projectAssistantUsage 需要的会话 id
  *   provider / source: usage 归因（对齐 bridge sessionConfiguredProviders/sessionModelSources）
+ *   retryMax: auto_retry_start 文案「重试中 x/N」里的 N（缺省 HARNESS_RETRY_POLICY
+ *     的预算上限；接线层传 harnessRetryPolicy(environment).maxRetries 保持活配置）
  */
 export function createHarnessEventProjector(options = {}) {
   const module = options.module === "ctf" ? "ctf" : "coding";
@@ -74,6 +82,7 @@ export function createHarnessEventProjector(options = {}) {
   const source = options.source === "account" || options.source === "personal"
     ? options.source
     : "";
+  const retryMax = Math.max(1, Math.floor(Number(options.retryMax) || HARNESS_RETRY_POLICY.maxRetries));
   let textStreamed = false;
   let thinkingStreamed = false;
   let thinkingText = "";
@@ -188,6 +197,30 @@ export function createHarnessEventProjector(options = {}) {
         }];
       case "tool_execution_end":
         return projectToolEnd(event);
+      case "auto_retry_start": {
+        // R1a：live.generation.retry 落库时引擎发的排程事件。attempt = 刚失败的尝试号
+        //（也是即将进行的第 attempt 次重试），与 maxRetries 组成「重试中 x/N」。
+        const attempt = Math.max(1, Math.floor(Number(event.attempt) || 1));
+        return [{
+          type: "model_retry",
+          data: {
+            phase: "start",
+            attempt,
+            maxRetries: retryMax,
+            message: `网络波动，重试中 ${attempt}/${retryMax}`,
+            messageEnglish: `Network trouble, retrying ${attempt}/${retryMax}`,
+            errorMessage: String(event.errorMessage ?? ""),
+            retryAt: Number(event.at ?? 0) || 0,
+          },
+        }];
+      }
+      case "auto_retry_end": {
+        const attempt = Math.max(1, Math.floor(Number(event.attempt) || 1));
+        return [{
+          type: "model_retry",
+          data: { phase: "end", attempt },
+        }];
+      }
       case "task_failed":
         return [{
           type: "error",

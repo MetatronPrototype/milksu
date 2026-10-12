@@ -40,6 +40,11 @@ import {
   createHarnessModels,
   wireHarnessModelSelection,
 } from "./harness-model-providers.js";
+import {
+  harnessRetryPolicy,
+  harnessStreamWatchdogThresholds,
+  withStreamWatchdogCollection,
+} from "./harness-network-resilience.js";
 import { createHarnessEventProjector } from "./harness-events.js";
 import {
   createHarnessBeforeRequestFilter,
@@ -370,7 +375,16 @@ export function createHarnessBridgeSessionLayer(context) {
     if (runtime) return runtime;
     if (!runtimeOpening) {
       runtimeOpening = (async () => {
-        const models = modelsCollection();
+        // R1a 网络韧性：模型集合的 streamSimple/stream 统一套挂死看门狗（软阈值发
+        // model_stall 事件，硬阈值 abort 流并抛可重试错误交给引擎原生重试）。这一层
+        // 是 provider 注册后的唯一分发口，三路 provider（账号/自有/route，含 route 的
+        // 内层来源流）与测试预注册的 faux 都被覆盖，见 harness-network-resilience.js。
+        const models = withStreamWatchdogCollection(modelsCollection(), {
+          thresholds: () => harnessStreamWatchdogThresholds(environment),
+          onStall: stall => {
+            void emitHarnessStreamStallEvent(stall);
+          },
+        });
         const registry = createRegistry();
         const judge = createHarnessBeforeToolJudge({
           resolveConversation,
@@ -592,6 +606,13 @@ export function createHarnessBridgeSessionLayer(context) {
             get compaction() {
               return liveCompactionPolicy();
             },
+            // R1a 网络韧性：settings.retry 喂给 pi-durable 的 durable 重试（generation.js
+            // classify 的 attempt <= maxRetries 预算 + retryDelayMs 退避 + live.generation
+            // .retry 状态 → auto_retry_* 事件）。活配置 getter：每次 agent 解析都重读
+            // 环境变量（resolveSettings 用展开读值，getter 生效）。
+            get retry() {
+              return harnessRetryPolicy(environment);
+            },
           },
           env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? process.cwd() }),
           ...harnessRuntimeOptions(),
@@ -615,7 +636,75 @@ export function createHarnessBridgeSessionLayer(context) {
       conversationId: alias,
       provider: sessionConfiguredProviders.get(alias),
       source: sessionModelSources.get(alias),
+      // R1a：auto_retry_start 投影「网络波动，重试中 x/5」需要重试预算上限。
+      retryMax: harnessRetryPolicy(environment).maxRetries,
     });
+  }
+
+  // ---------- R1a 网络韧性：挂死软阈值事件的会话归因 ----------
+
+  /**
+   * 把看门狗软阈值告警归因到桌面会话并 emit model_stall。provider 层拿到的身份只有
+   * options.sessionId（pi-durable 的 pi.provider 文档：每会话稳定的 uuid，请求前
+   * ensureProviderSessionId 已确保在场），这里经 viewState 的 docs["pi.provider"] 读回
+   * 并缓存在会话记录上（durableId 变了才重读）。归因失败只告警不发事件——硬判死仍
+   * 照常工作，丢的只是这一条软告警。
+   */
+  async function emitHarnessStreamStallEvent(stall) {
+    try {
+      const alias = await aliasForProviderSessionId(stall?.sessionId);
+      if (!alias) {
+        console.warn(
+          "MilkSU stream watchdog stall could not be attributed to a conversation",
+          { sessionId: stall?.sessionId ?? null, provider: stall?.provider ?? null },
+        );
+        return;
+      }
+      const stalledSeconds = Math.max(1, Math.round(Number(stall?.softMs ?? 0) / 1000));
+      const hardKillSeconds = Math.max(
+        stalledSeconds,
+        Math.round(Number(stall?.hardMs ?? 0) / 1000),
+      );
+      emit(alias, "model_stall", {
+        stage: stall?.stage,
+        provider: stall?.provider,
+        model: stall?.modelId,
+        stalledSeconds,
+        hardKillSeconds,
+        message: `连接无响应 ${stalledSeconds} 秒`,
+        messageEnglish: `No response from the model connection for ${stalledSeconds}s`,
+      });
+    } catch (error) {
+      console.error("MilkSU stream stall event failed", error);
+    }
+  }
+
+  /** provider sessionId → 桌面会话别名：先查缓存，未知的会话逐个读 viewState 补缓存。 */
+  async function aliasForProviderSessionId(sessionId) {
+    if (!sessionId) return "";
+    for (const [alias, record] of conversations) {
+      if (record.durableId !== undefined
+        && record.providerSessionId?.durableId === record.durableId
+        && record.providerSessionId.sessionId === sessionId) {
+        return alias;
+      }
+    }
+    const { handle } = await openRuntime();
+    for (const [alias, record] of conversations) {
+      if (record.durableId === undefined) continue;
+      if (record.providerSessionId?.durableId === record.durableId) continue;
+      let resolved = "";
+      try {
+        const state = await handle.conversationViewState(alias);
+        resolved = String(state?.value?.docs?.["pi.provider"]?.sessionId ?? "");
+        state?.dispose?.();
+      } catch {
+        // 会话可能刚销毁；缓存留空，下轮再试。
+      }
+      record.providerSessionId = { durableId: record.durableId, sessionId: resolved };
+      if (resolved === sessionId) return alias;
+    }
+    return "";
   }
 
   /**
