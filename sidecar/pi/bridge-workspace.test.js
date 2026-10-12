@@ -66,6 +66,83 @@ test("workspace tool rejects unknown actions and plan mutations", () => {
   }), "");
 });
 
+test("unlock releases the lock and clears the session descriptor symmetrically", async () => {
+  const tools = [];
+  const requested = [];
+  const policy = {
+    executionMode: "go",
+    approvalPolicy: "workspace-auto",
+  };
+  const extension = createCodingWorkspaceExtension(
+    "conversation-1",
+    () => policy,
+    async request => {
+      requested.push(request);
+      if (request.action === "lock_computer_use_window") {
+        return JSON.stringify({
+          locked: true,
+          status: { phase: "ready" },
+          descriptor: {
+            sessionId: "computer_unlock_1",
+            socketPath: "/tmp/milksu-computer-use/computer_unlock_1",
+            targetPid: 4242,
+            targetWindowId: 9001,
+          },
+        });
+      }
+      return JSON.stringify({
+        unlocked: true,
+        status: { phase: "disabled", authorized: false },
+      });
+    },
+  );
+  extension({ registerTool(tool) { tools.push(tool); } });
+
+  assert.equal(
+    normalizeCodingWorkspaceAction("unlock_computer_use_window"),
+    "unlock_computer_use_window",
+  );
+  // Unlock is a mutating action: plan/read-only must refuse it, go must pass.
+  assert.match(
+    codingWorkspaceActionBlocked("unlock_computer_use_window", {
+      executionMode: "plan",
+      approvalPolicy: "workspace-auto",
+    }),
+    /\u53ea\u8bfb|Plan/,
+  );
+  assert.match(
+    codingWorkspaceActionBlocked("unlock_computer_use_window", {
+      executionMode: "go",
+      approvalPolicy: "read-only",
+    }),
+    /\u53ea\u8bfb|Plan/,
+  );
+  assert.equal(
+    codingWorkspaceActionBlocked("unlock_computer_use_window", {
+      executionMode: "go",
+      approvalPolicy: "workspace-auto",
+    }),
+    "",
+  );
+
+  // Lock writes the descriptor; unlock clears it so the next lock rebuilds
+  // the executor instead of reusing the stale session (CU v2 §3.1-2).
+  await tools[0].execute("call-lock", {
+    action: "lock_computer_use_window",
+    targetPid: 4242,
+    targetWindowId: 9001,
+  });
+  assert.equal(policy.computerUse?.sessionId, "computer_unlock_1");
+  const result = await tools[0].execute("call-unlock", {
+    action: "unlock_computer_use_window",
+  });
+  assert.equal(requested.at(-1).action, "unlock_computer_use_window");
+  assert.match(result.content[0].text, /unlocked/);
+  assert.equal(policy.computerUse, undefined);
+  // The guidance must teach the unlock-then-relock escape hatch.
+  assert.match(codingWorkspaceGuidance(), /unlock_computer_use_window/);
+});
+
 test("CVE and lab keep research session roles so the Coding Pi loop still applies", () => {
   assert.equal(resolveWorkflowSessionRole(""), "");
   assert.equal(resolveWorkflowSessionRole("solver"), "");
@@ -142,7 +219,9 @@ test("workspace guidance is a short when-to-use routing rule", () => {
   assert.match(text, /lock_computer_use_window/);
   assert.doesNotMatch(text, /list_records/);
   assert.doesNotMatch(text, /85%/);
-  assert.ok(text.length < 420);
+  // The unlock routing line is required guidance for CU v2 §3.1; keep the
+  // whole text a short routing rule, not a manual.
+  assert.ok(text.length < 500);
   assert.equal(
     formatCodingWorkspaceInput({
       action: "focus_browser_tab",

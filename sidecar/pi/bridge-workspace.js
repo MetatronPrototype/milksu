@@ -42,6 +42,7 @@ export const codingWorkspaceMutatingActions = Object.freeze([
   "restore_records",
   "prepare_coding_worktree",
   "lock_computer_use_window",
+  "unlock_computer_use_window",
   "start_research_run",
   "register_research_task",
   "open_research_browser_tab",
@@ -140,6 +141,7 @@ export function codingWorkspaceGuidance() {
     "Reverse sessions: list_reverse_artifacts / preview_reverse_artifact expose this conversation's milksu-rea results.",
     "Open or focus a tab, then operate the page with Playwright.",
     "List Computer Use windows, call milksu_ask if several match, then lock_computer_use_window.",
+    "Wrong or stuck lock: unlock_computer_use_window releases it; lock a new target.",
     "Pick a typed action from the tool schema.",
   ].join(" ");
 }
@@ -440,6 +442,7 @@ export function createCodingWorkspaceExtension(
           Type.Literal("search_records"),
           Type.Literal("list_computer_use_windows"),
           Type.Literal("lock_computer_use_window"),
+          Type.Literal("unlock_computer_use_window"),
           Type.Literal("prepare_coding_worktree"),
           Type.Literal("start_research_run"),
           Type.Literal("register_research_task"),
@@ -555,7 +558,7 @@ export function createCodingWorkspaceExtension(
         }
         const timeoutMs = action === "prepare_coding_worktree"
           ? writerWorktreePrepareTimeoutMs
-          : action === "lock_computer_use_window"
+          : action === "lock_computer_use_window" || action === "unlock_computer_use_window"
             ? computerUseLockTimeoutMs
             : undefined;
         let actionInput = action.includes("research_")
@@ -609,6 +612,12 @@ export function createCodingWorkspaceExtension(
           } catch {
             // The tool result still reaches the model.
           }
+        }
+        // CU v2 §3.1-2: unlock is the symmetric counterpart of the lock write
+        // above — clear the session descriptor so the next lock rebuilds the
+        // executor instead of reusing the stale one.
+        if (policy && action === "unlock_computer_use_window") {
+          delete policy.computerUse;
         }
         return {
           content: [{ type: "text", text: result || `${action} completed` }],
