@@ -114,6 +114,11 @@ export function makeTestBashTool({ workspace, onExecute, sleepMs = 0 } = {}) {
  *                             normalizeSecurityTools 规整后并进策略）
  *   imageGenConfigured        imageGenConfigured 策略位（B2c：imagegen 断言用）
  *   readOnlyResourceRoots     会话受审读根（B2c：archify 断言用）
+ *   harnessSettings           并进 openMilkSUHarness settings 的额外档（R1b：如
+ *                             {progress:{partialIntervalMs:…}} 拉大落盘节流证明流式
+ *                             旁路不等 commit；产品路径不传，durable 管线零改动）
+ *   emitWrapper               emit 包装器（R1b：注入按事件类型抛错，断言旁路降级
+ *                             不影响回合完成）
  */
 export function buildTestLayer({
   agentDir,
@@ -143,6 +148,8 @@ export function buildTestLayer({
   securityTools = [],
   imageGenConfigured = false,
   readOnlyResourceRoots = [],
+  harnessSettings = undefined,
+  emitWrapper = undefined,
   heartbeatOptions = { heartbeatMs: 250, settleMs: 20, unrefHeartbeat: true },
   // D2：翻转首启一次性导出默认打桩（既有用例的文件面假设不被隐式改写）；传
   // flipArchiveExport: null 走产品默认 runFlipArchiveExport 的真路径。
@@ -150,7 +157,7 @@ export function buildTestLayer({
 }) {
   const events = [];
   let approvalBroker;
-  const emit = (conversationId, type, data = {}) => {
+  const baseEmit = (conversationId, type, data = {}) => {
     const record = { type, id: conversationId ?? null, ...data };
     events.push(record);
     try {
@@ -177,6 +184,8 @@ export function buildTestLayer({
       });
     }
   };
+  // R1b：emitWrapper 注入故障面（如按事件类型抛一次错），断言旁路降级不影响回合。
+  const emit = typeof emitWrapper === "function" ? emitWrapper(baseEmit) : baseEmit;
   approvalBroker = createApprovalBroker(emit);
   function firstAskChoiceId(record) {
     try {
@@ -298,7 +307,11 @@ export function buildTestLayer({
     maps,
     environment,
     resolveAgentDirectory: () => agentDir,
-    harnessRuntimeOptions: () => heartbeatOptions,
+    harnessRuntimeOptions: () => ({
+      ...heartbeatOptions,
+      // R1b：测试注入的额外 harness settings（如 progress.partialIntervalMs）。
+      ...(harnessSettings ? { settings: harnessSettings } : {}),
+    }),
     // D2：翻转首启一次性导出的触达点（默认 no-op 桩；flipArchiveExport: null 走真路径）。
     ...(flipArchiveExport === null
       ? {}

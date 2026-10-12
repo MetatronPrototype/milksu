@@ -475,6 +475,81 @@ test("withStreamWatchdogCollection returns unexpected shapes unchanged", () => {
   assert.equal(withStreamWatchdogCollection({ models: bare }, {}).models.getProvider("nope"), undefined);
 });
 
+// ---------- R1b 流式旁路 tap（onEvent 只读转发面） ----------
+
+test("withStreamWatchdogCollection onEvent tap forwards raw stream events with attribution", async () => {
+  const faux = fauxProvider({
+    models: [{ id: "faux-1", contextWindow: 128000, maxTokens: 16384, reasoning: true }],
+  });
+  faux.setResponses([
+    fauxAssistantMessage([
+      { type: "thinking", thinking: "pondering" },
+      { type: "text", text: "answer" },
+    ]),
+  ]);
+  const collection = createHarnessModels();
+  collection.models.setProvider(faux.provider);
+  const taps = [];
+  const wrapped = withStreamWatchdogCollection(collection, {
+    thresholds: { softMs: 60_000, hardMs: 120_000 },
+    onEvent: tap => taps.push(tap),
+  });
+  const model = wrapped.models.getModel("faux", "faux-1");
+  const message = await wrapped.models.streamSimple(model, { messages: [] }, {
+    sessionId: "prov-session-1",
+  }).result();
+  assert.equal(message.stopReason, "stop");
+
+  // 每个原始流事件都被 tap 看到，且带归因信息（sessionId 来自 streamOptions，
+  // pi-durable generation.js request 相位注入的 pi.provider 会话 id）。
+  const types = taps.map(tap => tap.event.type);
+  assert.ok(types.includes("thinking_start"), "tap saw thinking_start");
+  assert.ok(types.includes("thinking_delta"), "tap saw thinking_delta");
+  assert.ok(types.includes("thinking_end"), "tap saw thinking_end");
+  assert.ok(types.includes("text_start"), "tap saw text_start");
+  assert.ok(types.includes("text_delta"), "tap saw text_delta");
+  assert.ok(types.includes("done"), "tap saw done");
+  for (const tap of taps) {
+    assert.equal(tap.sessionId, "prov-session-1");
+    assert.equal(tap.provider, "faux");
+    assert.equal(tap.modelId, "faux-1");
+  }
+  // delta 原文无损透传（旁路只读转发，不改事件）。
+  const thinking = taps
+    .filter(tap => tap.event.type === "thinking_delta")
+    .map(tap => tap.event.delta)
+    .join("");
+  assert.equal(thinking, "pondering");
+});
+
+test("a throwing onEvent tap never breaks the stream", async () => {
+  const faux = fauxProvider({
+    models: [{ id: "faux-1", contextWindow: 128000, maxTokens: 16384, reasoning: true }],
+  });
+  faux.setResponses([
+    fauxAssistantMessage([
+      { type: "thinking", thinking: "boom-proof" },
+      { type: "text", text: "still fine" },
+    ]),
+  ]);
+  const collection = createHarnessModels();
+  collection.models.setProvider(faux.provider);
+  let taps = 0;
+  const wrapped = withStreamWatchdogCollection(collection, {
+    thresholds: { softMs: 60_000, hardMs: 120_000 },
+    onEvent: () => {
+      taps += 1;
+      throw new Error("observer exploded");
+    },
+  });
+  const model = wrapped.models.getModel("faux", "faux-1");
+  const message = await wrapped.models.streamSimple(model, { messages: [] }, {}).result();
+  // 红线：旁路挂了不能影响引擎本体。流照常完成，事件照常全部通知。
+  assert.equal(message.stopReason, "stop");
+  assert.equal(message.content.find(block => block.type === "text").text, "still fine");
+  assert.ok(taps > 0, "the tap ran despite throwing");
+});
+
 // ---------- pi-ai 分类器对默认行为的交叉核对 ----------
 
 test("unmarked unknown errors stay non-retryable under the engine classifier", () => {

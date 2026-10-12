@@ -14,6 +14,10 @@
 //   run_start → turn_started（语义差：run = 一次提交批的整轮；bridge 的 turn 对应 Pi 的
 //     agent_start/settled，桌面只看开始/收尾，投影为最接近的一对）
 //   run_end → turn_settled
+//   turn_start → turn_active { phase: "start" }（R1b 回合生命周期：pi-durable 的 turn
+//     = 一个 generation 任务的生死（模型回合，run 内可多轮工具往返）；run_*/turn_*
+//     两层并存：run 是桌面回合边界，turn 是引擎内部的「它还活着」心跳源）
+//   turn_end → turn_active { phase: "end" }
 //   message_start → 无输出（重置本条消息的累计状态）
 //   message_update.changes → thinking_start/thinking_delta/text_delta（pi-durable 无
 //     thinking_end：thinking_done 在 message_end 由累计内容合成，见下）
@@ -30,7 +34,9 @@
 //   auto_retry_end → model_retry { phase: "end" }（退避结束/下一尝试开始，渲染层据此
 //     收横幅；与 start 同一事件类型，最小新增面）
 //   snapshot/inbox_update/submission/entry_appended/agent_changed/usage_changed/
-//     compaction_*/deferred_poll/turn_* → 本版不投影（见模块尾部 NOTES）
+//     compaction_*/deferred_poll → 本版不投影；submission/inbox 的排队可见不在投影器
+//     做（QueuedItem 只有 {id, mode} 没文本），由会话层按 submission 落库 + inbox
+//     快照发 message_queued（harness-bridge-session，R1b）
 //
 // 已知取舍（批次 B/D 补齐）：
 //   - inbox_update 不映射：pi-durable 的 QueuedItem 只有 {id, mode}，bridge queue_update 需要
@@ -179,6 +185,13 @@ export function createHarnessEventProjector(options = {}) {
         return [{ type: "turn_started", data: {} }];
       case "run_end":
         return [{ type: "turn_settled", data: {} }];
+      case "turn_start":
+        // R1b 回合生命周期：pi-durable 的 turn = 一个 generation 任务（模型回合）。
+        // run_start/run_end 是桌面回合边界（已有专案处理），turn_active 是引擎内部
+        // 的逐回合心跳，渲染器据此区分「模型回合进行中」与「工具轮/空闲」。
+        return [{ type: "turn_active", data: { phase: "start" } }];
+      case "turn_end":
+        return [{ type: "turn_active", data: { phase: "end" } }];
       case "message_start":
         textStreamed = false;
         thinkingStreamed = false;

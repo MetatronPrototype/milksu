@@ -51,8 +51,14 @@ test("run boundaries project to turn events", () => {
   assert.deepEqual(projector.project({ type: "run_end", inputs: [3] }), [
     { type: "turn_settled", data: {} },
   ]);
-  assert.deepEqual(projector.project({ type: "turn_start" }), []);
-  assert.deepEqual(projector.project({ type: "turn_end" }), []);
+  // R1b 回合生命周期：pi-durable 的 turn = 一个 generation 任务（模型回合），
+  // turn_active 给渲染器「回合还活着」的引擎侧信号源（run 是桌面回合边界）。
+  assert.deepEqual(projector.project({ type: "turn_start" }), [
+    { type: "turn_active", data: { phase: "start" } },
+  ]);
+  assert.deepEqual(projector.project({ type: "turn_end" }), [
+    { type: "turn_active", data: { phase: "end" } },
+  ]);
 });
 
 test("streamed text and thinking project to delta events and a single thinking_done", () => {

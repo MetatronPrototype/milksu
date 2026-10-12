@@ -374,15 +374,29 @@ export function createHarnessBridgeSessionLayer(context) {
   async function openRuntime() {
     if (runtime) return runtime;
     if (!runtimeOpening) {
+      const runtimeOptions = harnessRuntimeOptions();
+      // R1b：harnessRuntimeOptions 的 settings 键并进 openMilkSUHarness 的 settings
+      //（测试注入面，例如把 progress.partialIntervalMs 拉大，证明流式旁路不等落盘）；
+      // 其余键原样透传（heartbeat 等）。产品路径 bridge.js 不传 harnessRuntimeOptions，
+      // settings 保持 R1a 的 compaction/retry 两个 getter，durable 落盘管线零改动。
+      const { settings: harnessExtraSettings, ...harnessRestOptions } = runtimeOptions;
       runtimeOpening = (async () => {
         // R1a 网络韧性：模型集合的 streamSimple/stream 统一套挂死看门狗（软阈值发
         // model_stall 事件，硬阈值 abort 流并抛可重试错误交给引擎原生重试）。这一层
         // 是 provider 注册后的唯一分发口，三路 provider（账号/自有/route，含 route 的
         // 内层来源流）与测试预注册的 faux 都被覆盖，见 harness-network-resilience.js。
+        // R1b 状态可见性：同一个包装点加 onEvent 只读 tap，原始流 delta（thinking/
+        // text）实时转发给流式旁路 emitHarnessStreamBypassEvent，不等
+        // settings.progress.partialIntervalMs（默认 100ms）落盘节流 + commit 投影
+        //（audit D2「诈尸」的根因层）。tap 抛错被 watchdoggedModelStream 吞掉，
+        // 引擎本体不受旁路影响。
         const models = withStreamWatchdogCollection(modelsCollection(), {
           thresholds: () => harnessStreamWatchdogThresholds(environment),
           onStall: stall => {
             void emitHarnessStreamStallEvent(stall);
+          },
+          onEvent: tap => {
+            emitHarnessStreamBypassEvent(tap);
           },
         });
         const registry = createRegistry();
@@ -613,9 +627,12 @@ export function createHarnessBridgeSessionLayer(context) {
             get retry() {
               return harnessRetryPolicy(environment);
             },
+            // R1b：测试注入的额外 settings（如 progress.partialIntervalMs）。产品路径
+            // 为空对象展开，落盘节流保持 pi-durable 默认 100ms，零改动。
+            ...(harnessExtraSettings ?? {}),
           },
           env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? process.cwd() }),
-          ...harnessRuntimeOptions(),
+          ...harnessRestOptions,
         });
         return { handle, models, registry, mcpMount, subagentHalt, subagentAsyncHalt };
       })();
@@ -705,6 +722,160 @@ export function createHarnessBridgeSessionLayer(context) {
       if (resolved === sessionId) return alias;
     }
     return "";
+  }
+
+  // ---------- R1b 状态可见性：流式旁路（治「诈尸」，audit D2） ----------
+
+  /**
+   * 旁路状态机：provider sessionId（pi-durable 每会话稳定的 pi.provider uuid）→ 该
+   * 流的转发状态。pi-durable 1.1.0 的 partial 落盘按 settings.progress
+   * .partialIntervalMs（默认 100ms）节流，事件又是从已提交状态反推的（events.js
+   * translate → messageChanges），所以思考/正文 delta 到桌面要等「节流 + commit +
+   * watch 投递」三段；旁路在 provider 流的单一收口（R1a 看门狗包装点的 onEvent tap）
+   * 实时只读转发，绕开这三段。落盘管线零改动，旁路只读。
+   *
+   * 去重（双向抑制，谁先到谁服务本条消息）：
+   *   - 旁路先投：record.streamBypassed = true，投影器输出的 thinking 与 text 的
+   *     delta 在 handleHarnessEvent 的分发处跳过（message_end 的 thinking_done 与
+   *     message_done 合成照常，投影器内部累计不受抑制影响）；
+   *   - 投影先投（旁路归因慢的冷启动窗口）：record.streamProjected = true，旁路
+   *     对本条消息静默，不再重复推。
+   *   两个位都在 message_end / run_start / run_end 复位（消息边界）。已知取舍：
+   *   旁路转发失败（emit 抛错）时清 streamBypassed 静默降级回投影路径，切换批可
+   *   能有一小段重复 delta，最终 message_done 全文兜底，可接受。
+   *
+   * 次序保证：每个 provider sessionId 一条 FIFO 链（drain 串行 await），delta 不会
+   * 乱序；归因失败的 delta 丢弃（投影路径天然兜底，该会话抑制位不会被置上）。
+   */
+  const streamBypassStates = new Map();
+
+  function streamBypassStateOf(sessionId) {
+    let state = streamBypassStates.get(sessionId);
+    if (state === undefined) {
+      state = { alias: "", broken: false, warned: false, queue: [], draining: false };
+      streamBypassStates.set(sessionId, state);
+    }
+    return state;
+  }
+
+  /** 看门狗包装点 onEvent tap 的入口（watchdoggedModelStream 已 try-catch，这里双保险）。 */
+  function emitHarnessStreamBypassEvent(tap) {
+    try {
+      const type = tap?.event?.type;
+      if (type !== "thinking_start" && type !== "thinking_delta" && type !== "text_delta") return;
+      const sessionId = String(tap?.sessionId ?? "");
+      if (!sessionId) return;
+      const state = streamBypassStateOf(sessionId);
+      if (state.broken) return;
+      state.queue.push({ type, delta: String(tap.event.delta ?? "") });
+      drainStreamBypassState(state, sessionId);
+    } catch {
+      // 旁路任何异常都不能影响引擎本体。
+    }
+  }
+
+  function drainStreamBypassState(state, sessionId) {
+    if (state.draining) return;
+    state.draining = true;
+    void (async () => {
+      try {
+        for (;;) {
+          const item = state.queue.shift();
+          if (item === undefined) break;
+          try {
+            if (!state.alias) {
+              // 归因一次，命中后缓存（record.providerSessionId 同步快路径在
+              // aliasForProviderSessionId 内部）。pi.provider sessionId 在 request
+              // 相位的 commit 里就绪，早于首个 delta，冷启动只多一次 viewState 读。
+              state.alias = await aliasForProviderSessionId(sessionId);
+              if (!state.alias) {
+                if (!state.warned) {
+                  state.warned = true;
+                  console.warn(
+                    "MilkSU stream bypass could not attribute a provider session",
+                    { sessionId },
+                  );
+                }
+                // 丢这一条（投影路径兜底）；下一条 delta 再试归因。
+                continue;
+              }
+            }
+            emitStreamedDeltaViaBypass(state.alias, item);
+          } catch (error) {
+            // 转发失败：静默降级回投影路径（清抑制位，本流停用旁路），回合照常完成。
+            state.broken = true;
+            state.queue.length = 0;
+            const record = conversationRecord(state.alias);
+            if (record) record.streamBypassed = false;
+            if (!state.warned) {
+              state.warned = true;
+              console.warn(
+                "MilkSU stream bypass failed; falling back to committed projections",
+                error,
+              );
+            }
+            break;
+          }
+        }
+      } finally {
+        state.draining = false;
+        if (state.queue.length > 0 && !state.broken) drainStreamBypassState(state, sessionId);
+      }
+    })();
+  }
+
+  /**
+   * 旁路投递面：与 handleHarnessEvent 投影分发处的 thinking 与 text delta 同款处理
+   *（复读守卫、thinkingStartedAt、60ms text 合并都走同一份注入件），保证事件形状
+   * 逐字段同形。谁先投谁赢：投影已投过本条消息（streamProjected）则旁路静默。
+   */
+  function emitStreamedDeltaViaBypass(alias, item) {
+    const record = conversationRecord(alias);
+    if (!record || record.streamProjected) return;
+    if (item.type === "thinking_start") {
+      record.streamBypassed = true;
+      thinkingRepetition.reset(alias);
+      record.thinkingStartedAt = Date.now();
+      emit(alias, "thinking_start", {});
+    } else if (item.type === "thinking_delta") {
+      record.streamBypassed = true;
+      emit(alias, "thinking_delta", { delta: item.delta });
+      emitThinkingRepeatAlarm(alias, thinkingRepetition.push(alias, item.delta));
+    } else if (item.type === "text_delta") {
+      record.streamBypassed = true;
+      queueTextDelta(alias, item.delta);
+    }
+  }
+
+  /** 思考复读告警（投影与旁路两条投递路径共用，形状与 bridge.js:1860-1871 一致）。 */
+  function emitThinkingRepeatAlarm(alias, repeat) {
+    if (!repeat) return;
+    emit(alias, "guard.alarm", {
+      toolName: "",
+      reason: `thinking repeated ${repeat.run} lines: ${repeat.line}`,
+      repeatLine: repeat.line,
+      sample: repeat.sample,
+      notice: THINKING_REPEAT_NOTICE.notice,
+      noticeEnglish: THINKING_REPEAT_NOTICE.noticeEnglish,
+    });
+  }
+
+  /** 会话销毁/重开时清旁路状态（同一 provider sessionId 的链不再投递）。 */
+  function forgetStreamBypassStates(alias) {
+    for (const [sessionId, state] of streamBypassStates) {
+      if (state.alias === alias) streamBypassStates.delete(sessionId);
+    }
+  }
+
+  /**
+   * 消息/回合边界处丢弃过期的旁路积压：投影路径已服务本条消息（streamProjected）
+   * 时，归因极端变慢留下的未投递积压再发就是重复，清掉（message_done 全文兜底）。
+   * 旁路自己赢的消息不清：积压是唯一投递面，照常发完。
+   */
+  function dropStaleStreamBypassItems(alias) {
+    for (const state of streamBypassStates.values()) {
+      if (state.alias === alias && state.queue.length > 0) state.queue.length = 0;
+    }
   }
 
   /**
@@ -1124,6 +1295,68 @@ export function createHarnessBridgeSessionLayer(context) {
     }
   }
 
+  // ---------- R1b 排队可见（治「排队隐形」，audit D2） ----------
+
+  /**
+   * message_queued 事件（「你的消息排队中，第 N 位」）：submission 落库为 queued
+   *（前序回合未完）、回合结束时仍滞留、附着帧带积压三种事件驱动时机各查一次，
+   * 不轮询。位次按 followUp 队列内序（排队语义：等下一个回合的消息）；steer 是
+   * 当前回合内的转向输入，桌面已有 queue_update 的 steering 面，不重复报。
+   */
+  function emitMessageQueuedFromItems(alias, items, submissionId) {
+    if (suppressedQueueUpdates.has(alias)) return;
+    const followUps = (Array.isArray(items) ? items : []).filter(
+      item => item?.mode === "followUp",
+    );
+    const index = submissionId === undefined
+      ? -1
+      : followUps.findIndex(item => item.id === submissionId);
+    const targets = index >= 0 ? [followUps[index]] : followUps;
+    targets.forEach((item, position) => {
+      emit(alias, "message_queued", {
+        submissionId: item.id,
+        position: (index >= 0 ? index : position) + 1,
+        total: followUps.length,
+        mode: "followUp",
+        message: `排队中第 ${(index >= 0 ? index : position) + 1} 位`,
+        messageEnglish: `Queued, position ${(index >= 0 ? index : position) + 1} of ${followUps.length}`,
+        text: inboxItemText(item),
+      });
+    });
+  }
+
+  /** submission 落库（queued）时机：读一次已提交 inbox，按 submission id 定位报位次。 */
+  async function maybeEmitMessageQueued(alias, submissionId) {
+    try {
+      const record = conversationRecord(alias);
+      if (!record) return;
+      const { handle } = await openRuntime();
+      const items = await handle.conversationInbox(alias);
+      cacheInboxItems(alias, items);
+      if (!items.some(item => item?.id === submissionId)) {
+        // 极端竞态：落库与边界收编同一提交窗（已从 inbox 移走），无需报排队。
+        return;
+      }
+      emitMessageQueuedFromItems(alias, items, submissionId);
+    } catch (error) {
+      console.error("MilkSU could not project harness message queue", error);
+    }
+  }
+
+  /** 回合结束时机：followUpMode "first" 等场景下滞留消息刷新位次（常规路径收编完为 no-op）。 */
+  async function maybeEmitQueuedAfterTurnEnd(alias) {
+    try {
+      if (suppressedQueueUpdates.has(alias)) return;
+      const { handle } = await openRuntime();
+      const items = await handle.conversationInbox(alias);
+      cacheInboxItems(alias, items);
+      if (!items.some(item => item?.mode === "followUp")) return;
+      emitMessageQueuedFromItems(alias, items);
+    } catch {
+      // 回合结束的排队复查失败不影响回合收尾（下个时机再报）。
+    }
+  }
+
   async function waitAndEmitCompactionEnd(alias, taskId, reason) {
     const { handle } = await openRuntime();
     const record = conversationRecord(alias);
@@ -1279,6 +1512,11 @@ export function createHarnessBridgeSessionLayer(context) {
       record.repeatGuard.reset();
       record.busy = true;
       record.pendingToolCalls = [];
+      // R1b 流式旁路：新 run 的消息抑制位清零（上一 run 若异常收尾不留脏位）；
+      // 投影服务过的消息若还有旁路积压（归因极端变慢），按过期丢弃。
+      dropStaleStreamBypassItems(alias);
+      record.streamBypassed = false;
+      record.streamProjected = false;
       // PR-2 批次 B2e：goal run 观察门（输入归属/epoch 重置/工具面缺失暂停）。
       try {
         await goalMachine.handleRunStart(alias, goalSessionRef(alias), event);
@@ -1295,7 +1533,8 @@ export function createHarnessBridgeSessionLayer(context) {
       } catch (error) {
         console.error("MilkSU harness goal turn_end gate failed", error);
       }
-      return;
+      // R1b：不再提前 return，turn_end 继续进投影器出 turn_active {phase:"end"}
+      //（回合生死可见），goal 观察门照旧先跑。
     }
     if (event.type === "run_end") {
       // reasoning-only recovery（B1 遗留接线，bridge-reasoning-recovery 移植）：上一
@@ -1314,7 +1553,22 @@ export function createHarnessBridgeSessionLayer(context) {
       await maybeRecoverReasoningOnlyTurn(alias);
       record.busy = false;
       record.pendingToolCalls = [];
+      // R1b 流式旁路：run 收尾清抑制位；回合结束时按事件驱动时机查一次排队面
+      //（followUpMode "first" 等场景下仍有消息滞留 inbox，位次要刷新给渲染器）。
+      dropStaleStreamBypassItems(alias);
+      record.streamBypassed = false;
+      record.streamProjected = false;
+      void maybeEmitQueuedAfterTurnEnd(alias);
       if (!goalKeepsRunning) emit(alias, "turn_settled");
+      return;
+    }
+    if (event.type === "submission") {
+      // R1b 排队可见：用户消息落库为 queued（前序回合未完）→ message_queued 上桌。
+      // submission 事件与 inbox_update 同批但先到（translate 的次序），这里读一次
+      // 已提交的 inbox 拿准确位次（事件驱动时机之一，不轮询）。
+      if (event.record?.status === "queued" && event.record?.type === "input") {
+        void maybeEmitMessageQueued(alias, event.record.id);
+      }
       return;
     }
     if (event.type === "snapshot") {
@@ -1389,6 +1643,12 @@ export function createHarnessBridgeSessionLayer(context) {
       const failure = message?.role === "assistant" ? assistantFailureText(message) : "";
       // PR-2 批次 B2e：run 内 assistant 消息收集（终态分类与无进展指纹的输入）。
       goalMachine.noteRunMessage(record.durableId, message);
+      // R1b 流式旁路：一条消息收尾，抑制位清零（下一条消息重新竞争投递路径）。
+      // thinking_done/message_done 的合成在下方投影器循环里照常发生。投影服务过的
+      // 消息若有旁路积压（归因极端变慢），按过期丢弃防重复。
+      if (record.streamProjected) dropStaleStreamBypassItems(alias);
+      record.streamBypassed = false;
+      record.streamProjected = false;
       if (failure) {
         // pi-durable 的重试有界（settings.retry 默认 3 次），这里只上报不主动 abort
         //（旧路径 abort 是因为旧引擎无限重试烧额度；差异见报告）。
@@ -1404,23 +1664,19 @@ export function createHarnessBridgeSessionLayer(context) {
     for (const projected of record.projector.project(event)) {
       switch (projected.type) {
         case "thinking_start":
+          // R1b 流式旁路去重：旁路已实时投过本条消息（streamBypassed），投影的
+          // delta 全部跳过；thinking_done/message_done 合成不受影响。
+          if (record.streamBypassed) break;
+          record.streamProjected = true;
           thinkingRepetition.reset(alias);
           record.thinkingStartedAt = Date.now();
           emit(alias, "thinking_start", projected.data);
           break;
         case "thinking_delta": {
+          if (record.streamBypassed) break;
+          record.streamProjected = true;
           emit(alias, "thinking_delta", projected.data);
-          const repeat = thinkingRepetition.push(alias, String(projected.data?.delta ?? ""));
-          if (repeat) {
-            emit(alias, "guard.alarm", {
-              toolName: "",
-              reason: `thinking repeated ${repeat.run} lines: ${repeat.line}`,
-              repeatLine: repeat.line,
-              sample: repeat.sample,
-              notice: THINKING_REPEAT_NOTICE.notice,
-              noticeEnglish: THINKING_REPEAT_NOTICE.noticeEnglish,
-            });
-          }
+          emitThinkingRepeatAlarm(alias, thinkingRepetition.push(alias, String(projected.data?.delta ?? "")));
           break;
         }
         case "thinking_done":
@@ -1433,6 +1689,8 @@ export function createHarnessBridgeSessionLayer(context) {
           record.thinkingStartedAt = undefined;
           break;
         case "text_delta":
+          if (record.streamBypassed) break;
+          record.streamProjected = true;
           queueTextDelta(alias, String(projected.data?.delta ?? ""));
           break;
         case "usage_recorded":
@@ -1481,7 +1739,41 @@ export function createHarnessBridgeSessionLayer(context) {
     });
     // 附着帧（snapshot）喂一次，初始化 busy/排队缓存。
     await handleHarnessEvent(alias, stream.snapshot);
+    const record = conversationRecord(alias);
+    if (record) {
+      // R1b 恢复可见（audit D2：崩溃恢复全程隐形）：pi-durable 1.1.0 无原生恢复
+      // 事件、也不注入「断点继续」类 user entry。恢复的可观测形态就是重开进程
+      // 附着时 pi.live 里 run 仍在飞行（durable 真相）。记下标志，createSession 在
+      // ready 之后发 harness_recovery（早于 ready 的事件可能被桌面丢弃）。
+      record.recoveredRunAtAttach = Boolean(stream.snapshot?.run);
+      // R1b 排队可见：附着帧里已积压的排队消息（崩溃前排队、恢复后仍在等），
+      // 同样 ready 之后上桌（inbox 缓存已被上面 snapshot 处理刷新）。
+      record.pendingQueuedReportAtAttach = (record.inboxItems ?? [])
+        .filter(item => item?.mode === "followUp")
+        .map(item => ({ id: item.id }));
+    }
     return stream;
+  }
+
+  /** createSession 的 ready 之后的 R1b 状态横幅（恢复 + 积压排队）。 */
+  function emitVisibilityAfterReady(alias) {
+    const record = conversationRecord(alias);
+    if (!record) return;
+    if (record.recoveredRunAtAttach) {
+      record.recoveredRunAtAttach = false;
+      emit(alias, "harness_recovery", {
+        message: "从断点恢复中",
+        messageEnglish: "Resuming from where the engine left off",
+      });
+    }
+    if (Array.isArray(record.pendingQueuedReportAtAttach)
+      && record.pendingQueuedReportAtAttach.length > 0) {
+      record.pendingQueuedReportAtAttach = undefined;
+      // 附着积压：整队上报（每条带各自位次）；inbox 缓存已被附着帧刷新过。
+      emitMessageQueuedFromItems(alias, record.inboxItems ?? []);
+    } else {
+      record.pendingQueuedReportAtAttach = undefined;
+    }
   }
 
   // ---------- 会话对象（duck-typed：bridge-steering / dispose 共用面） ----------
@@ -1637,6 +1929,12 @@ export function createHarnessBridgeSessionLayer(context) {
         model: undefined,
         stream: undefined,
         toolsConfiguring: undefined,
+        // R1b 流式旁路（谁先投谁服务本条消息，见 emitHarnessStreamBypassEvent 注释）。
+        streamBypassed: false,
+        streamProjected: false,
+        // R1b 附着帧状态（ready 之后上桌的恢复横幅/积压排队）。
+        recoveredRunAtAttach: false,
+        pendingQueuedReportAtAttach: undefined,
       };
       conversations.set(alias, record);
     } else {
@@ -1695,6 +1993,8 @@ export function createHarnessBridgeSessionLayer(context) {
         capabilities: sessionPolicy.capabilities,
         resumed,
       });
+      // R1b 状态可见：ready 之后的恢复横幅（附着时 run 在飞行）+ 积压排队位次。
+      emitVisibilityAfterReady(alias);
       await refreshCompositionMessages(alias);
       emitHarnessContextComposition(alias);
       emitHarnessBackgroundTasks(alias);
@@ -1721,6 +2021,8 @@ export function createHarnessBridgeSessionLayer(context) {
     // PR-2 批次 B2e：创建失败的 goal 进程内面一并清场。
     goalMachine.forgetSessionGoal(record?.durableId);
     if (record?.durableId !== undefined) durableToAlias.delete(record.durableId);
+    // R1b：流式旁路状态随会话清场（同 provider sessionId 的链不再投递）。
+    forgetStreamBypassStates(alias);
     conversations.delete(alias);
     sessions.delete(alias);
     sessionPolicies.delete(alias);
@@ -2000,6 +2302,8 @@ export function createHarnessBridgeSessionLayer(context) {
       await record.stream.stop().catch(() => undefined);
     }
     if (record?.durableId !== undefined) durableToAlias.delete(record.durableId);
+    // R1b：流式旁路状态随会话清场（同 provider sessionId 的链不再投递）。
+    forgetStreamBypassStates(alias);
     conversations.delete(alias);
     sessions.delete(alias);
     sessionPolicies.delete(alias);
@@ -2116,6 +2420,8 @@ export function createHarnessBridgeSessionLayer(context) {
     }
     conversations.clear();
     durableToAlias.clear();
+    // R1b：流式旁路状态整体清场（disposeAll 即进程级收尾）。
+    streamBypassStates.clear();
     sessionSkillPaths.clear();
     sessionMcpConfigs.clear();
     sessionMcpFingerprints.clear();

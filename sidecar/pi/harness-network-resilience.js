@@ -17,6 +17,9 @@
 //      「可重试」错误，让引擎的原生重试接管。阈值语义对齐老引擎
 //      bridge-request-budget-stream.js（软告警 → 宽限 → 硬掐；guard.note() 有进展
 //      就续命），但阈值是平面值（不按请求体积伸缩）——R1a 的规格就是平面值。
+//      R1b 增补：同一个包装点加 onEvent 只读 tap，原始流事件（thinking/text delta
+//      等）实时转发给会话层的流式旁路（harness-bridge-session），不等
+//      settings.progress.partialIntervalMs（默认 100ms）的落盘节流 + commit 投影。
 //   3. 错误分类标记：密钥无效/欠费/权限类错误不能被重试。pi-ai 的
 //      isRetryableAssistantError 靠 errorMessage 正反两张表判定（NON_RETRYABLE 表
 //      认 billing/insufficient_quota 等；其余要命中 RETRYABLE 表才算可重试），但
@@ -415,6 +418,9 @@ function translateStreamEvent(event, guard, model) {
  *   - 内层抛错（没有 error 事件的失败）：同样翻译成（看门狗或原样的）error 事件；
  *   - `onStall` 软阈值回调带上 options.sessionId（pi-durable 每会话稳定的
  *     pi.provider sessionId，会话层据此把事件归到对应桌面会话）。
+ *   - `onEvent`（R1b 状态可见性）：每个翻译后的事件**只读**转发给观察者（带上
+ *     sessionId/provider/modelId 归因信息）。流式旁路从这里拿原始 delta，先 push
+ *     给引擎再通知，观察者抛错被吞掉，绝不影响流本体。
  */
 export function watchdoggedModelStream({
   open,
@@ -424,6 +430,7 @@ export function watchdoggedModelStream({
   thresholds,
   timerApi,
   onStall,
+  onEvent,
 }) {
   const outer = new AssistantMessageEventStream();
   const guard = createStreamWatchdogGuard({
@@ -458,7 +465,9 @@ export function watchdoggedModelStream({
     try {
       for await (const event of inner) {
         guard.note();
-        outer.push(translateStreamEvent(event, guard, model));
+        const translated = translateStreamEvent(event, guard, model);
+        outer.push(translated);
+        notifyStreamTap(onEvent, translated, options, model);
       }
       outer.end();
     } catch (error) {
@@ -469,6 +478,25 @@ export function watchdoggedModelStream({
     }
   })();
   return outer;
+}
+
+/**
+ * R1b 流式旁路的只读通知：把翻译后的事件连同归因信息（options.sessionId =
+ * pi-durable 每会话稳定的 pi.provider sessionId；provider/modelId 来自请求的模型）
+ * 交给观察者。观察者抛错/观察者缺失都不影响流（红线：旁路挂了不能影响引擎本体）。
+ */
+function notifyStreamTap(onEvent, event, options, model) {
+  if (typeof onEvent !== "function") return;
+  try {
+    onEvent({
+      event,
+      sessionId: options?.sessionId,
+      provider: model?.provider,
+      modelId: model?.id,
+    });
+  } catch {
+    // 观测回调不能挡住流。
+  }
 }
 
 /**
@@ -500,6 +528,7 @@ export function withStreamWatchdogCollection(collection, options = {}) {
     thresholds: resolveThresholds(),
     timerApi: options.timerApi,
     onStall: options.onStall,
+    onEvent: options.onEvent,
   });
   const watched = Object.create(models);
   watched.streamSimple = wrap(models.streamSimple.bind(models));
