@@ -3731,9 +3731,14 @@ function createSettingsStore(
           }
         } catch (reason) {
           const raw = desktopErrorMessage(reason)
+          const failedKey = (
+            submitted.active_provider
+              ? submitted.providers[submitted.active_provider]?.api_key
+              : undefined
+          ) ?? null
           s.notice = {
             tone: 'error',
-            text: explainModelVerificationFailure(raw, submitted.active_provider),
+            text: explainModelVerificationFailure(raw, submitted.active_provider, failedKey),
           }
         } finally {
           s.verifying = false
@@ -3797,7 +3802,11 @@ function createSettingsStore(
     const persisted = await save({ verify: true })
     alignDefaultModelToEnabledServices()
     if (persisted) {
+      // 保存成功就退出编辑态。这里若只清 pendingCustomRelay，catalog 内联编辑会
+      // 因 providerEditorOpen() 的条件翻转重新弹出编辑对话框，key 框还是空的。
       s.pendingCustomRelay = null
+      s.editingProviderID = null
+      s.customModelInput = ''
       return
     }
     if (pending?.fresh) {

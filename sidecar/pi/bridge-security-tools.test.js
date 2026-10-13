@@ -148,3 +148,103 @@ test("detects runtime catalog changes that require session recreation", () => {
     [{ id: "capa", command: "/capa", version: "2" }],
   ), true);
 });
+
+async function reaFixture() {
+  const root = await import("node:fs/promises").then(({ mkdtemp }) => (
+    mkdtemp(join(tmpdir(), "milksu-rea-"))
+  ));
+  const workspace = join(root, "workspace");
+  const install = join(root, "security-tools", "rea", "6.1.0", "node_modules", "rea-agents", "scripts");
+  const nodePath = join(root, "bin", "node");
+  const entry = join(install, "rea.mjs");
+  await Promise.all([
+    mkdir(workspace, { recursive: true }),
+    mkdir(install, { recursive: true }),
+    mkdir(join(root, "bin"), { recursive: true }),
+  ]);
+  await writeFile(nodePath, "fixture");
+  await chmod(nodePath, 0o700);
+  await writeFile(entry, "fixture");
+  return { root, workspace, install, nodePath, entry };
+}
+
+test("normalizes REA and builds the reviewed milksu-rea server", async () => {
+  const value = await reaFixture();
+  const tools = await normalizeSecurityTools([{
+    id: "rea",
+    command: value.nodePath,
+    args: [value.entry, "mcp"],
+    version: "6.1.0",
+    capabilities: ["打开二进制并读取概览"],
+  }]);
+  const loaded = await loadCodingMcpConfig(
+    value.workspace,
+    [],
+    "",
+    undefined,
+    undefined,
+    undefined,
+    tools,
+  );
+  assert.deepEqual(loaded.selected, ["milksu-rea"]);
+  const server = loaded.config.mcpServers["milksu-rea"];
+  // milksu-rea 走 eager：会话创建即启动（lazy 在 bridge 进程内的 adapter
+  // 路径上存在不拉起且无超时的挂起问题，见 bridge-mcp.js 的注释）。
+  assert.equal(server.lifecycle, "eager");
+  assert.equal(server.directTools, false);
+  assert.equal(
+    server.command,
+    process.platform === "darwin" ? "/usr/bin/sandbox-exec" : value.nodePath,
+  );
+  assert.ok(server.includeTools.includes("binary_session"));
+  assert.ok(server.includeTools.includes("analyze_function"));
+  assert.ok(server.includeTools.includes("export_evidence_bundle"));
+  assert.ok(server.includeTools.includes("list_procedures"));
+  assert.ok(server.includeTools.includes("trace_call_path"));
+  assert.ok(server.includeTools.includes("list_unknowns"));
+  assert.equal(server.includeTools.includes("record_unknown"), true);
+  assert.equal(server.includeTools.length, 19);
+  const flat = server.args.join(" ");
+  assert.equal(flat.includes("npx"), false);
+  assert.equal(flat.includes("latest"), false);
+  if (process.platform === "darwin") {
+    assert.ok(flat.includes(value.install));
+    const home = await import("node:os").then(({ homedir }) => homedir());
+    assert.equal(flat.includes(`(subpath ${home})`), false);
+    assert.equal(flat.includes("(allow network*)"), false);
+  }
+});
+
+test("rejects REA launch lines outside the reviewed form", async () => {
+  const value = await reaFixture();
+  const npxPath = join(value.root, "bin", "npx");
+  await writeFile(npxPath, "fixture");
+  await chmod(npxPath, 0o700);
+  await assert.rejects(
+    () => normalizeSecurityTools([{
+      id: "rea",
+      command: npxPath,
+      args: ["-y", "rea-agents@latest", "mcp"],
+      version: "6.1.0",
+    }]),
+    /Node\.js binary/,
+  );
+  await assert.rejects(
+    () => normalizeSecurityTools([{
+      id: "rea",
+      command: value.nodePath,
+      args: [value.entry],
+      version: "6.1.0",
+    }]),
+    /reviewed form/,
+  );
+  await assert.rejects(
+    () => normalizeSecurityTools([{
+      id: "rea",
+      command: value.nodePath,
+      args: [value.entry, "mcp", "--extra"],
+      version: "6.1.0",
+    }]),
+    /reviewed form/,
+  );
+});

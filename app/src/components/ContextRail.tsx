@@ -131,11 +131,15 @@ const contextRailCss = `
   top: 0;
   right: 0;
   left: 0;
-  z-index: 2;
+  /* 压过 chat-page__titlebar（window-drag-header，透明横跨窗口顶部，
+     z-10 容器内）。titlebar 透明但拦截点击：低于它时加号与页签的光标
+     不变、点击被判成拖窗。右栏 header 需在它之上接收点击。 */
+  z-index: 11;
   display: flex;
-  min-height: 2.5rem;
+  min-height: 2.625rem;
   align-items: center;
-  padding: 0.25rem calc(var(--shell-window-control-safe-right) + var(--shell-chrome-end-inset) + var(--shell-chrome-end-span)) 0.25rem 0.35rem;
+  /* 顶边留出窗口边缘热区：控件从 ~6px 起步，避免加号和页签压进系统 resize 带。 */
+  padding: 0.375rem calc(var(--shell-window-control-safe-right) + var(--shell-chrome-end-inset) + var(--shell-chrome-end-span)) 0.25rem 0.35rem;
   background: transparent;
   pointer-events: none;
 }

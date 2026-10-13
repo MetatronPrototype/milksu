@@ -1,6 +1,6 @@
 import { t } from '@/lib/uiLocale'
 
-export type WorkspaceSection = 'ctf' | 'vuln' | 'lab' | 'chat' | 'image' | 'companion'
+export type WorkspaceSection = 'ctf' | 'vuln' | 'lab' | 'chat' | 'image' | 'companion' | 'reverse'
 export type CTFWorkspaceSection = 'catalog'
 export type AppSection = WorkspaceSection | 'profile' | 'settings'
 
@@ -26,7 +26,7 @@ export function ctfContextItemLabel(id: CTFWorkspaceSection) {
 }
 
 export function showsCodingHistory(section: WorkspaceSection) {
-  return section === 'chat' || section === 'image' || section === 'ctf' || section === 'vuln' || section === 'lab'
+  return section === 'chat' || section === 'image' || section === 'ctf' || section === 'vuln' || section === 'lab' || section === 'reverse'
 }
 
 export function isDomainWorkspace(section: AppSection) {
@@ -36,6 +36,7 @@ export function isDomainWorkspace(section: AppSection) {
 export const WORKSPACE_SIDEBAR_ITEMS = [
   { id: 'chat', label: () => t('新聊天', 'New chat') },
   { id: 'image', label: () => t('画图', 'Draw') },
+  { id: 'reverse', label: () => t('逆向', 'Reverse') },
   { id: 'ctf', label: () => 'CTF' },
   { id: 'vuln', label: () => 'CVE' },
   { id: 'lab', label: () => 'Lab' },

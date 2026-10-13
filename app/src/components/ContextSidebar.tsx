@@ -31,8 +31,11 @@ import { formatRelativeAge } from '@/lib/relativeAge'
 import { conversationActivityAt } from '@/lib/workspaceSessionRouting'
 import {
   Archive,
-  Box,
+  ArrowDown,
+  ArrowUp,
   BookMarked,
+  Box,
+  Brain,
   Bug,
   ChevronDown,
   ChevronLeft,
@@ -40,19 +43,16 @@ import {
   Cpu,
   Flag,
   FlaskConical,
-  Brain,
   Folder,
   FolderOpen,
   FolderPlus,
   Gauge,
   GitFork,
-  SquarePen,
   ImageIcon,
-  Palette,
-  ShieldCheck,
-  Star,
   LogOut,
   Moon,
+  PackageOpen,
+  Palette,
   PanelLeft,
   Pencil,
   Pin,
@@ -60,10 +60,11 @@ import {
   Plug,
   Plus,
   Puzzle,
-  ArrowDown,
-  ArrowUp,
   Search,
   Settings,
+  ShieldCheck,
+  SquarePen,
+  Star,
   Sun,
   SunMoon,
   Trash2,
@@ -125,6 +126,7 @@ const workspaceNavIcons = {
   vuln: Bug,
   lab: FlaskConical,
   image: ImageIcon,
+  reverse: PackageOpen,
 } as const
 
 const settingsNavIcons = {
@@ -353,7 +355,7 @@ export default function ContextSidebar({
       : updateButtonLabel
 
   const workspaceHome: WorkspaceSection = (
-    activeSection === 'ctf' || activeSection === 'vuln' || activeSection === 'lab' || activeSection === 'image'
+    activeSection === 'ctf' || activeSection === 'vuln' || activeSection === 'lab' || activeSection === 'image' || activeSection === 'reverse'
       ? activeSection
       : 'chat'
   )

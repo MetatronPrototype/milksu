@@ -47,6 +47,7 @@ import {
   LoaderCircle,
   MousePointer2,
   Minimize2,
+  PackageOpen,
   PanelRight,
   Plus,
   RefreshCw,
@@ -94,6 +95,7 @@ import CodingMCPReviewCard from '@/components/CodingMCPReviewCard'
 import DeepResearchStatusCard from '@/components/DeepResearchStatusCard'
 import MarkdownContent from '@/components/MarkdownContent'
 import ContextRail from '@/components/ContextRail'
+import ReverseArtifactsPanel from '@/components/ReverseArtifactsPanel'
 import WorkspaceModuleTopBar from '@/components/WorkspaceModuleTopBar'
 import type {
   CodingArtifactPreview,
@@ -112,7 +114,13 @@ import {
   codingBrowserAddressFromStatus,
   codingBrowserViewportSyncKey,
 } from '@/lib/codingBrowserTabs'
-import { readCodingRailWidth, writeCodingRailWidth } from '@/lib/codingRailWidth'
+import {
+  readCodingRailWidth,
+  readReverseRailWidth,
+  REVERSE_RAIL_DEFAULT_WIDTH,
+  writeCodingRailWidth,
+  writeReverseRailWidth,
+} from '@/lib/codingRailWidth'
 import {
   clampCodingTerminalHeight,
   readCodingTerminalHeight,
@@ -127,6 +135,7 @@ import {
 import { buildChatActivityEntries, createChatTranscriptBuilder, hasEmptyVisibleReply, isContentOnlyMessageChange, latestFinishedThinkingId, type ChatTranscriptBlock } from '@/lib/chatActivity'
 import { createChatFoldEvaluator, type ChatFoldModel } from '@/lib/chatWorkStatus'
 import { agentFileDiffChips, formatDemoElapsed } from '@/lib/agentConversation'
+import { isReaToolMessage } from '@/lib/reverseArtifacts'
 import { latestCodingPlan } from '@/lib/codingPlan'
 import {
   chatActivityGroupOpen,
@@ -248,6 +257,7 @@ const contextPanelValues = [
   'computer-use',
   'collaboration',
   'evidence',
+  'reverse',
 ] as const
 type ContextPanel = typeof contextPanelValues[number]
 
@@ -310,6 +320,7 @@ export type ChatPageProps = {
   onMigrateKernel?: (kernel: 'pi' | 'dsh') => void
   onChangeModelSource?: (preference: 'auto' | 'account' | 'personal') => void
   imageHome?: boolean
+  reverseHome?: boolean
   onChangeImageModel?: (value: string) => void
   onChangeCodingPolicy?: (
     executionMode: CodingExecutionMode,
@@ -410,6 +421,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   onMigrateKernel,
   onChangeModelSource,
   imageHome = false,
+  reverseHome = false,
   onChangeImageModel,
   onChangeCodingPolicy,
   onChangeMcpServers,
@@ -548,12 +560,17 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const chatAutoScrollPinned = useRef(true)
   const lastChatScrollTop = useRef(0)
   const [workshopState, setWorkshopState] = useState<CTFToolWorkshopState | null>(null)
-  const [environmentOpen, setEnvironmentOpen] = useState(false)
+  const [environmentOpen, setEnvironmentOpen] = useState(reverseHome)
   const [contextRailWidth, setContextRailWidth] = useState<number | null>(readCodingRailWidth())
+  const [reverseRailWidth, setReverseRailWidth] = useState<number | null>(readReverseRailWidth())
+  // 顶栏让位用的右栏宽度：与 ContextRail 的 width 同源（逆向用自身默认值）。
+  const railVisibleWidthPx = environmentOpen
+    ? (reverseHome ? (reverseRailWidth ?? REVERSE_RAIL_DEFAULT_WIDTH) : (contextRailWidth ?? 0))
+    : 0;
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [terminalHeight, setTerminalHeight] = useState(readCodingTerminalHeight())
-  const [contextPanel, setContextPanel] = useState<ContextPanel>('environment')
-  const [railTabs, setRailTabs] = useState<ContextPanel[]>(['environment'])
+  const [contextPanel, setContextPanel] = useState<ContextPanel>(reverseHome ? 'reverse' : 'environment')
+  const [railTabs, setRailTabs] = useState<ContextPanel[]>(reverseHome ? ['reverse'] : ['environment'])
   const [railMenuOpen, setRailMenuOpen] = useState(false)
   const [railQuery, setRailQuery] = useState('')
   const artifactPanel = useRef<CodingArtifactPreviewPanelHandle | null>(null)
@@ -938,7 +955,9 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       ? 'cve'
       : conversation?.domainTaskContext?.kind === 'lab'
         ? 'lab'
-        : 'coding'
+        : reverseHome
+          ? 'reverse'
+          : 'coding'
   const emptyCanvas = !(conversation?.messages.length)
   const codingDraftIdle = (
     !ctfSession
@@ -986,13 +1005,14 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     return codingWorkspaceLabel(workspacePath, homeDirectory)
   }, [workspacePath, homeDirectory])
   const codingEmptyHeading = useMemo(() => {
+    if (reverseHome) return t('我们要逆向什么', 'What should we reverse')
     if (imageHome) return t('我们画什么', 'What should we draw')
     const name = selectedCodingProjectName || workspaceName
     if (name && name !== '~' && name !== t('无项目任务', 'No project') && !isGenericWorkspaceLabel(name)) {
       return t(`我们在 ${name} 中构建什么`, `What should we build in ${name}`)
     }
     return t('我们要构建什么', 'What should we build')
-  }, [imageHome, selectedCodingProjectName, workspaceName, t])
+  }, [imageHome, reverseHome, selectedCodingProjectName, workspaceName, t])
   const terminalConversationId = conversation?.id || LOCAL_CODING_SHELL_ID
   const terminalWorkspacePath = workspacePath || homeDirectory
   const codingBrowserEvidencePath = useMemo(() => {
@@ -1229,6 +1249,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     artifacts: t('产物', 'Artifacts'),
     images: t('图片', 'Images'),
     browser: t('浏览器', 'Browser'),
+    reverse: t('逆向产物', 'Reverse artifacts'),
     'browser-use': 'Browser Use',
     'computer-use': 'Computer Use',
     collaboration: t('Agent 协作', 'Agent collaboration'),
@@ -1393,6 +1414,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   }
 
   function persistContextRailWidth(width: number) {
+    if (reverseHome) {
+      setReverseRailWidth(writeReverseRailWidth(width))
+      return
+    }
     setContextRailWidth(writeCodingRailWidth(width))
   }
 
@@ -2972,6 +2997,36 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctfSession, conversation?.id, workspacePath, running])
 
+  // 逆向页与其他一级页面共用同一个 ChatPage 实例（display 切换不卸载），
+  // 逆向专属的右栏状态必须跟着 section 走，不泄漏到画图 / Coding 页。
+  useEffect(() => {
+    if (reverseHome) {
+      setRailTabs(tabs => tabs.includes('reverse') ? tabs : [...tabs, 'reverse'])
+      setContextPanel('reverse')
+      setEnvironmentOpen(true)
+      return
+    }
+    setRailTabs(tabs => {
+      if (!tabs.includes('reverse')) return tabs
+      const remaining = tabs.filter(tab => tab !== 'reverse')
+      return remaining.length > 0 ? remaining : ['environment']
+    })
+    setContextPanel(panel => (panel === 'reverse' ? 'environment' : panel))
+  }, [reverseHome])
+
+  // milksu-rea 工具流量首次出现时，把「逆向产物」标签加进右栏（每个会话一次，
+  // 不抢当前页焦点；用户手动关闭后本轮不再自动重开）。
+  const reverseTrafficConversation = useRef('')
+  useEffect(() => {
+    if (reverseTrafficConversation.current === conversation?.id) return
+    const hasReaTraffic = structuralMessages.some(isReaToolMessage)
+    if (!hasReaTraffic) return
+    reverseTrafficConversation.current = conversation?.id ?? 'anonymous'
+    setRailTabs(tabs => tabs.includes('reverse') ? tabs : [...tabs, 'reverse'])
+    if (!environmentOpen) setEnvironmentOpen(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structuralMessages, conversation?.id])
+
   function railPanelIcon(panel: ContextPanel) {
     if (panel === 'environment') return <Activity className="size-3.5 shrink-0" />
     if (panel === 'changes') return <FileDiff className="size-3.5 shrink-0" />
@@ -2980,6 +3035,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     if (panel === 'browser' || panel === 'browser-use') return <Globe2 className="size-3.5 shrink-0" />
     if (panel === 'computer-use') return <MousePointer2 className="size-3.5 shrink-0" />
     if (panel === 'collaboration') return <Wrench className="size-3.5 shrink-0" />
+    if (panel === 'reverse') return <PackageOpen className="size-3.5 shrink-0" />
     return <CircleDot className="size-3.5 shrink-0" />
   }
   const railCatalog: { id: ContextPanel; label: string }[] = [
@@ -2988,6 +3044,7 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     { id: 'artifacts', label: t('产物', 'Artifacts') },
     { id: 'images', label: t('图片', 'Images') },
     { id: 'browser', label: t('浏览器', 'Browser') },
+    { id: 'reverse', label: t('逆向产物', 'Reverse artifacts') },
     ...(ctfSession ? [
       { id: 'collaboration' as const, label: t('Agent 协作', 'Agent collaboration') },
       { id: 'evidence' as const, label: t('证据与 Judge', 'Evidence and Judge') },
@@ -3036,13 +3093,20 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
         </div>
       ) : null}
       {!dockSurface ? (
-        <div ref={topChromeRef} className="chat-page__titlebar" aria-label={topbarPresentation.title}>
+        <div
+          ref={topChromeRef}
+          className="chat-page__titlebar"
+          aria-label={topbarPresentation.title}
+          // 顶栏属于主列：右栏可见时把右栏宽度让出来。titlebar 透明但会拦截
+          // 点击，横跨右栏时加号与页签点不到；几何收缩后右栏 header 独占右栏顶部。
+          style={environmentOpen ? { marginRight: railVisibleWidthPx } : undefined}
+        >
           <WorkspaceModuleTopBar
             module={topbarModule}
             title={topbarPresentation.title}
             subtitle={topbarPresentation.subtitle}
             hideIdentity={codingDraftIdle}
-            windowCaptionEdge={!environmentOpen}
+            windowCaptionEdge
             actions={restorable ? (
               <button
                 type="button"
@@ -3654,20 +3718,20 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             className="context-sidebar"
             size="wide"
             resizable
-            width={contextRailWidth}
+            width={reverseHome ? (reverseRailWidth ?? REVERSE_RAIL_DEFAULT_WIDTH) : contextRailWidth}
             bodyMode={contextPanel === 'browser' ? 'viewport' : 'scroll'}
             aria-label={contextPanelTitle}
             data-testid="single-right-context-rail"
             onWidthChange={persistContextRailWidth}
             header={(
-              <div className="app-drag flex min-w-0 flex-1 items-center gap-0.5">
+              <div className="flex min-w-0 flex-1 items-center gap-0.5">
                 {!transientComputerUsePanel ? (
                   <>
                     <Popover open={railMenuOpen} onOpenChange={open => { setRailMenuOpen(open); if (!open) setRailQuery('') }}>
                       <PopoverTrigger asChild>
                         <button
                           type="button"
-                          className="agent-chrome-icon app-no-drag"
+                          className="agent-chrome-icon"
                           aria-label={t('打开右侧页面', 'Open a right-rail page')}
                           title={t('打开右侧页面', 'Open a right-rail page')}
                         >
@@ -3726,6 +3790,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                         )
                       })}
                     </div>
+                    {/* 页签行右侧的空白仍可拖动窗口；按钮与页签本身不再嵌套在拖拽区里，
+                        macOS hiddenInset 下嵌套 no-drag 的豁免在合成器层不可靠，
+                        会让加号和页签点不动。 */}
+                    <div className="app-drag h-8 min-w-6 flex-1" aria-hidden="true" />
                   </>
                 ) : (
                   <div className="app-no-drag flex min-w-0 flex-1 items-center gap-2 px-2 text-[14px] font-medium">
@@ -4065,6 +4133,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                   refreshToken={imageGalleryRefreshToken}
                   onSelect={path => setRequestedArtifactPath(path)}
                 />
+              ) : contextPanel === 'reverse' ? (
+                <ReverseArtifactsPanel messages={structuralMessages} />
               ) : contextPanel === 'browser' ? (
                 <section className="coding-browser-panel flex h-full min-h-0 flex-col">
                   {browserPanelError ? (
