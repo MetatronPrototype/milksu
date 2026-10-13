@@ -123,8 +123,8 @@ export function makeTestBashTool({ workspace, onExecute, sleepMs = 0 } = {}) {
 export function buildTestLayer({
   agentDir,
   workspace,
-  faux,
-  models,
+  faux = undefined,
+  models = undefined,
   approvalBehavior = () => "approve",
   approvalChoice = undefined,
   approvalScope = "",
@@ -151,6 +151,13 @@ export function buildTestLayer({
   harnessSettings = undefined,
   emitWrapper = undefined,
   heartbeatOptions = { heartbeatMs: 250, settleMs: 20, unrefHeartbeat: true },
+  // 生产路径注入面（R1b 生产同款 provider 注册路径测试用）：缺省保持既有注入
+  // （faux 预注册集合 + personalModelFor 返回 faux 引用）；传 modelsCollection
+  // （如 createHarnessModels() 空集合）与 personalModelFor（如 () => undefined）
+  // 即切换到生产默认接线——provider 只能经 command.customProvider（turnProvider）
+  // 路注册进包装后的集合。
+  modelsCollection = undefined,
+  personalModelFor = undefined,
   // D2：翻转首启一次性导出默认打桩（既有用例的文件面假设不被隐式改写）；传
   // flipArchiveExport: null 走产品默认 runFlipArchiveExport 的真路径。
   flipArchiveExport = () => Promise.resolve({ ran: false, reason: "test-disabled" }),
@@ -347,11 +354,11 @@ export function buildTestLayer({
         }));
       }
     },
-    modelsCollection: () => ({ models }),
-    personalModelFor: command => ({
+    modelsCollection: modelsCollection ?? (() => ({ models })),
+    personalModelFor: personalModelFor ?? (command => ({
       provider: "faux",
       modelId: String(command?.model ?? "faux-1"),
-    }),
+    })),
     ...(compactionPolicyOverrides ? { compactionPolicyOverrides } : {}),
   });
   return { layer, events, emit, maps, approvalBroker, faux, models };

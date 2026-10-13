@@ -20,6 +20,7 @@
 //      R1b 增补：同一个包装点加 onEvent 只读 tap，原始流事件（thinking/text delta
 //      等）实时转发给会话层的流式旁路（harness-bridge-session），不等
 //      settings.progress.partialIntervalMs（默认 100ms）的落盘节流 + commit 投影。
+//      双层包装（route 内层来源流 + 外层 route 流）按事件对象身份只 tap 一次。
 //   3. 错误分类标记：密钥无效/欠费/权限类错误不能被重试。pi-ai 的
 //      isRetryableAssistantError 靠 errorMessage 正反两张表判定（NON_RETRYABLE 表
 //      认 billing/insufficient_quota 等；其余要命中 RETRYABLE 表才算可重试），但
@@ -421,6 +422,10 @@ function translateStreamEvent(event, guard, model) {
  *   - `onEvent`（R1b 状态可见性）：每个翻译后的事件**只读**转发给观察者（带上
  *     sessionId/provider/modelId 归因信息）。流式旁路从这里拿原始 delta，先 push
  *     给引擎再通知，观察者抛错被吞掉，绝不影响流本体。
+ *   - `tappedEvents`（R1b 双层包装去重）：同一集合内的嵌套包装（milksu-route 的
+ *     openSource 走本集合 streamSimple，外层 route 流与内层来源流都被包）会让同一
+ *     事件对象流经两层 tap；按对象身份去重——内层先 tap（事件从内层产生），外层
+ *     遇到已 tap 的对象静默跳过，否则旁路会把每个 delta 双发到桌面。
  */
 export function watchdoggedModelStream({
   open,
@@ -431,6 +436,7 @@ export function watchdoggedModelStream({
   timerApi,
   onStall,
   onEvent,
+  tappedEvents,
 }) {
   const outer = new AssistantMessageEventStream();
   const guard = createStreamWatchdogGuard({
@@ -467,7 +473,7 @@ export function watchdoggedModelStream({
         guard.note();
         const translated = translateStreamEvent(event, guard, model);
         outer.push(translated);
-        notifyStreamTap(onEvent, translated, options, model);
+        notifyStreamTap(onEvent, translated, options, model, tappedEvents);
       }
       outer.end();
     } catch (error) {
@@ -484,9 +490,19 @@ export function watchdoggedModelStream({
  * R1b 流式旁路的只读通知：把翻译后的事件连同归因信息（options.sessionId =
  * pi-durable 每会话稳定的 pi.provider sessionId；provider/modelId 来自请求的模型）
  * 交给观察者。观察者抛错/观察者缺失都不影响流（红线：旁路挂了不能影响引擎本体）。
+ *
+ * `tappedEvents`（同一集合的 WeakSet）在场时按事件对象身份去重：milksu-route 的
+ * openSource 闭包走同一集合的包装 streamSimple，内层来源流与外层 route 流是嵌套的
+ * 两层包装，同一事件对象会流经两层（translateStreamEvent 对非 error 事件原样透传
+ * 同一引用，createModelSourceStream/lazyStream 逐引用转发）；内层先 tap、外层跳过，
+ * 旁路才不会把 delta 双发。缺位（裸用 watchdoggedModelStream 的调用方）不去重。
  */
-function notifyStreamTap(onEvent, event, options, model) {
+function notifyStreamTap(onEvent, event, options, model, tappedEvents) {
   if (typeof onEvent !== "function") return;
+  if (tappedEvents !== undefined && typeof event === "object" && event !== null) {
+    if (tappedEvents.has(event)) return;
+    tappedEvents.add(event);
+  }
   try {
     onEvent({
       event,
@@ -520,6 +536,10 @@ export function withStreamWatchdogCollection(collection, options = {}) {
       ? options.thresholds()
       : options.thresholds ?? harnessStreamWatchdogThresholds()
   );
+  // R1b 双层包装去重：route 的 openSource 走本集合 streamSimple，同一事件对象会
+  // 流经内层来源流与外层 route 流两层包装的 tap；按身份只 tap 一次（见
+  // notifyStreamTap）。整个集合一份，内层与外层共享同一判定。
+  const tappedEvents = new WeakSet();
   const wrap = open => (model, context, streamOptions) => watchdoggedModelStream({
     open,
     model,
@@ -529,6 +549,7 @@ export function withStreamWatchdogCollection(collection, options = {}) {
     timerApi: options.timerApi,
     onStall: options.onStall,
     onEvent: options.onEvent,
+    tappedEvents,
   });
   const watched = Object.create(models);
   watched.streamSimple = wrap(models.streamSimple.bind(models));

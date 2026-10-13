@@ -22,7 +22,7 @@ import {
   watchdoggedModelStream,
   withStreamWatchdogCollection,
 } from "./harness-network-resilience.js";
-import { createHarnessModels } from "./harness-model-providers.js";
+import { createHarnessModels, buildRouteProvider, MILKSU_ROUTE_PROVIDER_ID } from "./harness-model-providers.js";
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -548,6 +548,82 @@ test("a throwing onEvent tap never breaks the stream", async () => {
   assert.equal(message.stopReason, "stop");
   assert.equal(message.content.find(block => block.type === "text").text, "still fine");
   assert.ok(taps > 0, "the tap ran despite throwing");
+});
+
+test("onEvent tap fires exactly once per event on the nested milksu-route wrap", async () => {
+  // \u751f\u4ea7 route \u62d3\u6251\uff1awireConversationModel \u628a\u5305\u88c5\u540e\u7684\u96c6\u5408\u4ea4\u7ed9
+  // wireHarnessModelSelection\uff0c\u53cc\u6765\u6e90\u65f6 buildRouteProvider \u7684 openSource \u95ed\u5305
+  // \u8d70\u540c\u4e00\u96c6\u5408\u7684 streamSimple\u2014\u2014\u5185\u5c42\u6765\u6e90\u6d41\u4e0e\u5916\u5c42 route \u6d41\u662f
+  // \u5d4c\u5957\u4e24\u5c42\u770b\u95e8\u72d7\u5305\u88c5\uff0c\u540c\u4e00\u4e8b\u4ef6\u5bf9\u8c61\u4f1a\u6d41\u7ecf\u4e24\u5c42 tap\u3002
+  // \u53bb\u91cd\u4e22\u5931\u65f6\u6bcf\u4e2a delta \u88ab tap \u4e24\u6b21\uff0c\u6d41\u5f0f\u65c1\u8def\u968f\u4e4b\u628a
+  // delta \u53cc\u53d1\u5230\u684c\u9762\uff08joined \u6587\u672c\u7ffb\u500d\uff09\u3002\u6b64\u7528\u4f8b\u9501\u300c\u6bcf
+  // \u4e8b\u4ef6\u6070\u597d\u4e00\u6b21\u300d\u3002
+  const accountFaux = fauxProvider({
+    provider: "faux-account",
+    models: [{ id: "account-model", contextWindow: 128000, maxTokens: 16384, reasoning: true }],
+  });
+  const personalFaux = fauxProvider({
+    provider: "faux-personal",
+    models: [{ id: "personal-model", contextWindow: 128000, maxTokens: 16384, reasoning: true }],
+  });
+  accountFaux.setResponses([
+    fauxAssistantMessage([
+      { type: "thinking", thinking: "route inner thinking" },
+      { type: "text", text: "route inner answer" },
+    ]),
+  ]);
+  const collection = createHarnessModels();
+  collection.models.setProvider(accountFaux.provider);
+  collection.models.setProvider(personalFaux.provider);
+  const taps = [];
+  const wrapped = withStreamWatchdogCollection(collection, {
+    thresholds: { softMs: 60_000, hardMs: 120_000 },
+    onEvent: tap => taps.push(tap),
+  });
+  const route = buildRouteProvider({
+    sources: [
+      { id: "account", model: accountFaux.getModel("account-model") },
+      { id: "personal", model: personalFaux.getModel("personal-model") },
+    ],
+    autoFallback: false,
+    models: wrapped.models,
+  });
+  wrapped.models.setProvider(route);
+
+  const routeModel = wrapped.models.getModel(MILKSU_ROUTE_PROVIDER_ID, "account-model");
+  const message = await wrapped.models.streamSimple(routeModel, { messages: [] }, {
+    sessionId: "prov-route-1",
+  }).result();
+  assert.equal(message.stopReason, "stop");
+  assert.equal(message.content.find(block => block.type === "text").text, "route inner answer");
+
+  // \u6bcf\u4e2a\u4e8b\u4ef6\u53ea tap \u4e00\u6b21\uff1a\u6309\u7c7b\u578b\u8ba1\u6570\uff0c\u53e0\u52a0\u5185\u5bb9\u4e0e\u539f\u6587
+  // \u76f8\u7b49\uff08\u53cc\u53d1\u4f1a\u62fc\u51fa\u53cc\u500d\u6587\u672c\uff09\u3002
+  const counts = {};
+  for (const tap of taps) counts[tap.event.type] = (counts[tap.event.type] ?? 0) + 1;
+  assert.equal(counts.start, 1, "start tapped once");
+  assert.equal(counts.thinking_start, 1, "thinking_start tapped once");
+  assert.equal(counts.thinking_end, 1, "thinking_end tapped once");
+  assert.equal(counts.text_start, 1, "text_start tapped once");
+  assert.equal(counts.text_end, 1, "text_end tapped once");
+  assert.equal(counts.done, 1, "done tapped once");
+  const thinking = taps
+    .filter(tap => tap.event.type === "thinking_delta")
+    .map(tap => tap.event.delta)
+    .join("");
+  const text = taps
+    .filter(tap => tap.event.type === "text_delta")
+    .map(tap => tap.event.delta)
+    .join("");
+  assert.equal(thinking, "route inner thinking");
+  assert.equal(text, "route inner answer");
+  for (const tap of taps) {
+    assert.equal(tap.sessionId, "prov-route-1");
+    // \u5f52\u56e0\u843d\u5728\u5185\u5c42\u6765\u6e90\u6a21\u578b\uff08\u5916\u5c42 route \u6d41\u7684\u540c\u4e00\u5bf9\u8c61
+    // \u88ab\u53bb\u91cd\u8df3\u8fc7\uff09\u3002
+    assert.equal(tap.provider, "faux-account");
+    assert.equal(tap.modelId, "account-model");
+  }
 });
 
 // ---------- pi-ai 分类器对默认行为的交叉核对 ----------
