@@ -164,6 +164,13 @@ import {
   recoverableAgentFailureId,
 } from '@/lib/agentRecovery'
 import {
+  engineRecoveryLabel as agentEngineRecoveryLabel,
+  engineStallWarningLabel,
+  messageQueuedLabel,
+  modelRetryLabel as agentModelRetryLabel,
+} from '@/lib/agentEngineSignals'
+import { isComputerUsePermissionGuardError } from '@/lib/codingComputerUsePermissionWizard'
+import {
   codingProductAction,
   codingReviewPrompt,
   type CodingProductActionKind,
@@ -1190,18 +1197,16 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const stalled = stallKind === 'engine-gone' || stallKind === 'model-stalled'
   const stalledElapsed = formatDemoElapsed(streamStaleSeconds * 1000)
   // 预算软告警：sidecar 自己说「请求超过预算」，把原因和体积说给读者，而不是笼统地说「停滞」。
+  // R4 起 model.stall（连接静默软阈值）也走这张脸：文案优先用事件自带的「连接无响应 x 秒」。
   const engineWarning = conversations.activeEngineWarning
-  const engineWarningLabel = engineWarning
-    ? (engineWarning.payloadBytes > 0
-        ? t(
-            `模型请求已超过等待预算 ${formatDemoElapsed(engineWarning.budgetMs)}（请求约 ${(engineWarning.payloadBytes / (1024 * 1024)).toFixed(1)}MB），引擎仍在等。`,
-            `The model request passed its ${formatDemoElapsed(engineWarning.budgetMs)} budget (about ${(engineWarning.payloadBytes / (1024 * 1024)).toFixed(1)}MB) and the engine is still waiting.`,
-          )
-        : t(
-            `模型请求已超过等待预算 ${formatDemoElapsed(engineWarning.budgetMs)}，引擎仍在等。`,
-            `The model request passed its ${formatDemoElapsed(engineWarning.budgetMs)} budget and the engine is still waiting.`,
-          ))
-    : ''
+  const engineWarningLabel = engineStallWarningLabel(engineWarning, formatDemoElapsed)
+  // ---- R4 引擎韧性横幅状态（model.retry / session.recovery / session.message_queued）----
+  const modelRetryNotice = conversations.activeModelRetry
+  const modelRetryLabelText = modelRetryNotice ? agentModelRetryLabel(modelRetryNotice) : ''
+  const engineRecoveryNotice = conversations.activeEngineRecovery
+  const engineRecoveryLabelText = engineRecoveryNotice ? agentEngineRecoveryLabel(engineRecoveryNotice) : ''
+  const queuedMessageNotice = conversations.activeQueuedMessage
+  const queuedMessageLabel = queuedMessageNotice ? messageQueuedLabel(queuedMessageNotice) : ''
   // 停滞进入边沿：从“没停滞”变成停滞的那一刻发一条系统通知（重试还是停止）。
   // 依赖只有 stalled 翻转 + 会话切换 ⇒ 每秒重渲染不会重复发；
   // 去重再兜一层：composable 按 会话+回合起点 记账（重入/StrictMode 也不会重复投递）。
@@ -1222,6 +1227,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
     if (queuedBehindLabel) {
       return t('排队中（同工作区另一个会话在跑）', 'Queued (another conversation in this workspace is running)')
     }
+    // R4：引擎 durable 重试进行中——退避期没有产出是计划内的，直说在重试第几次。
+    if (modelRetryNotice) return modelRetryLabelText
     // 工具正在跑就直说：引擎这时候正在干活，说成“等待引擎响应”是假话。
     if (runningToolActive) return t('工具执行中…', 'Tool running…')
     if (stalled) {
@@ -1954,13 +1961,25 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
         })
       }
     } catch (reason) {
-      toastError(reason, t('Computer Use 可见会话启动失败。', 'The Computer Use visible session failed to start.'))
+      if (isComputerUsePermissionGuardError(reason)) {
+        // R4 权限向导（CU v2 §3.8）：锁窗被权限守卫拦下（manager.Start 前置校验的
+        // 「请先明确授予…」或驱动 canary 同类文案）⇒ 弹三态引导卡（未授权 / 授权未
+        // 注册 / 已生效各给准确指引），守卫原文进对话框错误行；不再只给一条 toast。
+        setComputerUsePermissionError(reason instanceof Error ? reason.message : String(reason ?? ''))
+        setComputerUsePermissionDialogOpen(true)
+      } else {
+        toastError(reason, t('Computer Use 可见会话启动失败。', 'The Computer Use visible session failed to start.'))
+      }
     } finally {
       setComputerUseLoading(false)
     }
     await refreshBrowserPanel()
   }
 
+  /** 解除锁定（CU v2 §3.1-2 的桌面侧入口）：与 milksu_workspace 的
+   * unlock_computer_use_window 动作同一落点（Go StopCodingComputerUse——revoke 停止，
+   * grants 一并清除）。面板锁定态主按钮走这里，回合进行中也可调用：锁错目标时读者
+   * 不必等回合收尾。成功后刷新面板（锁信息、可选窗口回到未锁态）。 */
   async function stopComputerUse() {
     const conversationID = conversationRef.current?.id
     const owned = Boolean(
@@ -1979,10 +1998,11 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       computerUseStatusRef.current = status
       setComputerUseEvidence(null)
     } catch (reason) {
-      toastError(reason, t('Computer Use 可见会话停止失败。', 'The Computer Use visible session failed to stop.'))
+      toastError(reason, t('Computer Use 解除锁定失败。', 'Failed to unlock the Computer Use window.'))
     } finally {
       setComputerUseLoading(false)
     }
+    await refreshBrowserPanel()
   }
 
   async function refreshEnvironment() {
@@ -3012,11 +3032,11 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             className="chat-edge-scroll absolute inset-0 overflow-x-hidden overflow-y-auto"
             onScroll={handleChatScroll}
           >
-            {streamStale || queuedBehindLabel ? (
+            {streamStale || queuedBehindLabel || modelRetryNotice || engineRecoveryNotice || queuedMessageNotice ? (
               <div
                 className={cn(
                   'mx-auto mb-2 w-[72%] rounded-xl border px-3 py-1.5 text-caption',
-                  stalled
+                  stalled || modelRetryNotice
                     ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
                     : 'border-border/70 bg-muted/50 text-muted-foreground',
                 )}
@@ -3028,6 +3048,15 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       `排队中：同工作区「${queuedBehindLabel}」正在运行。`,
                       `Queued: "${queuedBehindLabel}" in this workspace is running.`,
                     )}
+                  </span>
+                ) : modelRetryNotice ? (
+                  // R4 model.retry：引擎 durable 重试进行中（退避期内没有产出是计划内的）。
+                  // 失败原因放 title，不打扰正文；phase=end 事件一到横幅即收。
+                  <span
+                    data-testid="model-retry"
+                    title={modelRetryNotice.errorMessage || undefined}
+                  >
+                    {modelRetryLabelText}
                   </span>
                 ) : runningToolActive ? (
                   t(
@@ -3083,6 +3112,14 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                       </Button>
                     ) : null}
                   </span>
+                ) : engineRecoveryNotice ? (
+                  // R4 session.recovery：崩溃后引擎附着、上一回合仍在飞行。恢复中不需要
+                  // 读者动手；agentRecovery 的「从刚才的断点继续」按钮以 running 为门，
+                  // 这里把 running 维持住，两块恢复 UI 不会同时出现。
+                  <span data-testid="engine-recovery">{engineRecoveryLabelText}</span>
+                ) : queuedMessageNotice ? (
+                  // R4 session.message_queued：消息排队中（等当前回合结束）；被回合消费即收。
+                  <span data-testid="message-queued">{queuedMessageLabel}</span>
                 ) : (
                   t(`等待中（已 ${streamStaleSeconds}s）`, `Waiting… (${streamStaleSeconds}s)`)
                 )}
