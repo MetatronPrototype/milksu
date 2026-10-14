@@ -1574,8 +1574,27 @@ export function createHarnessBridgeSessionLayer(context) {
     if (event.type === "snapshot") {
       record.busy = Boolean(event.run);
       record.compactionCount = Array.isArray(event.compactions) ? event.compactions.length : 0;
+      // R1c（β.191 真机复盘）：重试窗口位从快照对账——CommittedWatch 溢出会以快照帧
+      // 替换未送达的批，内存位可能滞留在旧值；快照里的 live.generation.retry 是
+      // 引擎落盘的真相，直接覆盖。
+      record.engineRetryScheduled = Boolean(event.generation?.retry);
       await emitHarnessQueueUpdate(alias);
       return;
+    }
+    if (event.type === "auto_retry_start" || event.type === "auto_retry_end") {
+      // R1c（β.191 真机复盘）：引擎 durable 重试的排程窗口。窗口内的 message_end 失败
+      // 是**中间失败**——不能作为 error 事件上桌：渲染器把每条 engine.error 都按回合
+      // 终态处理（finishRun 清 running 位），首发失败一到就把重试横幅的 running 门
+      // 关死，且 6 次尝试桌上 6 条「Agent 运行失败」。窗口内只留 model_retry 横幅
+      // （本事件经投影器照常上桌），窗口关闭后的失败（预算烧尽的最终失败、不可重试
+      // 类错误）照常一条 error 上桌。同一提交批里 auto_retry_start 先于 message_end
+      // 到达（pi-durable events.js translate 的产出次序），位总是在失败前就位。
+      record.engineRetryScheduled = event.type === "auto_retry_start";
+    }
+    if (event.type === "run_end") {
+      // 重试窗口不可能跨 run 存活（endRun 删 live.generation.retry）；run 结束即关窗，
+      // 兜住 auto_retry_end 事件因溢出丢失时内存位卡在开窗的极端情况。
+      record.engineRetryScheduled = false;
     }
     if (event.type === "tool_execution_start") {
       record.pendingToolCalls = [...record.pendingToolCalls, event.toolCallId];
@@ -1650,9 +1669,14 @@ export function createHarnessBridgeSessionLayer(context) {
       record.streamBypassed = false;
       record.streamProjected = false;
       if (failure) {
-        // pi-durable 的重试有界（settings.retry 默认 3 次），这里只上报不主动 abort
-        //（旧路径 abort 是因为旧引擎无限重试烧额度；差异见报告）。
-        emit(alias, "error", { error: failure });
+        // R1c（β.191 真机复盘）：重试窗口内的中间失败静默——横幅（model_retry）替它
+        // 说话；窗口外的失败是最终失败（预算烧尽）或不可重试类错误，一条 error
+        // 上桌，照旧不主动 abort（pi-durable 的重试有界；旧路径 abort 是因为旧引擎
+        // 无限重试烧额度，差异见 R1a 报告）。R1b 流式旁路的抑制位不受影响（上面的
+        // 清零已执行）。
+        if (!record.engineRetryScheduled) {
+          emit(alias, "error", { error: failure });
+        }
       }
     }
     if (event.type === "task_failed" && event.kind === "pi.generation") {
@@ -1932,6 +1956,10 @@ export function createHarnessBridgeSessionLayer(context) {
         // R1b 流式旁路（谁先投谁服务本条消息，见 emitHarnessStreamBypassEvent 注释）。
         streamBypassed: false,
         streamProjected: false,
+        // R1c（β.191 真机复盘）：引擎 durable 重试排程窗口（auto_retry_start 开、
+        // auto_retry_end/run_end/快照对账关）。窗口内的 message_end 失败是中间失败，
+        // 不上桌——见 handleHarnessEvent 的 auto_retry 分支注释。
+        engineRetryScheduled: false,
         // R1b 附着帧状态（ready 之后上桌的恢复横幅/积压排队）。
         recoveredRunAtAttach: false,
         pendingQueuedReportAtAttach: undefined,

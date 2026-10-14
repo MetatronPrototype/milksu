@@ -323,6 +323,48 @@ test("projectBatch keeps intra-batch order across families", () => {
   ]);
 });
 
+test("failed assistant message_end does not project an error (session layer is the single failure reporter)", () => {
+  // R1c（β.191 真机复盘）：失败消息的 error 投影在 harness 路径摘除——会话层
+  // handleHarnessEvent 的 message_end 分支持有重试排程窗口的真相（中间失败静默、
+  // 最终失败一条），投影器双发会让 fatal 类错误桌上两条相同错误。这里锁住该边界：
+  // 无论文案是否 deferrable，投影器都不再产出 error。
+  const projector = createHarnessEventProjector();
+  const fatal = projector.project({
+    type: "message_end",
+    entry: assistantEntry(assistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Provider returned error: 401 Incorrect API key provided",
+    })),
+  });
+  assert.equal(fatal.filter(event => event.type === "error").length, 0,
+    "non-deferrable failures no longer emit from the projector");
+  assert.equal(fatal.some(event => event.type === "usage_recorded"), true,
+    "usage projection is unaffected");
+
+  const transient = projector.project({
+    type: "message_end",
+    entry: assistantEntry(assistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Connection error.",
+    })),
+  });
+  assert.equal(transient.filter(event => event.type === "error").length, 0,
+    "deferrable failures stay deferred in the projector");
+
+  // task_failed（引擎调度器判死的 faulted/orphaned 任务）仍照常投影 error——那是
+  // 任务级终态，没有重试窗口可言。
+  const taskFailed = projector.project({
+    type: "task_failed",
+    taskId: 7,
+    kind: "pi.tool",
+    message: "executor crashed",
+  });
+  assert.deepEqual(taskFailed, [{
+    type: "error",
+    data: { error: "Task pi.tool 7 failed: executor crashed" },
+  }]);
+});
+
 test("module and usage attribution flow through the options", () => {
   const ctf = createHarnessEventProjector({ module: "ctf", conversationId: "conv-1", provider: "milksu-account" });
   const events = ctf.project({

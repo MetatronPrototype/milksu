@@ -22,8 +22,9 @@
 //   message_update.changes → thinking_start/thinking_delta/text_delta（pi-durable 无
 //     thinking_end：thinking_done 在 message_end 由累计内容合成，见下）
 //   message_end → thinking_done（若已流式）+ projectAssistantMessageEnd 的
-//     message_segment_done/message_done/error + usage_recorded（复用 bridge-message-view /
-//     bridge-usage-view，保证与现有桌面投影逐字段同形）
+//     message_segment_done/message_done + usage_recorded（复用 bridge-message-view /
+//     bridge-usage-view，保证与现有桌面投影逐字段同形）。失败 assistant 消息的
+//     error 投影在 harness 路径摘除（R1c：会话层是唯一失败上报点，见 projectMessageEnd）
 //   tool_execution_start → tool_call_start {toolCallId, toolName, content, module}
 //   tool_execution_update → tool_call_progress（进度心跳；工具输出仍按现状只在结束时给）
 //   tool_execution_end → tool_call_end {toolCallId, toolName, content, durationMs, isError, module}
@@ -111,6 +112,13 @@ export function createHarnessEventProjector(options = {}) {
       textStreamed: false,
       thinkingStreamed,
     })) {
+      // R1c（β.191 真机复盘）：失败 assistant 消息的 error 投影在 harness 路径摘掉，
+      // 会话层 handleHarnessEvent 的 message_end 分支是唯一的失败上报点（它持有重试
+      // 排程窗口的真相，能区分中间失败与最终失败）。旧双发面：非 deferrable 文案
+      // 这里发一条、会话层再发一条——真机 fatal 类错误桌上两条相同错误；可重试文案
+      // 这里 defer 掉、只靠会话层那条——判定分裂在同一份失败上。门关路径
+      //（bridge.js 自己调 projectAssistantMessageEnd）零改动。
+      if (projected.type === "error") continue;
       events.push(projected);
     }
     const usage = projectAssistantUsage(message, {
