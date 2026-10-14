@@ -12,7 +12,9 @@
 
 import { t } from '@/lib/uiLocale'
 
-/** model.retry start：一次 durable 重试排程（「网络波动，重试中 x/5」）。end 事件清掉它。 */
+/** model.retry start：一次 durable 重试排程（「网络波动，重试中 x/5」）。end 事件只把
+ *  inFlight 翻 true（下一次尝试开跑、倒计时熄掉）；横幅本身挂到回合出结果才收
+ *（useConversations 的 finishRun / assistant.completed，见那边的注释）。 */
 export interface EngineRetryNotice {
   attempt: number
   maxRetries: number
@@ -21,9 +23,11 @@ export interface EngineRetryNotice {
   noticeEnglish: string
   /** 上一次尝试的失败原因（start 载荷的 errorMessage），展示为悬停细节。 */
   errorMessage: string
-  /** 下一次尝试的时刻（epoch ms；start 载荷的 retryAt）。 */
+  /** 下一次尝试的时刻（epoch ms；start 载荷的 retryAt）。phase:end 后清零（不再倒计时）。 */
   retryAt: number
   at: number
+  /** phase:end 已到：退避走完、下一次尝试开跑 ⇒ 横幅保留但不显示秒数（「正在重试…」）。 */
+  inFlight: boolean
 }
 
 /** session.recovery：崩溃后重开进程附着、上一回合仍在飞行（「从断点恢复中」）。 */
@@ -65,8 +69,10 @@ function noticePair(payload: Record<string, unknown>) {
 }
 
 /**
- * model.retry 事件 → 重试横幅状态。phase=start 建状态；phase=end（或载荷缺计数）
- * 返回 null（收横幅）。引擎没给 message 时按 attempt/maxRetries 现拼一条。
+ * model.retry 事件 → 重试横幅状态。phase=start 建状态（inFlight=false，带 retryAt 倒计时）；
+ * phase=end（或载荷缺计数）返回 null——end 的语义是「退避走完、下一次尝试开跑」，横幅
+ * **不收**（挂到回合出结果），只由调用方把既有条目翻成 inFlight=true。引擎没给 message 时
+ * 按 attempt/maxRetries 现拼一条。
  */
 export function projectModelRetryEvent(payload: Record<string, unknown>): EngineRetryNotice | null {
   const phase = String(payload.phase ?? 'start').trim()
@@ -82,18 +88,33 @@ export function projectModelRetryEvent(payload: Record<string, unknown>): Engine
     errorMessage: String(payload.errorMessage ?? '').trim(),
     retryAt: Number(payload.retryAt) || 0,
     at: Date.now(),
+    inFlight: false,
   }
 }
 
-/** 重试横幅文案：优先引擎自带提示，缺省按计数现拼（显示时经 t() 配对，跟 locale 走）。 */
-export function modelRetryLabel(retry: EngineRetryNotice): string {
-  if (!retry.notice && !retry.noticeEnglish) {
-    return t(
+/**
+ * 重试横幅文案：优先引擎自带提示，缺省按计数现拼（显示时经 t() 配对，跟 locale 走）。
+ * 退避期内（phase:start、retryAt 在未来）明说「x 秒后重试」（x 向下取整）——β.192 真机
+ * 验收里裸数字「2.0s」被读者当成「重试间隔只有两秒」，带单位的句子读不出这种歧义。
+ * 倒计时走完（phase:end 翻 inFlight，或 retryAt 已过/不足 1 秒）⇒「正在重试…」，不显示秒数。
+ */
+export function modelRetryLabel(retry: EngineRetryNotice, now = Date.now()): string {
+  const base = !retry.notice && !retry.noticeEnglish
+    ? t(
       `网络波动，重试中 ${retry.attempt}/${retry.maxRetries}`,
       `Network trouble, retrying ${retry.attempt}/${retry.maxRetries}`,
     )
+    : t(retry.notice, retry.noticeEnglish)
+  if (!retry.inFlight && retry.retryAt > 0) {
+    const secondsLeft = Math.floor((retry.retryAt - now) / 1000)
+    if (secondsLeft > 0) {
+      return t(
+        `${base}，${secondsLeft} 秒后重试`,
+        `${base}, retrying in ${secondsLeft}s`,
+      )
+    }
   }
-  return t(retry.notice, retry.noticeEnglish)
+  return t(`${base}，正在重试…`, `${base}, retrying now…`)
 }
 
 /** session.recovery 事件 → 恢复横幅状态；载荷没有可读提示时返回 null（不硬造文案）。 */

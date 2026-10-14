@@ -32,11 +32,12 @@ describe('projectModelRetryEvent', () => {
       noticeEnglish: 'Network trouble, retrying 2/5',
       errorMessage: 'fetch failed',
       retryAt: 1770000000123,
+      inFlight: false,
     })
     expect(modelRetryLabel(retry!)).toContain('重试中 2/5')
   })
 
-  it('end 事件返回 null（收横幅）', () => {
+  it('end 事件不投影新状态（保留横幅、熄倒计时由调用方按既有条目处理）', () => {
     expect(projectModelRetryEvent({ phase: 'end', attempt: 2 })).toBeNull()
   })
 
@@ -51,6 +52,48 @@ describe('projectModelRetryEvent', () => {
     const retry = projectModelRetryEvent({ phase: 'start', attempt: -2, maxRetries: NaN })
     expect(retry?.attempt).toBe(1)
     expect(retry?.maxRetries).toBe(1)
+  })
+})
+
+describe('modelRetryLabel 倒计时文案', () => {
+  const base = {
+    notice: '网络波动，重试中 4/5',
+    noticeEnglish: 'Network trouble, retrying 4/5',
+    errorMessage: 'fetch failed',
+    at: 0,
+  }
+
+  it('退避期内（retryAt 在未来）明说「x 秒后重试」，x 向下取整', () => {
+    const now = 1_000_000
+    const retry = { ...base, attempt: 4, maxRetries: 5, retryAt: now + 24_000, inFlight: false }
+    expect(modelRetryLabel(retry, now)).toContain('网络波动，重试中 4/5，24 秒后重试')
+    const fraction = { ...base, attempt: 4, maxRetries: 5, retryAt: now + 1_500, inFlight: false }
+    expect(modelRetryLabel(fraction, now)).toContain('1 秒后重试')
+  })
+
+  it('倒计时逐秒递减（同一 retryAt、时间往前走）', () => {
+    const retry = { ...base, attempt: 4, maxRetries: 5, retryAt: 60_000, inFlight: false }
+    expect(modelRetryLabel(retry, 36_000)).toContain('24 秒后重试')
+    expect(modelRetryLabel(retry, 37_000)).toContain('23 秒后重试')
+    expect(modelRetryLabel(retry, 59_000)).toContain('1 秒后重试')
+  })
+
+  it('phase:end 后（inFlight）不显示秒数，换「正在重试…」', () => {
+    const retry = { ...base, attempt: 4, maxRetries: 5, retryAt: 0, inFlight: true }
+    const label = modelRetryLabel(retry, 0)
+    expect(label).toContain('网络波动，重试中 4/5，正在重试…')
+    expect(label).not.toContain('秒后')
+  })
+
+  it('retryAt 已过或不足 1 秒 ⇒ 不报「0 秒后重试」这种傻话，按正在重试', () => {
+    const past = { ...base, attempt: 4, maxRetries: 5, retryAt: 500, inFlight: false }
+    expect(modelRetryLabel(past, 1_000)).toContain('正在重试…')
+    expect(modelRetryLabel(past, 1_000)).not.toContain('秒后')
+  })
+
+  it('引擎没给 retryAt（0）⇒ 没有倒计时可报，只说正在重试', () => {
+    const noRetryAt = { ...base, attempt: 4, maxRetries: 5, retryAt: 0, inFlight: false }
+    expect(modelRetryLabel(noRetryAt, 0)).toContain('正在重试…')
   })
 })
 

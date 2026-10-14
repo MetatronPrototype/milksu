@@ -1204,8 +1204,11 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const engineWarning = conversations.activeEngineWarning
   const engineWarningLabel = engineStallWarningLabel(engineWarning, formatDemoElapsed)
   // ---- R4 引擎韧性横幅状态（model.retry / session.recovery / session.message_queued）----
+  // 倒计时按秒走：waitingNow 由下面的秒级时钟驱动（重试期间 running=true ⇒ 时钟在走）。
   const modelRetryNotice = conversations.activeModelRetry
-  const modelRetryLabelText = modelRetryNotice ? agentModelRetryLabel(modelRetryNotice) : ''
+  const modelRetryLabelText = modelRetryNotice
+    ? agentModelRetryLabel(modelRetryNotice, waitingNow)
+    : ''
   const engineRecoveryNotice = conversations.activeEngineRecovery
   const engineRecoveryLabelText = engineRecoveryNotice ? agentEngineRecoveryLabel(engineRecoveryNotice) : ''
   const queuedMessageNotice = conversations.activeQueuedMessage
@@ -3072,7 +3075,8 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                   </span>
                 ) : modelRetryNotice ? (
                   // R4 model.retry：引擎 durable 重试进行中（退避期内没有产出是计划内的）。
-                  // 失败原因放 title，不打扰正文；phase=end 事件一到横幅即收。
+                  // 失败原因放 title，不打扰正文；横幅挂到回合出结果（assistant.completed/
+                  // finishRun）才收，倒计时随 retryAt 走，end 之后换「正在重试…」。
                   <span
                     data-testid="model-retry"
                     title={modelRetryNotice.errorMessage || undefined}
@@ -3337,7 +3341,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
                   <p className="chat-model-loading">
                     <AgentPixelLoader
                       label={waitingLabel}
-                      elapsed={waitingElapsed}
+                      // 重试横幅期间藏掉裸秒数：β.192 真机验收里它被读成「重试间隔只有
+                      // 2.0s」。节奏已明说在文案里（「x 秒后重试」/「正在重试…」），
+                      // 再摆一个走表就是两个时间数字打架。
+                      elapsed={modelRetryNotice ? undefined : waitingElapsed}
                       running
                     />
                   </p>

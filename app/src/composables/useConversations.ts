@@ -1734,7 +1734,9 @@ export function createConversationsRuntime(options?: {
   // 预算软告警：sidecar 报了「请求超过它自己的预算」，但还没硬掐。真实事件到来即清掉。
   const engineWarnedAtByConversation = new Map<string, EngineStallWarning>()
   // R4 引擎韧性事件的会话级状态：
-  // - model.retry start/end 之间的重试横幅（end 事件即收）；
+  // - model.retry 的重试横幅：start 挂上（带 retryAt 倒计时）、end 只熄倒计时；
+  //   真正收横幅对齐**回合终态**（assistant.completed 出结果 / finishRun 的
+  //   engine.error·settled·中断·引擎停止，见 finishRun 与 assistant.completed 处的清理）；
   // - session.recovery 的恢复横幅（回合结束/失败即收，见 activeEngineRecovery 的 running 门）；
   // - session.message_queued 的排队提示（被回合消费或回合结束即收）。
   const modelRetryByConversation = new Map<string, EngineRetryNotice>()
@@ -2268,6 +2270,10 @@ export function createConversationsRuntime(options?: {
     clearTurnRunClock(id)
     clearAbortStalled(id)
     clearEngineStallWarning(id)
+    // 回合不再运行（收尾/失败/中断/本地结算都走这里）⇒ 重试横幅条目一并清掉：
+    // getter 的 running 门只挡显示，不清状态——不清的话下一回合 running 一回来，
+    // 上一轮的重试横幅会诈尸。真正的语义锚点见上方 model.retry 注释。
+    modelRetryByConversation.delete(id)
     const next = projectCodingRunFinished(
       s.runningIds,
       s.abortingIds,
@@ -4009,7 +4015,8 @@ export function createConversationsRuntime(options?: {
       }
       // R4 引擎韧性状态事件（走到这里 ⇒ 已按进展记过 noteStreamEvent，停滞时钟被刷新）：
       // - model.retry：重试是引擎**管理中的**静默（它刚说过话），不该被停滞看门狗误判；
-      //   start 挂横幅、end 收横幅。
+      //   start 挂横幅并带 retryAt 倒计时；end 只把倒计时熄掉（横幅挂到回合出结果才收，
+      //   β.192 真机验收：end 即收会让读者在「下一次尝试」的静默里以为死机而重复发送）。
       // - session.recovery：崩溃后附着、上一回合仍在飞行 ⇒ 会话回到「进行中」，
       //   失败横幅清掉；agentRecovery 的恢复按钮以 running 为门（recoverableAgentFailureId
       //   在 running=true 时返回空）⇒ 引擎自己续跑期间不会再弹「从刚才的断点继续」双横幅。
@@ -4017,11 +4024,23 @@ export function createConversationsRuntime(options?: {
       if (type === 'model.retry') {
         const retryId = String(sessionId ?? '').trim()
         if (!retryId) return
+        const retryPhase = String(phase ?? '').trim()
         const retry = projectModelRetryEvent({
           phase, attempt, maxRetries, notice, noticeEnglish, errorMessage, retryAt,
         })
-        if (retry) modelRetryByConversation.set(retryId, retry)
-        else modelRetryByConversation.delete(retryId)
+        if (retry) {
+          modelRetryByConversation.set(retryId, retry)
+        } else if (retryPhase === 'end') {
+          // phase:end = 退避倒计时走完、下一次尝试开跑：横幅保留（挂到回合出结果），
+          // 只熄倒计时（「正在重试…」）。没有 start 过（如渲染器中途附着）⇒ 无横幅可保。
+          const current = modelRetryByConversation.get(retryId)
+          if (current && !current.inFlight) {
+            modelRetryByConversation.set(retryId, { ...current, inFlight: true, retryAt: 0 })
+          }
+        } else {
+          // 载荷既非 start 也非 end（畸形事件）⇒ 不猜语义，按旧口径收横幅。
+          modelRetryByConversation.delete(retryId)
+        }
         // 重试事件证明引擎进程活着（喂心跳）；重试横幅的挂/收都要立刻上屏。
         noteTurnHeartbeat(sessionId)
         s.heartbeatTick = s.heartbeatTick + 1
@@ -4179,6 +4198,8 @@ export function createConversationsRuntime(options?: {
         for (const id of affectedSet) {
           clearTurnRunClock(id)
           clearAbortStalled(id)
+          // 引擎实例没了 = 回合被中断 ⇒ 重试横幅条目同样清掉（这条路不走 finishRun）。
+          modelRetryByConversation.delete(id)
           nextRunning.delete(id)
           nextAborting.delete(id)
         }
@@ -4578,6 +4599,9 @@ export function createConversationsRuntime(options?: {
             })
           }
         } else if (type === 'assistant.completed') {
+          // 重试的那条 assistant 消息落定 = 回合出了结果 ⇒ 重试横幅在此收起
+          //（finishRun 只覆盖回合整体收尾；多段回合里这是更早、更准的锚点）。
+          modelRetryByConversation.delete(sessionId)
           // Ignore empty aborted shells (legacy bridge synthesized message_done
           // with reason=aborted and no content). Real abort settles via turn_settled.
           const abortedEmpty = !String(text ?? '').trim()

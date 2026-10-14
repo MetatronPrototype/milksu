@@ -3,6 +3,7 @@
 // session.recovery / session.message_queued）从桌面事件流进渲染器状态的接线。
 // 事件形状 = Go normalizeBridgeEvent 的输出（internal/engine/supervisor.go 五个新 case）。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { modelRetryLabel } from '@/lib/agentEngineSignals'
 
 type EventHandler = (event: { payload: unknown }) => void
 
@@ -55,7 +56,7 @@ describe('useConversations 引擎韧性事件', () => {
     return conversations
   }
 
-  it('model.retry start 挂重试状态、end 收掉；横幅只在回合进行中可见', async () => {
+  it('model.retry start 挂横幅带倒计时，end 只熄秒数不收横幅；engine.error 才收', async () => {
     const conversations = await runtime()
     emit('conversation-1', {
       type: 'model.retry',
@@ -65,20 +66,121 @@ describe('useConversations 引擎韧性事件', () => {
       notice: '网络波动，重试中 2/5',
       noticeEnglish: 'Network trouble, retrying 2/5',
       errorMessage: 'fetch failed',
+      retryAt: Date.now() + 3_000,
     })
     expect(conversations.activeModelRetry).toMatchObject({
       attempt: 2,
       maxRetries: 5,
       notice: '网络波动，重试中 2/5',
       errorMessage: 'fetch failed',
+      inFlight: false,
     })
+    // 退避节奏明说在文案里（β.192 真机验收：裸数字「2.0s」被读成重试间隔过短）。
+    expect(modelRetryLabel(conversations.activeModelRetry!)).toContain('3 秒后重试')
 
+    // 倒计时归零、下一次尝试开始（phase:end）：横幅保留，只熄秒数。
+    // 旧语义在此删条目 ⇒ 读者在下一次尝试的静默里以为死机而重复发送。
     emit('conversation-1', { type: 'model.retry', phase: 'end', attempt: 2 })
-    expect(conversations.activeModelRetry).toBeNull()
+    expect(conversations.activeModelRetry).not.toBeNull()
+    expect(conversations.activeModelRetry).toMatchObject({
+      attempt: 2,
+      inFlight: true,
+      retryAt: 0,
+    })
+    const inFlightLabel = modelRetryLabel(conversations.activeModelRetry!)
+    expect(inFlightLabel).toContain('正在重试…')
+    expect(inFlightLabel).not.toContain('秒后')
 
-    // start 后回合失败收尾（running 清掉）⇒ 残留状态不该再上屏（getter 的 running 门）。
-    emit('conversation-1', { type: 'model.retry', phase: 'start', attempt: 3, maxRetries: 5 })
+    // 最终错误 ⇒ 收横幅；条目是真删（不是被 running 门挡住）——新回合 running 回来也不诈尸。
     emit('conversation-1', { type: 'engine.error', error: 'x' })
+    expect(conversations.activeModelRetry).toBeNull()
+    emit('conversation-1', { type: 'assistant.started' })
+    expect(conversations.activeModelRetry).toBeNull()
+  })
+
+  it('回合成功收尾也收横幅：assistant.completed（消息落定）先收，下一回合不诈尸', async () => {
+    const conversations = await runtime()
+    emit('conversation-1', {
+      type: 'model.retry',
+      phase: 'start',
+      attempt: 1,
+      maxRetries: 5,
+      retryAt: Date.now() + 2_000,
+    })
+    emit('conversation-1', { type: 'model.retry', phase: 'end', attempt: 1 })
+    expect(conversations.activeModelRetry).not.toBeNull()
+    // 重试的那条消息落定 = 出结果 ⇒ 横幅收起（多段回合里早于 assistant.settled）。
+    emit('conversation-1', { type: 'assistant.completed', text: '好的' })
+    expect(conversations.activeModelRetry).toBeNull()
+    // 排队消息续跑的第二轮（新回合）⇒ 上一轮的横幅状态不能再上屏。
+    emit('conversation-1', { type: 'assistant.settled' })
+    emit('conversation-1', { type: 'assistant.started' })
+    expect(conversations.activeModelRetry).toBeNull()
+  })
+
+  it('同一会话多轮退避无缝衔接：end→start 整条替换，倒计时从新 retryAt 重走', async () => {
+    const conversations = await runtime()
+    emit('conversation-1', {
+      type: 'model.retry',
+      phase: 'start',
+      attempt: 1,
+      maxRetries: 5,
+      notice: '网络波动，重试中 1/5',
+      noticeEnglish: 'Network trouble, retrying 1/5',
+      errorMessage: 'fetch failed',
+      retryAt: Date.now() + 2_000,
+    })
+    emit('conversation-1', { type: 'model.retry', phase: 'end', attempt: 1 })
+    expect(conversations.activeModelRetry).toMatchObject({ attempt: 1, inFlight: true })
+    // 第二次尝试又失败、排程第二轮退避：横幅全程不消失，计数与倒计时无缝换新。
+    emit('conversation-1', {
+      type: 'model.retry',
+      phase: 'start',
+      attempt: 2,
+      maxRetries: 5,
+      notice: '网络波动，重试中 2/5',
+      noticeEnglish: 'Network trouble, retrying 2/5',
+      errorMessage: 'fetch failed',
+      retryAt: Date.now() + 4_000,
+    })
+    expect(conversations.activeModelRetry).toMatchObject({ attempt: 2, inFlight: false })
+    expect(modelRetryLabel(conversations.activeModelRetry!)).toContain('2/5，4 秒后重试')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(modelRetryLabel(conversations.activeModelRetry!)).toContain('3 秒后重试')
+    // 倒计时走完但 end 事件还没到 ⇒ 不报「0 秒后重试」，按正在重试兜底。
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(modelRetryLabel(conversations.activeModelRetry!)).toContain('正在重试…')
+    expect(modelRetryLabel(conversations.activeModelRetry!)).not.toContain('秒后')
+  })
+
+  it('引擎实例停止（回合被中断）收横幅：engine.stopped 这条路不走 finishRun，同处清条目', async () => {
+    const conversations = await runtime()
+    emit('conversation-1', {
+      type: 'model.retry',
+      phase: 'start',
+      attempt: 1,
+      maxRetries: 5,
+      retryAt: Date.now() + 2_000,
+    })
+    expect(conversations.activeModelRetry).not.toBeNull()
+    // session-less 引擎停止：把该实例服务的会话全部结算（含重试横幅条目）。
+    emit('', { type: 'engine.stopped', sessions: ['conversation-1'] })
+    expect(conversations.activeModelRetry).toBeNull()
+    // 条目已删：新回合 running 回来不诈尸。
+    emit('conversation-1', { type: 'assistant.started' })
+    expect(conversations.activeModelRetry).toBeNull()
+  })
+
+  it('畸形 phase（既非 start 也非 end）⇒ 按旧口径收横幅，不猜语义', async () => {
+    const conversations = await runtime()
+    emit('conversation-1', {
+      type: 'model.retry',
+      phase: 'start',
+      attempt: 1,
+      maxRetries: 5,
+      retryAt: Date.now() + 2_000,
+    })
+    emit('conversation-1', { type: 'model.retry', phase: '???', attempt: 1 })
     expect(conversations.activeModelRetry).toBeNull()
   })
 
