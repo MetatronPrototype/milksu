@@ -3059,10 +3059,12 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
             {streamStale || queuedBehindLabel || modelRetryNotice || engineRecoveryNotice || queuedMessageNotice ? (
               <div
                 className={cn(
-                  'mx-auto mb-2 w-[72%] rounded-xl border px-3 py-1.5 text-caption',
+                  // sticky 钉顶：重试/排队/恢复横幅不随消息滚动被顶出视野（β.193 实测：
+                  // 每次重试的动静把顶部横幅滚走，用户误判死机重复发送，队列滚雪球）。
+                  'sticky top-0 z-20 mx-auto mb-2 w-[72%] rounded-xl border px-3 py-1.5 text-caption',
                   stalled || modelRetryNotice
-                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                    : 'border-border/70 bg-muted/50 text-muted-foreground',
+                    ? 'border-amber-500/40 bg-amber-500/90 text-amber-700 dark:bg-amber-950/95 dark:text-amber-300'
+                    : 'border-border/70 bg-muted/95 text-muted-foreground',
                 )}
                 data-testid="stream-stale"
               >
