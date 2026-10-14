@@ -340,6 +340,25 @@ export async function runQueuedWorkspaceCompaction(pending, conversationId, comp
 
 export const defaultWorkspaceActionTimeoutMs = 25_000;
 
+// CU v2 §3.1-2：bridge.js / harness-bridge-session.js 的 destroySession 都以这个
+// 固定 reason 取消在途动作；解锁自己触发的销毁（桌面 StopCodingComputerUse →
+// DetachSession）不能报成工具错误。
+export const codingWorkspaceSessionDestroyedReason = "session destroyed";
+
+// 解锁会销毁发起它的 Coding 会话——销毁取消在途动作时，发起销毁的那次
+// unlock_computer_use_window 以成功载荷落定；真失败仍由 respond() 的 error
+// 分支照常抛错。
+export function codingWorkspaceUnlockDestroyedResult() {
+  return JSON.stringify({
+    unlocked: true,
+    status: {
+      enabled: false,
+      authorized: false,
+      phase: "disabled",
+    },
+  });
+}
+
 export function createWorkspaceActionBroker(emit, createID = () => crypto.randomUUID()) {
   const pending = new Map();
 
@@ -356,6 +375,8 @@ export function createWorkspaceActionBroker(emit, createID = () => crypto.random
           reject(new Error("Coding workspace action timed out"));
         }, deadline);
         pending.set(requestID, {
+          conversationId,
+          action,
           resolve: value => {
             clearTimeout(timer);
             resolve(value);
@@ -386,9 +407,21 @@ export function createWorkspaceActionBroker(emit, createID = () => crypto.random
       request.resolve(String(result ?? ""));
     },
 
-    cancelConversation(_conversationId, reason = "workspace action cancelled") {
+    cancelConversation(conversationId, reason = "workspace action cancelled") {
+      // 会话销毁是被销毁会话自己那次在途解锁的预期副作用：以成功载荷落定，
+      // 模型不再看到 [error] session destroyed。其他取消原因（回合中止等）
+      // 与其他会话的在途动作照常报错。
+      const settleUnlock = reason === codingWorkspaceSessionDestroyedReason;
       for (const [requestID, request] of pending) {
         pending.delete(requestID);
+        if (
+          settleUnlock
+          && request.action === "unlock_computer_use_window"
+          && request.conversationId === conversationId
+        ) {
+          request.resolve(codingWorkspaceUnlockDestroyedResult());
+          continue;
+        }
         request.reject(new Error(reason));
       }
     },
