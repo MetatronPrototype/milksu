@@ -2,10 +2,14 @@
 // 没注册上，驱动守卫分不清「没授权」与「授权没注册上」，跨 20 小时四轮被拦）。
 import { describe, expect, it } from 'vitest'
 import {
+  COMPUTER_USE_GUARD_DEBOUNCE_MS,
+  COMPUTER_USE_GUARD_FRESH_MS,
   PERMISSION_DRIFT_HINT_MS,
+  computerUseGuardSignalFresh,
   isComputerUsePermissionGuardError,
   permissionDriftGuidance,
   permissionWizardState,
+  projectComputerUsePermissionGuardSignal,
 } from '@/lib/codingComputerUsePermissionWizard'
 
 describe('permissionWizardState 三态判别', () => {
@@ -90,5 +94,145 @@ describe('isComputerUsePermissionGuardError 权限守卫识别', () => {
     expect(isComputerUsePermissionGuardError('Computer Use service is unavailable')).toBe(false)
     expect(isComputerUsePermissionGuardError(new Error('新目标无效，旧锁保留'))).toBe(false)
     expect(isComputerUsePermissionGuardError(null)).toBe(false)
+  })
+})
+
+describe('projectComputerUsePermissionGuardSignal 锁窗守卫信号投影', () => {
+  const guardText = '请先明确授予 MilkSU 辅助功能与屏幕录制权限，再启动可见会话'
+  const base = {
+    type: 'tool.completed',
+    toolName: 'milksu_workspace',
+    conversationId: 'conversation-1',
+    previous: null,
+    now: 1_000_000,
+  }
+
+  it('milksu_workspace 的 tool.completed 守卫失败 ⇒ 信号（β.191 的撞墙现场）', () => {
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: guardText,
+      text: guardText,
+    })).toEqual({
+      conversationId: 'conversation-1',
+      notice: guardText,
+      at: 1_000_000,
+    })
+  })
+
+  it('error 缺失时回落 text（同一载荷的两个字段，别漏了只有 text 的路径）', () => {
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      text: guardText,
+    })?.notice).toBe(guardText)
+  })
+
+  it('驱动 canary 的英文守卫文案同样命中', () => {
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: 'Screen Recording permission not granted',
+    })).not.toBeNull()
+  })
+
+  it('非权限类失败不触发（目标无效 / 别的会话占用 / 超时）', () => {
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: '选择的窗口无效',
+    })).toBeNull()
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: 'Computer Use is already attached to another visible Coding task',
+    })).toBeNull()
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: 'Coding workspace action timed out',
+    })).toBeNull()
+  })
+
+  it('别的事件阶段不触发：tool.started / tool.progress', () => {
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      type: 'tool.started',
+      text: guardText,
+    })).toBeNull()
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      type: 'tool.progress',
+      text: guardText,
+    })).toBeNull()
+  })
+
+  it('别的工具不触发：milksu_workspace 之外不碰（事件不带 action 名，宁可窄）', () => {
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      toolName: 'bash',
+      error: guardText,
+    })).toBeNull()
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      toolName: 'prepare_computer_use_driver',
+      error: guardText,
+    })).toBeNull()
+  })
+
+  it('同会话去抖：窗口内再次撞墙返回 null，出窗后重新记', () => {
+    const first = projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: guardText,
+      now: 1_000_000,
+    })
+    expect(first).not.toBeNull()
+    // 窗口内：同会话压住。
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: guardText,
+      previous: first,
+      now: 1_000_000 + COMPUTER_USE_GUARD_DEBOUNCE_MS - 1,
+    })).toBeNull()
+    // 出窗：重新记。
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: guardText,
+      previous: first,
+      now: 1_000_000 + COMPUTER_USE_GUARD_DEBOUNCE_MS,
+    })?.at).toBe(1_000_000 + COMPUTER_USE_GUARD_DEBOUNCE_MS)
+  })
+
+  it('不同会话不受彼此去抖影响（另一个对话撞墙仍是新事件）', () => {
+    const first = projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: guardText,
+      now: 1_000_000,
+    })
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      conversationId: 'conversation-2',
+      error: guardText,
+      previous: first,
+      now: 1_000_000 + 1,
+    })).not.toBeNull()
+  })
+
+  it('debounceMs 可覆盖（测试注入用）', () => {
+    const first = projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: guardText,
+      now: 1_000_000,
+    })
+    expect(projectComputerUsePermissionGuardSignal({
+      ...base,
+      error: guardText,
+      previous: first,
+      now: 1_000_000 + 500,
+      debounceMs: 1_000,
+    })).toBeNull()
+  })
+})
+
+describe('computerUseGuardSignalFresh 信号保鲜', () => {
+  it('窗口内新鲜、窗口外过期（重挂载不翻旧账）', () => {
+    const signal = { conversationId: 'c', notice: 'n', at: 1_000_000 }
+    expect(computerUseGuardSignalFresh(signal, 1_000_000 + COMPUTER_USE_GUARD_FRESH_MS)).toBe(true)
+    expect(computerUseGuardSignalFresh(signal, 1_000_000 + COMPUTER_USE_GUARD_FRESH_MS + 1)).toBe(false)
+    expect(computerUseGuardSignalFresh(null, 1_000_000)).toBe(false)
   })
 })

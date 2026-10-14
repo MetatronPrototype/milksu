@@ -101,6 +101,10 @@ import {
   type EngineStallWarning,
 } from '@/lib/agentEngineSignals'
 import {
+  projectComputerUsePermissionGuardSignal,
+  type ComputerUsePermissionGuardSignal,
+} from '@/lib/codingComputerUsePermissionWizard'
+import {
   completedNotifyKey,
   defaultTaskNotifySwitch,
   isAlreadySameProblem,
@@ -1069,6 +1073,8 @@ type ConversationsState = {
   conversationActionError: string
   pendingComposerDraft: PendingComposerDraft | null
   conversationActionIds: Set<string>
+  /** agent 撞锁窗权限守卫的待处理信号（β.191 死循环修复）：ChatPage 消费后置回 null。 */
+  computerUsePermissionGuard: ComputerUsePermissionGuardSignal | null
 }
 
 type ParkedPendingCanvas = {
@@ -1136,6 +1142,7 @@ export function createConversationsRuntime(options?: {
     conversationActionError: '',
     pendingComposerDraft: null,
     conversationActionIds: new Set<string>(),
+    computerUsePermissionGuard: null,
   }, {
     // 第五单：流式爆发期把一帧内的多次状态写入合并成**一次** React 渲染。
     // 注意状态本身仍然同步更新（getState/各 getter 立刻可见，业务逻辑与测试断言不受影响），
@@ -1223,6 +1230,8 @@ export function createConversationsRuntime(options?: {
     set pendingComposerDraft(value) { store.setState({ pendingComposerDraft: value }) },
     get conversationActionIds() { return store.getState().conversationActionIds },
     set conversationActionIds(value) { store.setState({ conversationActionIds: value }) },
+    get computerUsePermissionGuard() { return store.getState().computerUsePermissionGuard },
+    set computerUsePermissionGuard(value) { store.setState({ computerUsePermissionGuard: value }) },
   }
   const parkedPendingByHome: Partial<Record<WorkspaceHome, ParkedPendingCanvas>> = {}
   const heldSubagentSnapshots = new Map<string, SubagentTask[]>()
@@ -4355,6 +4364,21 @@ export function createConversationsRuntime(options?: {
           ))
         }
       }
+      // 权限向导自动触发（β.191 真机死循环修复）：agent 在对话里调 milksu_workspace 的
+      // lock_computer_use_window 撞上权限守卫，失败只落在下面的工具结果消息里——读者
+      // 看不到任何提示。这里把失败投影成全局信号（含守卫原文与对话 id），ChatPage
+      // 消费时自动打开三态向导。放在 mapped 之前：信号属于会话，不依赖它此刻是否在
+      // 会话列表里；不 return——工具结果消息照常落到 transcript。
+      const computerUseGuardSignal = projectComputerUsePermissionGuardSignal({
+        type,
+        toolName,
+        text,
+        error,
+        conversationId: sessionId,
+        previous: s.computerUsePermissionGuard,
+        now: Date.now(),
+      })
+      if (computerUseGuardSignal) s.computerUsePermissionGuard = computerUseGuardSignal
       const mapped = s.conversations.map(conversation => {
         if (conversation.id !== sessionId) return conversation
         const messages = [...conversation.messages]
@@ -4806,6 +4830,10 @@ export function createConversationsRuntime(options?: {
     conversationHasProblem,
     dismissProblemTurn,
     get activeProblemTurn() { return activeProblemTurn() },
+    /** agent 撞锁窗权限守卫的待处理信号（engine-event 的 tool.completed 投影）。 */
+    get computerUsePermissionGuard() { return s.computerUsePermissionGuard },
+    /** 消费信号（ChatPage 开完向导后调用）：置 null ⇒ 重挂载/后续渲染不再翻这条旧账。 */
+    consumeComputerUsePermissionGuard() { s.computerUsePermissionGuard = null },
     get backgroundTasks() { return s.backgroundTasks },
     get backgroundTaskOutcome() { return s.backgroundTaskOutcome },
     get activeAborting() { return activeAborting() },

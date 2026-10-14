@@ -169,7 +169,10 @@ import {
   messageQueuedLabel,
   modelRetryLabel as agentModelRetryLabel,
 } from '@/lib/agentEngineSignals'
-import { isComputerUsePermissionGuardError } from '@/lib/codingComputerUsePermissionWizard'
+import {
+  computerUseGuardSignalFresh,
+  isComputerUsePermissionGuardError,
+} from '@/lib/codingComputerUsePermissionWizard'
 import {
   codingProductAction,
   codingReviewPrompt,
@@ -1931,6 +1934,24 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
       setComputerUsePermissionCompleting(false)
     }
   }
+
+  // 权限向导自动触发（β.191 真机死循环修复）：agent 在对话里调 lock_computer_use_window
+  // 撞上权限守卫，失败只躺在消息流的工具结果文本里——界面上什么都不弹，读者完全不知道
+  // 该干嘛。store 的 computerUsePermissionGuard 信号（useConversations 的 engine-event
+  // 处理器对 tool.completed 的投影）一到就自动打开三态向导，守卫原文进错误行。只做
+  // 「开向导」这一件事：不切面板、不动 activeId——触发它的对话照常保持当前状态。
+  // 幂等：dock 挂载的 ChatPage 不弹（主界面负责，避免双弹）；向导已开着不重弹；信号
+  // 消费即清且只认新鲜信号 ⇒ 重挂载不翻几分钟前的旧账。
+  const computerUseGuardSignal = conversations.computerUsePermissionGuard
+  useEffect(() => {
+    if (!computerUseGuardSignal) return
+    if (dockSurfaceRef.current) return
+    if (computerUsePermissionDialogOpenRef.current) return
+    if (!computerUseGuardSignalFresh(computerUseGuardSignal, Date.now())) return
+    setComputerUsePermissionError(computerUseGuardSignal.notice.slice(0, 800))
+    setComputerUsePermissionDialogOpen(true)
+    conversations.consumeComputerUsePermissionGuard()
+  }, [computerUseGuardSignal, conversations])
 
   async function startComputerUse(targetKey = selectedComputerUseTargetKeyRef.current) {
     setBrowserPanelError('')

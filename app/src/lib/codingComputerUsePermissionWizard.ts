@@ -80,3 +80,63 @@ export function isComputerUsePermissionGuardError(reason: unknown): boolean {
   const text = reason instanceof Error ? reason.message : String(reason ?? '')
   return /辅助功能|屏幕录制|accessibility|screen recording|screen capture/i.test(text)
 }
+
+/** agent 在对话里撞了锁窗权限守卫的全局信号：store 记一份，ChatPage 消费后自动开向导。 */
+export interface ComputerUsePermissionGuardSignal {
+  conversationId: string
+  /** 守卫原文（tool.completed 的 error/text），进向导错误行，说明「为什么弹」。 */
+  notice: string
+  at: number
+}
+
+/**
+ * 同会话反复撞墙的去抖窗口。向导开着时重复撞墙本就不再弹（消费端幂等）；这里管的是
+ * 读者点「稍后处理」收掉向导后、agent 紧接着重试又失败的几秒——不让向导立刻弹回来。
+ */
+export const COMPUTER_USE_GUARD_DEBOUNCE_MS = 30_000
+
+/** 信号保鲜期：只在窗口内消费。ChatPage 重挂载/晚到的重放不翻几分钟前的旧账。 */
+export const COMPUTER_USE_GUARD_FRESH_MS = 60_000
+
+/**
+ * β.191 真机事故的形状：agent 调 milksu_workspace 的 lock_computer_use_window 被权限
+ * 守卫拦下（manager.Start 前置校验），失败只落在消息流的工具结果文本里——不弹向导、
+ * 不弹原生授权框，读者完全不知道该干嘛。事件流证据：sidecar 工具 execute 抛错 ⇒
+ * tool_call_end{isError, content=守卫原文} ⇒ Go normalizeBridgeEvent ⇒ 渲染器
+ * engine-event 的 tool.completed（error 与 text 同为守卫原文；事件不带 action 名，
+ * milksu_workspace 里能给出该文案的只有 lock_computer_use_window）。
+ *
+ * 这里把这次失败投影成「该对话需要权限向导」的信号；不匹配（别的工具、别的失败、
+ * 事件没到 completed）返回 null。同会话去抖窗口内返回 null（previous 没被消费也压住，
+ * 因为消费端只认新鲜信号，压住只是少一次无效果的写入）。
+ */
+export function projectComputerUsePermissionGuardSignal(input: {
+  type: string
+  toolName?: string
+  text?: string
+  error?: string
+  conversationId: string
+  previous: ComputerUsePermissionGuardSignal | null
+  now: number
+  debounceMs?: number
+}): ComputerUsePermissionGuardSignal | null {
+  if (input.type !== 'tool.completed') return null
+  if (input.toolName !== 'milksu_workspace') return null
+  const notice = String(input.error ?? '').trim() || String(input.text ?? '').trim()
+  if (!notice || !isComputerUsePermissionGuardError(notice)) return null
+  const debounceMs = input.debounceMs ?? COMPUTER_USE_GUARD_DEBOUNCE_MS
+  if (
+    input.previous?.conversationId === input.conversationId
+    && input.now - input.previous.at < debounceMs
+  ) return null
+  return { conversationId: input.conversationId, notice, at: input.now }
+}
+
+/** 信号是否还新鲜（消费侧用）：过期 ⇒ 不弹，等 agent 下一次真撞墙再来。 */
+export function computerUseGuardSignalFresh(
+  signal: ComputerUsePermissionGuardSignal | null,
+  now: number,
+  freshMs = COMPUTER_USE_GUARD_FRESH_MS,
+): boolean {
+  return signal != null && now - signal.at <= freshMs
+}
