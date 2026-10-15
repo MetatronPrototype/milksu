@@ -171,6 +171,56 @@ describe('useConversations 引擎韧性事件', () => {
     expect(conversations.activeModelRetry).toBeNull()
   })
 
+  // β.194 真机事故回归（横幅 2/5 后消失、整轮不回）：死端点退避静默中段，一条**无害回执事件**
+  // （runtime.background_task_controlled——refresh_coding_background_tasks 的回执，不走会话
+  // 事件流，所以引擎侧毫秒级探针看不到它）落到事件处理尾部的 reconcileParentRun；本地启发式
+  // （STALE_PARENT_RUN_MS=2s）把「引擎管着的安静」当「卡死的运行」⇒ finishRun 清 running + 删
+  // 重试横幅条目 ⇒ activeModelRetry 的 running 门永假，之后 model.retry 3/5…5/5 到了也回不来。
+  it('退避静默中回执事件不清 running/横幅：重试窗口内本地清扫不抢跑，终局照常收', async () => {
+    const conversations = await runtime()
+    emit('conversation-1', {
+      type: 'model.retry',
+      phase: 'start',
+      attempt: 2,
+      maxRetries: 5,
+      notice: '网络波动，重试中 2/5',
+      noticeEnglish: 'Network trouble, retrying 2/5',
+      errorMessage: 'fetch failed',
+      retryAt: Date.now() + 3_000,
+    })
+    expect(conversations.activeRunning).toBe(true)
+    expect(conversations.activeModelRetry).toMatchObject({ attempt: 2, maxRetries: 5 })
+
+    // 真机形状（CDP v7/v8 毫秒级证据）：回合开始 2.28s、attempt-2 静默中段回执到达。
+    await vi.advanceTimersByTimeAsync(2_300)
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r1', tasks: [] })
+    expect(conversations.activeRunning).toBe(true)
+    expect(conversations.activeModelRetry).toMatchObject({ attempt: 2, maxRetries: 5 })
+
+    // 12s 空闲对账（IDLE_RECONCILE_MS 同族触发）再来一次：窗口仍在 ⇒ 还是不清。
+    await vi.advanceTimersByTimeAsync(12_000)
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r2', tasks: [] })
+    expect(conversations.activeRunning).toBe(true)
+    expect(conversations.activeModelRetry).toMatchObject({ attempt: 2, maxRetries: 5 })
+
+    // 终局（最终错误）照常收：running 清掉、条目真删（新回合不诈尸）。
+    emit('conversation-1', { type: 'engine.error', error: 'all retries failed' })
+    expect(conversations.activeRunning).toBe(false)
+    expect(conversations.activeModelRetry).toBeNull()
+    emit('conversation-1', { type: 'assistant.started' })
+    expect(conversations.activeModelRetry).toBeNull()
+  })
+
+  // 同一条清扫路径的正当职责不能被误伤：没有重试窗口时，卡死的运行标记照样被回收
+  // （回合开始 ≥2s、无消息残留、无在跑工作项 ⇒ 本地清扫清 running）。
+  it('无重试窗口时本地清扫照常：2 秒无残留的运行标记仍被回收', async () => {
+    const conversations = await runtime()
+    expect(conversations.activeRunning).toBe(true)
+    await vi.advanceTimersByTimeAsync(2_300)
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r1', tasks: [] })
+    expect(conversations.activeRunning).toBe(false)
+  })
+
   it('畸形 phase（既非 start 也非 end）⇒ 按旧口径收横幅，不猜语义', async () => {
     const conversations = await runtime()
     emit('conversation-1', {

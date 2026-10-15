@@ -2300,6 +2300,14 @@ export function createConversationsRuntime(options?: {
   function reconcileParentRun(id: string, extras?: { workingJustEmptied?: boolean }) {
     const conversation = s.conversations.find(item => item.id === id)
     if (!conversation) return
+    // 引擎管理中的重试窗口（modelRetryByConversation 有条目 = 横幅在场）：退避静默里没有
+    // 运行中的消息残留是**引擎说了算的安静**，不是卡死的运行标记。running 的终局只归
+    // 引擎事件（assistant.settled / engine.error / engine.stopped，各自会删重试条目）与
+    // 读者动作（abort / 丢弃 / 回退）；本地 2 秒启发式清扫不得抢跑收横幅。
+    // β.194 真机事故：死端点退避中段一条无害回执事件（runtime.background_task_controlled）
+    // 落到事件处理尾部的本函数，STALE_PARENT_RUN_MS=2s 判「停滞」清 running+删横幅条目 ⇒
+    // 横幅 2/5 后消失且整轮不回（running 门永假）。
+    if (modelRetryByConversation.has(id)) return
     const kernel = normalizeAgentKernel(conversation.kernel)
     const started = s.turnStatusById.get(id)?.runStartedAt
     const liveWorkingCount = liveWorkingCountFor(id)
