@@ -10,7 +10,6 @@ import type {
   CodingApprovalPolicy,
   CodingExecutionMode,
   Conversation,
-  CTFChatAction,
 } from '@/types'
 
 const DOCK_STYLES = `
@@ -145,11 +144,9 @@ const ConversationDock = forwardRef<ConversationDockHandle, {
   compactedAt?: number
   compactionError?: string
   turnStatus?: SessionTurnSnapshot
-  ctfSession?: boolean
   vulnerabilitySession?: boolean
-  ctfMode?: 'coach' | 'copilot' | 'delegate'
-  ctfRole?: 'solver' | 'tool-builder' | 'strategist'
   kernel?: 'pi' | 'dsh'
+  acpAgentId?: string
   modelMode?: 'auto' | 'manual'
   modelProvider?: string
   modelId?: string
@@ -166,15 +163,15 @@ const ConversationDock = forwardRef<ConversationDockHandle, {
   onClose?: () => void
   onSelect?: (id: string) => void
   onConsumePendingDraft?: () => void
-  onCtfAction?: (action: CTFChatAction) => void
   onCompactContext?: () => void
   onRewindContext?: () => void
   onHandoffContext?: () => void
   onControlGoal?: (action: 'pause' | 'resume' | 'clear') => void
   onRespondApproval?: (requestId: string, approved: boolean, scope?: 'once' | 'conversation', choice?: string) => void
   onChangeModel?: (mode: 'auto' | 'manual', provider?: string, model?: string) => void
-  onChangeKernel?: (kernel: 'pi' | 'dsh') => void
-  onMigrateKernel?: (kernel: 'pi' | 'dsh') => void
+  onChangeKernel?: (kernel: 'pi' | 'dsh', agentId?: string) => void
+  onMigrateKernel?: (kernel: 'pi' | 'dsh', agentId?: string) => void
+  onCreateAgent?: (agent: import('@/lib/acpAgent').NamedAcpAgent) => void
   onChangeModelSource?: (preference: 'auto' | 'account' | 'personal') => void
   onChangeCodingPolicy?: (executionMode: CodingExecutionMode, approvalPolicy: CodingApprovalPolicy) => void
   onChangeMcpServers?: (servers: string[], configDigest: string) => void
@@ -202,11 +199,9 @@ const ConversationDock = forwardRef<ConversationDockHandle, {
   compactedAt,
   compactionError,
   turnStatus,
-  ctfSession = false,
   vulnerabilitySession = false,
-  ctfMode,
-  ctfRole,
   kernel,
+  acpAgentId,
   modelMode,
   modelProvider,
   modelId,
@@ -222,7 +217,6 @@ const ConversationDock = forwardRef<ConversationDockHandle, {
   onExpand,
   onClose,
   onConsumePendingDraft,
-  onCtfAction,
   onCompactContext,
   onRewindContext,
   onHandoffContext,
@@ -231,6 +225,7 @@ const ConversationDock = forwardRef<ConversationDockHandle, {
   onChangeModel,
   onChangeKernel,
   onMigrateKernel,
+  onCreateAgent,
   onChangeModelSource,
   onChangeCodingPolicy,
   onChangeMcpServers,
@@ -260,7 +255,6 @@ const ConversationDock = forwardRef<ConversationDockHandle, {
   topRef.current = top
   void conversations
 
-  const dockCtfSession = ctfSession || Boolean(conversation?.ctfJobId)
   const dockVulnerabilitySession = vulnerabilitySession || conversation?.domainTaskContext?.kind === 'cve'
 
   function maxWidth() {
@@ -470,11 +464,9 @@ const ConversationDock = forwardRef<ConversationDockHandle, {
               compactedAt={compactedAt}
               compactionError={compactionError}
               turnStatus={turnStatus}
-              ctfSession={dockCtfSession}
               vulnerabilitySession={dockVulnerabilitySession}
-              ctfMode={ctfMode}
-              ctfRole={ctfRole}
               kernel={kernel}
+              acpAgentId={acpAgentId}
               modelMode={modelMode}
               modelProvider={modelProvider}
               modelId={modelId}
@@ -488,7 +480,6 @@ const ConversationDock = forwardRef<ConversationDockHandle, {
               onSend={onSend}
               onAbort={onAbort}
               onConsumePendingDraft={onConsumePendingDraft}
-              onCtfAction={onCtfAction}
               onCompactContext={onCompactContext}
               onRewindContext={onRewindContext}
               onHandoffContext={onHandoffContext}
@@ -497,6 +488,7 @@ const ConversationDock = forwardRef<ConversationDockHandle, {
               onChangeModel={onChangeModel}
               onChangeKernel={onChangeKernel}
               onMigrateKernel={onMigrateKernel}
+              onCreateAgent={onCreateAgent}
               onChangeModelSource={onChangeModelSource}
               onChangeCodingPolicy={onChangeCodingPolicy}
               onChangeMcpServers={onChangeMcpServers}

@@ -1,6 +1,6 @@
 # 当前开发目标
 
-> Current。最后收口：2026-09-25。
+> Current。最后收口：2026-10-15。
 >
 > 只回答现在处于什么阶段、下一版要什么。实现以代码、测试和安装包回执为准。
 > 可下载版本只写在 README。产品 UI 只写在 `AGENTS.md`。
@@ -11,16 +11,32 @@
 2. 新能力写当前模型，不为已放弃设计加迁移层。上游有的能力不另造 harness。
 3. Provider Key 不进模型上下文、日志、文档或普通文件。只推授权远端。
 4. 自动审批不绕过付费、外部账户、Scope 扩大、不可逆外部效果和危险大目录删除。
-5. CTF、CVE、实验室、Coding 同级。领域事实和 Judge 由 MilkSU 持有。
+5. CVE、实验室、Coding 同级。CTF、NSSCTF / CTFshow、NYU 评测台已从产品面移除，不要加回。
 6. 未打包或未经真机验收的，不得写成已发行。发版流程见 [三端打包](release-process.md)。
 
 ## 阶段
 
-内测迭代。不再按 M3/M4 排期。M3 product-loop 已在 `108e0e3`（2026-08-05）合并，只供追溯。
+内测迭代。当前工作是按现行产品形态重写运行时：先从树上砍掉 CTF / NYU，再按纵切把 Go Application Service 换成 TypeScript Runtime。M3 product-loop 已在 `108e0e3`（2026-08-05）合并，只供追溯。
 
-出厂默认官方 DeepSeek Flash、运行时 Pi。新对话可选 Pi 或 DeepSeek Harness；设置里的默认运行时只改新对话。工作树 Pi 钉 `1.1.0`，DSH 钉 `0.2.0-rc.2`。DSH 是内核，不是 UI。
+出厂默认官方 DeepSeek Flash、运行时 Pi。新对话默认 Pi；其余 Agent 由用户提供命令，经 ACP 接入（含原 DSH）。工作树 Pi 钉 `1.1.0`。DSH 闭包将从安装包默认集里拿掉。
 
 产品回归：`npm run test:product-loop`。见 [产品回归循环](product-regression-loop.md)。
+
+## 重写纵切（进行中）
+
+已定调，见 [当前系统](../architecture/current-system.md) 和 `AGENTS.md`「当前产品边界」。
+
+| 优先级 | 事项 | 完成标准 |
+| --- | --- | --- |
+| 本 PR | 砍 CTF / NYU | 产品面无 CTF 页、无 NSSCTF / CTFshow、无 Judge 题库、无 `nyu-ctf-bench-*`、无 Settings「评测」、无六赛道回归。CVE / 实验室留下。旧会话 `workspaceHome: ctf` 读成 Coding。遗留 `ctf_` 会话 id 仍能打开。 |
+| 本 PR | TraceId | 一次发送一个 `trc_` id，经 `send_message`、engine 命令、Pi / ACP sidecar、看板娘 sidecar、研究 Run 表和 worker 环境。 |
+| 本 PR | Agent | 设置 → 运行时和输入栏运行时菜单都可以添加多个命名 Agent（Codex / Claude Code / ACP），各自填命令 / 参数 / 环境变量，经 ACP 接入。没有命令就不能在新对话里选这个 Agent。同一工作区两个 Agent 不共用 sidecar，IPC 路径按工作区加 Agent id 分开。DSH 的 `--patch` / `--profile acp` 只给 DeepSeek Harness。handoff 带 `acpAgentId`。同一内核且同一 Agent id 走 sidecar fork；换内核或换命名 Agent 则 compact 新会话。切回 Pi 时清掉 Agent id。落盘只写 `acp_agents`。协议没有的 Ask / durable 研究 / `milksu_workspace` 在权限面板灰掉。默认 sidecar 闭包不再复制 `@deepseek-ai/dsh`。 |
+| 本 PR | TypeScript Runtime | Desktop 拉 `runtime/dist/main.cjs`。自家 renderer RPC 已在 Runtime。`SendMessage` 带记忆、thinking、customProvider、隔离浏览器、Computer Use 描述符、securityTools、workerModel 和 codingCollaboration lookup。Pi / Agent sidecar 按内核 + 工作区各一条，cwd 即工作区；删除会话发 `destroy_session`，工作区空闲后停进程。Electron 产品二进制 spawn 补 `ELECTRON_RUN_AS_NODE=1`。DSH TokenFlux 路由由 Runtime 合成 `MILKSU_DSH_PI_AI_ROUTES`，带 `compat.supportsDeveloperRole: false`。Browser Use 扩展从仓库根 / `MILKSU_RESOURCES` 查找。`SaveSettingsCmd` 广播 `settings-changed`。生产二进制和测试没有 Go：钥匙串 / 窗口列表走 `desktop/native` N-API，PTY 走 `node-pty`，Lua 走 fengari，插件 MCP 走 `@modelcontextprotocol/sdk`，Linux Portal 走 `dbus-next`，Computer Use 权限走 Electron `hostCall`。三端打包经 `scripts/lib/desktop-native.mjs` 编 N-API、重建 `node-pty`；Windows 用 node-gyp 编 `windows-windows.node`。 |
+| 贯穿 | 配置与会话 | 一份 `settings.json` + secret store（含 `acp_agents`）；一份会话投影。环境变量只认 `MILKSU_HOME`。 Darwin 钥匙串 service 名按 home 隔离，测试不得写入产品钥匙串。 |
+
+React 壳不重写，碰到再收。已有能力除点名要砍的以外都留下。
+
+本工作树 2026-10-14 跑过 `npm run test:product-loop -- --gui --suite all`。136 项：105 PASS，28 FAIL，3 SKIP。Pi Coding 全过。Agent 写出文件、跑命令、排队、停止过。看板娘 sidecar 起来了。设置十六项和隔离浏览器壳过。缺 GitHub 登录凭据的项失败。TokenFlux 余额用尽后，后续 LLM 项回 403。
 
 ## 26.927.3 发行回执（tag v26.927.3 → `9e2825f3`，2026-09-27）
 
@@ -101,16 +117,16 @@ tag 与分发 source `a654c4d5` 之间只差测试与文档提交，无未打进
 
 ## 完成线
 
-1. 改对话、引擎、DSH 或隔离浏览器后跑产品回归。失败先修。
+1. 改对话、引擎、ACP 或隔离浏览器后跑产品回归。失败先修。
 2. 用户要求发版时：先跑 `npm run test:product-loop -- --gui --suite all`。看 FAIL 项，有必要就查、修，再重跑失败套件。这些失败项通过之后才对照 models.dev（[发版流程](release-process.md) §1.5）→ 升版本号并推送 → 干净的 `main` 跑 `release:verify` → 新的三端回执。不挪已发出的 tag。Release 页创建成功后，按发版流程 §7 回写 README（版本、鸣谢、开源组件、截图和开篇介绍）。
 
 | 优先级 | 事项 | 完成标准 |
 | --- | --- | --- |
-| P0 | 产品回归 | `npm run test:product-loop`。Settings「评测」不替代。 |
-| P0 | Pi 真机 | 跨目录读写、CTF/CVE 交接、长输出续跑、重启恢复。 |
+| P0 | 产品回归 | `npm run test:product-loop`。 |
+| P0 | Pi 真机 | 跨目录读写、CVE 交接、长输出续跑、重启恢复。 |
 | P1 | 下一版三端回执 | 新版本号、同一 source commit、三端产物、SHA-256。安装包见 README。 |
 | P1 | OTA | 侧栏下载，用户点安装并重启。有任务先确认退出。 |
 | 未接线 | 远程控制 | 手机连本机，不是云 Agent。见 [远程控制](remote-control.md)，[#131](https://github.com/MilkSU-Official/milksu/issues/131)。 |
-| 未接线 | CTF 比赛模式 / 实验室红队面 | 尚未设计准入。 |
+| 未接线 | 实验室红队面 | 尚未设计准入。 |
 
 只在新复现或用户明确要求时重开：已撤单会话图谱、Wails/CEF、关键词扫描用户句子做路由、自建计费、把 dirty HEAD 写成已发版、M3/M4 台账。

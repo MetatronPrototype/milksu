@@ -7,7 +7,6 @@ import type {
   CodingExecutionMode,
   CodingProductActionRequest,
   Conversation,
-  CTFChatAction,
 } from '@/types'
 
 export interface CodingAgentSurfaceBind {
@@ -23,11 +22,9 @@ export interface CodingAgentSurfaceBind {
   compactedAt?: number
   compactionError?: string
   turnStatus?: SessionTurnSnapshot
-  ctfSession: boolean
   vulnerabilitySession: boolean
-  ctfMode?: Conversation['ctfMode']
-  ctfRole?: Conversation['ctfRole']
   kernel?: Conversation['kernel']
+  acpAgentId?: string
   modelMode?: Conversation['modelMode']
   modelProvider?: string
   modelId?: string
@@ -51,15 +48,15 @@ export type CodingAgentSurfaceEmit = {
   send: CodingAgentSendArgs
   abort: []
   consumePendingDraft: []
-  ctfAction: [action: CTFChatAction]
   compactContext: []
   rewindContext: []
   handoffContext: []
   controlGoal: [action: 'pause' | 'resume' | 'clear']
   respondApproval: [requestId: string, approved: boolean, scope?: 'once' | 'conversation', choice?: string]
   changeModel: [mode: 'auto' | 'manual', provider?: string, model?: string]
-  changeKernel: [kernel: 'pi' | 'dsh']
-  migrateKernel: [kernel: 'pi' | 'dsh']
+  changeKernel: [kernel: 'pi' | 'dsh', agentId?: string]
+  migrateKernel: [kernel: 'pi' | 'dsh', agentId?: string]
+  createAgent: [agent: import('@/lib/acpAgent').NamedAcpAgent]
   changeModelSource: [preference: 'auto' | 'account' | 'personal']
   changeCodingPolicy: [executionMode: CodingExecutionMode, approvalPolicy: CodingApprovalPolicy]
   changeMcpServers: [servers: string[], configDigest: string]

@@ -91,6 +91,7 @@ import type {
 } from '@/types'
 import type { CodingRecentProject } from '@/codingEnvironmentTypes'
 import type { ContextUsagePresentation } from '@/lib/sessionTurnStatus'
+import { acpAgentUnavailableReason } from '@/lib/acpAgent'
 import type { BusySendPolicy } from '@/lib/agentKernel'
 import {
   dshPlanCopy,
@@ -596,7 +597,6 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   aborting: boolean
   compacting?: boolean
   runPhase?: ComposerRunPhase
-  ctfSession: boolean
   goalMode: boolean
   goal?: CodingGoalState
   executionMode: CodingExecutionMode
@@ -608,6 +608,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   thinkingLevels?: ModelThinkingLevel[]
   thinkingLevel?: ModelThinkingLevel
   kernel?: 'pi' | 'dsh'
+  acpAgentId?: string
   kernelLocked?: boolean
   multitask?: boolean
   planModeActive?: boolean
@@ -653,8 +654,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   onChangeApprovalPolicy?: (value: string) => void
   onChangeModel?: (value: string) => void
   onChangeThinkingLevel?: (level: ModelThinkingLevel) => void
-  onChangeKernel?: (value: 'pi' | 'dsh') => void
-  onMigrateKernel?: (value: 'pi' | 'dsh') => void
+  onChangeKernel?: (value: 'pi' | 'dsh', agentId?: string) => void
+  onMigrateKernel?: (value: 'pi' | 'dsh', agentId?: string) => void
+  onCreateAgent?: (agent: import('@/lib/acpAgent').NamedAcpAgent) => void
   onShowPermissions?: () => void
   onConsumeGoal?: () => void
   onStartGoal?: () => void
@@ -672,7 +674,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
 }>(function ChatComposer(props, ref) {
   const t = useT()
   const {
-    running, aborting, compacting, runPhase, ctfSession, goalMode, goal, executionMode,
+    running, aborting, compacting, runPhase, goalMode, goal, executionMode,
     approvalPolicy, approvalLabel, modelKey, automaticModelLabel, compactModelLabel,
     thinkingLevels, thinkingLevel, kernel, kernelLocked, multitask, planModeActive, dshCommands,
     dshCommandsError, busySend, contextUsage, sessionSizeWarning, workspaceReady,
@@ -723,7 +725,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
   const [slashQuery, setSlashQuery] = useState<string | null>(null)
   const [slashMenuMaxHeight, setSlashMenuMaxHeight] = useState(COMPOSER_ADD_MENU_HEIGHT_CAP)
   const slashQueryRange = useRef<Range | null>(null)
-  const [pendingMigrateKernel, setPendingMigrateKernel] = useState<'pi' | 'dsh' | null>(null)
+  const [pendingMigrateKernel, setPendingMigrateKernel] = useState<{ kernel: 'pi' | 'dsh'; agentId?: string } | null>(null)
   const [scopeToken, setScopeToken] = useState<ComposerScopeToken | null>(null)
   const pendingScopeSubmit = useRef<ComposerScopeToken | null>(null)
   const commandPanelSlashHandlerRef = useRef<(event: Event) => void>(() => {})
@@ -986,6 +988,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     if (id === 'new' || id === 'plan' || id === 'model' || id === 'permissions') return composerBusy
     if (['understand', 'test', 'review', 'fix', 'summary'].includes(id)) return composerBusy || !workspaceReady
     if (['diff', 'mcp'].includes(id)) return !workspaceReady
+    if (id === 'browser' && kernel === 'dsh') return true
     return false
   }
 
@@ -997,7 +1000,9 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
         ? t('当前已有持续目标', 'A goal is already in progress')
         : command.id === 'rewind' && kernel === 'dsh'
           ? t('此运行时暂不支持回退', 'This runtime cannot rewind')
-          : command.description,
+          : command.id === 'browser' && kernel === 'dsh'
+            ? acpAgentUnavailableReason('milksu-workspace', t)
+            : command.description,
       disabled: slashCommandDisabled(command.id),
     })).filter(command => (
       !slashQuery
@@ -1065,12 +1070,10 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     else props.onConsumeGoal?.()
   }
 
-  const workspaceFixed = Boolean(workspaceLocked || ctfSession)
+  const workspaceFixed = Boolean(workspaceLocked)
   const showWorkspaceChip = imageHome
     ? false
-    : ctfSession
-      ? Boolean(workspacePath?.trim() || workspaceName?.trim())
-      : Boolean(workspaceName?.trim() || !workspaceLocked)
+    : Boolean(workspaceName?.trim() || !workspaceLocked)
   const workspaceChipLabel = workspaceName?.trim() || t('选择项目', 'Choose a project')
   const hasSelectedWorkspace = Boolean(workspacePath?.trim())
   const workspaceChipTitle = workspacePath || workspaceChipLabel
@@ -1697,18 +1700,20 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
     void focusMessageInput()
   }
 
-  function requestKernelChange(value: 'pi' | 'dsh') {
-    if (kernelLocked && value !== (kernel ?? 'pi')) {
-      setPendingMigrateKernel(value)
+  function requestKernelChange(value: 'pi' | 'dsh', agentId?: string) {
+    const currentId = kernel === 'dsh' ? (props.acpAgentId ?? '') : ''
+    const nextId = value === 'dsh' ? (agentId ?? '') : ''
+    if (kernelLocked && (value !== (kernel ?? 'pi') || nextId !== currentId)) {
+      setPendingMigrateKernel({ kernel: value, agentId: nextId || undefined })
       return
     }
-    props.onChangeKernel?.(value)
+    props.onChangeKernel?.(value, nextId || undefined)
   }
 
   function confirmKernelMigrate() {
     const next = pendingMigrateKernel
     setPendingMigrateKernel(null)
-    if (next) props.onMigrateKernel?.(next)
+    if (next) props.onMigrateKernel?.(next.kernel, next.agentId)
   }
 
   function togglePlanningMode() {
@@ -2099,9 +2104,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                 ? t('描述要画的图', 'Describe the image')
                 : goalMode
                   ? t('写下一个可持续目标，MilkSU 会持续推进并保留恢复点', 'Write a lasting goal. MilkSU will keep working toward it and keep recovery points.')
-                  : ctfSession
-                    ? t('告诉 Agent 你的观察、假设或下一步想法', 'Tell the agent your observations, hypotheses, or next idea')
-                    : t('描述你想让 MilkSU 完成的任务', 'Describe the task you want MilkSU to complete')}
+                  : t('描述你想让 MilkSU 完成的任务', 'Describe the task you want MilkSU to complete')}
               onCompositionStart={() => { setComposing(true); composingRef.current = true }}
               onCompositionEnd={handleCompositionEnd}
               onBeforeInput={rememberComposerSnapshot}
@@ -2115,7 +2118,6 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
             />
             <CodingComposerControls
                 running={parentTurnActive}
-                ctfSession={ctfSession}
                 approvalPolicy={approvalPolicy}
                 approvalLabel={approvalLabel}
                 modelKey={modelKey}
@@ -2124,11 +2126,13 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                 thinkingLevels={thinkingLevels}
                 thinkingLevel={thinkingLevel}
                 kernel={kernel ?? 'pi'}
+                acpAgentId={props.acpAgentId}
                 contextUsage={contextUsage}
                 onChangeApprovalPolicy={value => props.onChangeApprovalPolicy?.(value)}
                 onChangeModel={value => props.onChangeModel?.(value)}
                 onChangeThinkingLevel={level => props.onChangeThinkingLevel?.(level)}
                 onChangeKernel={requestKernelChange}
+                onCreateAgent={props.onCreateAgent}
                 onShowPermissions={() => props.onShowPermissions?.()}
                 imageHome={imageHome}
                 imageModelKey={imageModelKey}
@@ -2245,9 +2249,20 @@ const ChatComposer = forwardRef<ChatComposerHandle, {
                       {showAddSection && (showBrowseSection || showSkillSection || showMcpSection) ? <DropdownMenuSeparator /> : null}
                       {showBrowseSection ? <DropdownMenuLabel className="px-3 pb-1.5 pt-2 text-caption">{t('浏览与控制', 'Browse and control')}</DropdownMenuLabel> : null}
                       {showBrowserAdd ? (
-                      <DropdownMenuItem className="composer-add-option" disabled={!workspaceReady} onSelect={() => runComposerShortcut('browser')}>
+                      <DropdownMenuItem
+                        className="composer-add-option"
+                        disabled={!workspaceReady || kernel === 'dsh'}
+                        onSelect={() => runComposerShortcut('browser')}
+                      >
                         <Monitor className="size-4 shrink-0" />
-                        <span className="min-w-0 flex-1"><span className="block text-label font-medium">{browserAddLabel}</span></span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-label font-medium">{browserAddLabel}</span>
+                          {kernel === 'dsh' ? (
+                            <span className="block text-caption text-muted-foreground">
+                              {acpAgentUnavailableReason('milksu-workspace', t)}
+                            </span>
+                          ) : null}
+                        </span>
                       </DropdownMenuItem>
                       ) : null}
                       {showBrowserUseAdd ? (

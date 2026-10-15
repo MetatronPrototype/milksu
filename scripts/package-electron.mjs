@@ -19,6 +19,14 @@ import { desktopAccountConfigFromEnvironment } from './lib/desktop-account-confi
 import { inspectPackagedApp } from './lib/desktop-package-inspect.mjs'
 import { ensureOwnerWritable } from './lib/bundle-owner-writable.mjs'
 import { generateBetaAppIconFiles } from './generate-beta-appicon.mjs'
+import {
+  formatMissingDesktopDevArtifacts,
+  missingDesktopDevArtifacts,
+} from './lib/desktop-dev-artifacts.mjs'
+import {
+  compileNativeAddons as compileDesktopNativeAddons,
+  nativeAddonResources as desktopNativeAddonResources,
+} from './lib/desktop-native.mjs'
 
 const execFileAsync = promisify(execFile)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -78,38 +86,19 @@ async function ensureBetaIcon() {
   }
 }
 
+async function compileNativeAddons() {
+  await compileDesktopNativeAddons(root)
+}
+
+function nativeAddonResources() {
+  return desktopNativeAddonResources(root)
+}
+
 async function buildRuntime() {
+  await run(managedNode, [join(root, 'scripts', 'build-runtime.mjs')])
   await run(managedNode, [join(root, 'scripts', 'build-plugins.mjs')])
   await run('npm', ['--prefix', 'app', 'run', 'build'])
-  await mkdir(join(root, 'build', 'desktop'), { recursive: true })
-  if (process.platform === 'darwin') {
-    const nativeModule = join(root, 'build', 'desktop', 'macos-screen-permission.node')
-    await run('/usr/bin/clang', [
-      '-shared',
-      '-undefined', 'dynamic_lookup',
-      '-fobjc-arc',
-      '-fblocks',
-      '-I', join(dirname(managedNode), '..', 'include', 'node'),
-      '-framework', 'CoreGraphics',
-      '-framework', 'Foundation',
-      '-weak_framework', 'ScreenCaptureKit',
-      '-o', nativeModule,
-      join(root, 'desktop', 'native', 'macos-screen-permission.m'),
-    ])
-  }
-  const backendName = process.platform === 'win32' ? 'milksu-backend.exe' : 'milksu-backend'
-  const backend = join(root, 'build', 'desktop', backendName)
-  // Provenance is sealed as extraResources/build-tracking.json before codesign.
-  // Do not embed tracking via ldflags. Strip debug symbols (-s -w) so the local
-  // darwin linker does not require dsymutil under constrained agent sandboxes.
-  await run('go', [
-    'build',
-    '-trimpath',
-    '-ldflags=-s -w',
-    '-o', backend,
-    './cmd/milksu-backend',
-  ])
-  await chmod(backend, 0o755)
+  await compileNativeAddons()
 }
 
 async function writeBuilderConfig(trackingPath) {
@@ -125,16 +114,40 @@ async function writeBuilderConfig(trackingPath) {
   if (!files.includes('linux-update-apply.cjs')) files.push('linux-update-apply.cjs')
   if (!files.includes('update-artifacts.cjs')) files.push('update-artifacts.cjs')
   const extraResources = [
-    ...(desktopPackage.build?.extraResources || []),
-    {
-      from: join(root, 'build', 'desktop', 'macos-screen-permission.node'),
-      to: 'macos-screen-permission.node',
-    },
-    {
-      from: trackingPath,
-      to: BUILD_TRACKING_RESOURCE,
-    },
+    ...(desktopPackage.build?.extraResources || []).filter((item) => {
+      const to = String(item?.to ?? '')
+      return to !== 'milksu-backend' && to !== 'milksu-backend.exe'
+    }),
+    ...nativeAddonResources(),
   ]
+  if (!extraResources.some((item) => item?.to === 'runtime/main.cjs')) {
+    extraResources.push({
+      from: join(root, 'runtime', 'dist', 'main.cjs'),
+      to: 'runtime/main.cjs',
+    })
+  }
+  if (!extraResources.some((item) => item?.to === 'runtime/plugin-mcp.cjs')) {
+    extraResources.push({
+      from: join(root, 'runtime', 'dist', 'plugin-mcp.cjs'),
+      to: 'runtime/plugin-mcp.cjs',
+    })
+  }
+  if (!extraResources.some((item) => item?.to === 'envbroker/packages')) {
+    extraResources.push({
+      from: join(root, 'runtime', 'src', 'envbroker', 'packages'),
+      to: 'envbroker/packages',
+    })
+  }
+  if (!extraResources.some((item) => item?.to === 'plugins/official')) {
+    extraResources.push({
+      from: join(root, 'plugins', 'official'),
+      to: 'plugins/official',
+    })
+  }
+  extraResources.push({
+    from: trackingPath,
+    to: BUILD_TRACKING_RESOURCE,
+  })
   const accountConfig = desktopAccountConfigFromEnvironment(process.env)
   if (accountConfig) {
     const accountConfigPath = join(root, 'build', 'desktop', `account-config.${channelConfig.channel}.json`)
@@ -299,34 +312,9 @@ async function buildApp() {
     )
   }
 
-  // TCC probes run inside milksu-backend. Sign it with the channel bundle id so
-  // AX/Screen Recording identity matches the shell (not a.out).
+  // TCC probes run in the Electron main process. Native N-API addons ride
+  // extraResources and are signed with the rest of the bundle.
   await ensureOwnerWritable(resolvedSource)
-
-  const backendInApp = join(resolvedSource, 'Contents', 'Resources', 'milksu-backend')
-  if (!(await exists(backendInApp))) {
-    throw new Error(`packaged milksu-backend missing: ${backendInApp}`)
-  }
-  await execFileAsync('/usr/bin/codesign', [
-    '--force',
-    ...(codesignIdentity === '-' ? [] : ['--options', 'runtime', '--timestamp']),
-    '--sign', codesignIdentity,
-    '--identifier', channelConfig.appId,
-    backendInApp,
-  ])
-  // Re-seal the app bundle after mutating an embedded binary.
-  await execFileAsync('/usr/bin/codesign', [
-    '--force',
-    ...(codesignIdentity === '-'
-      ? ['--deep']
-      : [
-          '--options', 'runtime',
-          '--timestamp',
-          '--entitlements', join(root, 'desktop', 'build', 'entitlements.mac.plist'),
-        ]),
-    '--sign', codesignIdentity,
-    resolvedSource,
-  ])
 
   const output = packagedAppPath(root, channelConfig.channel)
   await mkdir(dirname(output), { recursive: true })
@@ -353,6 +341,13 @@ async function buildApp() {
 
 async function startDevelopment() {
   if (!process.argv.includes('--no-build')) await buildRuntime()
+  else {
+    const missing = await missingDesktopDevArtifacts(root)
+    if (missing.length) {
+      process.stderr.write(`${formatMissingDesktopDevArtifacts(missing)}\n`)
+      process.exit(1)
+    }
+  }
   const accountApiUrl = desktopAccountConfigFromEnvironment(process.env).apiUrl
   await run('npm', ['--prefix', 'desktop', 'start'], {
     env: {
@@ -413,6 +408,8 @@ if (action === 'start') {
   await startBetaPackagedOnly()
 } else if (action === 'build') {
   await buildApp()
+} else if (action === 'build-dev') {
+  await buildRuntime()
 } else if (action === 'inspect') {
   const appPath = process.argv.find(v => v.startsWith('--app='))?.slice('--app='.length)
     || packagedAppPath(root, channel)

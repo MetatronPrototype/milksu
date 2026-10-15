@@ -16,8 +16,7 @@ type RendererDiagnosticAction =
   | 'dashboard-load'
   | 'rpc'
 
-// 这份白名单与 internal/appdata/diagnostics.go 里的 rendererDiagnosticActions /
-// rendererDiagnosticKeys / validRendererDiagnosticValue 是两份手写拷贝，改动时必须两边同步。
+// 这份白名单与 runtime/src/appdata/diagnostics.ts 里的 renderer 动作名是两份手写拷贝，改动时必须两边同步。
 const MAX_EVENTS = 200
 const events: RendererDiagnosticEvent[] = []
 const allowedActions = new Set<RendererDiagnosticAction>([
@@ -74,7 +73,7 @@ export function recordRendererDiagnostic(
     if (key === 'status' && (typeof value !== 'string' || !['ok', 'error', 'cache-hit', 'local-hit', 'pending'].includes(value))) continue
     if (key === 'view' && (typeof value !== 'string' || !['all', 'collection'].includes(value))) continue
     if (key === 'method' && (typeof value !== 'string' || !/^[a-z0-9_]+$/i.test(value))) continue
-    if (key === 'section' && (typeof value !== 'string' || !/^(home|coding|ctf|vuln|lab|settings)$/i.test(value))) continue
+    if (key === 'section' && (typeof value !== 'string' || !/^(home|coding|vuln|lab|settings)$/i.test(value))) continue
     if (key === 'errorKind' && (typeof value !== 'string' || !/^(timeout|permission|network|invalid|unavailable|unknown)$/.test(value))) continue
     if ((key === 'count' || key === 'page' || key === 'durationMs') && (typeof value !== 'number' || !Number.isInteger(value) || value < 0)) continue
     const token = safeToken(value)
@@ -85,7 +84,7 @@ export function recordRendererDiagnostic(
   }
   events.push({
     timestamp: new Date().toISOString(),
-    category: action === 'rpc' ? 'desktop-rpc' : action.startsWith('catalog') || action.startsWith('full-') || action.startsWith('training-') || action === 'dashboard-load' || action === 'catalog-sync' ? 'nssctf' : 'renderer',
+    category: action === 'rpc' ? 'desktop-rpc' : 'renderer',
     level: fields.status === 'error' ? 'error' : 'info',
     message: pairs.length > 0 ? `${action} ${pairs.join(' ')}` : action,
   })

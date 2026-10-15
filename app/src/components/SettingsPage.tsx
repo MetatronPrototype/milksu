@@ -1,4 +1,19 @@
 import { createStore, useStore, useStoreRuntime } from '@/lib/reactStore'
+import {
+  acpAgentConfigured,
+  acpAgentRuntimeLabel,
+  acpAgentUnavailableReason,
+  consumeAcpAgentFocus,
+  peekAcpAgentFocus,
+  derivedAcpAgent,
+  formatAcpAgentArgs,
+  formatAcpAgentEnv,
+  parseAcpAgentArgs,
+  parseAcpAgentEnv,
+  type NamedAcpAgent,
+} from '@/lib/acpAgent'
+import AddAcpAgentDialog from '@/components/AddAcpAgentDialog'
+import { toast } from '@/lib/appToast'
 import { runtimeVersion } from '@/lib/runtimeVersions'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
@@ -45,7 +60,6 @@ import type {
   CodingComputerUsePermission,
   CodingComputerUseStatus,
 } from '@/codingEnvironmentTypes'
-import type { NSSCTFWebBridgeStatus } from '@/nssctfWebTypes'
 import type {
   AppSettings,
   AccountStatus,
@@ -91,7 +105,6 @@ import SearchableModelPicker from '@/components/SearchableModelPicker'
 import { annotateModelFailures, type SearchableModelGroup } from '@/lib/modelPickerSearch'
 import VulnerabilityIntelSettingsPanel from '@/components/VulnerabilityIntelSettingsPanel'
 import SettingsMCPPanel from '@/components/SettingsMCPPanel'
-import EvalSettingsPanel from '@/components/EvalSettingsPanel'
 import LabSettingsPanel from '@/components/LabSettingsPanel'
 import CompanionSettingsPanel from '@/components/CompanionSettingsPanel'
 import MemorySettingsPanel, { MemoryEntriesPanel } from '@/components/MemorySettingsPanel'
@@ -295,8 +308,6 @@ type SettingsState = {
   computerUseLoading: boolean
   computerUseRequesting: CodingComputerUsePermission | null
   computerUseRestarting: boolean
-  browserBridgeLoading: boolean
-  browserSetupBusy: boolean
   browserUseOpening: boolean
   browserUseRuntimeLoading: boolean
   browserUseRuntime: BrowserUseRuntime | null
@@ -306,7 +317,6 @@ type SettingsState = {
   localData: LocalDataStatus | null
   userArtifacts: UserArtifactDirectoryStatus | null
   computerUseStatus: CodingComputerUseStatus | null
-  browserBridgeStatus: NSSCTFWebBridgeStatus | null
   buildTracking: BuildTracking | null
   buildTrackingCopying: boolean
   notice: SettingsNotice | null
@@ -403,6 +413,8 @@ export default function SettingsPage({
   const [linuxProtocolBusy, setLinuxProtocolBusy] = useState(false)
   // 二级页：权限与操控的管理页（电脑应用、外部浏览器、内置浏览器）和记忆条目页。
   const [managementView, setManagementView] = useState<'computer-use' | 'external-browser' | 'coding-browser' | 'memory-entries' | null>(null)
+  const [addAgentOpen, setAddAgentOpen] = useState(false)
+  const [selectedAcpAgentId, setSelectedAcpAgentId] = useState('')
   const [codingBrowserOverview, setCodingBrowserOverview] = useState<CodingBrowserStatus[] | null>(null)
   const [codingBrowserOverviewLoading, setCodingBrowserOverviewLoading] = useState(false)
   const [codingBrowserStopping, setCodingBrowserStopping] = useState('')
@@ -472,14 +484,42 @@ export default function SettingsPage({
   }
 
   const working = state.working
+  const knownAcpAgentIds = useRef(new Set<string>())
+  useEffect(() => {
+    const agents = working?.acp_agents ?? []
+    const focus = peekAcpAgentFocus()
+    const known = knownAcpAgentIds.current
+    const first = known.size === 0
+    knownAcpAgentIds.current = new Set(agents.map(agent => agent.id))
+    if (focus && agents.some(agent => agent.id === focus)) {
+      consumeAcpAgentFocus()
+      setSelectedAcpAgentId(focus)
+      return
+    }
+    if (!first) {
+      const added = agents.filter(agent => !known.has(agent.id))
+      if (added.length) {
+        setSelectedAcpAgentId(added[added.length - 1].id)
+        return
+      }
+    }
+    if (!agents.length) {
+      setSelectedAcpAgentId('')
+      return
+    }
+    setSelectedAcpAgentId(current => {
+      if (current && agents.some(agent => agent.id === current)) return current
+      const preferred = working?.default_acp_agent_id
+      if (preferred && agents.some(agent => agent.id === preferred)) return preferred
+      return agents[agents.length - 1].id
+    })
+  }, [working?.acp_agents, working?.default_acp_agent_id])
   const saving = state.saving
   const verifying = state.verifying
   const localDataLoading = state.localDataLoading
   const computerUseLoading = state.computerUseLoading
   const computerUseRequesting = state.computerUseRequesting
   const computerUseRestarting = state.computerUseRestarting
-  const browserBridgeLoading = state.browserBridgeLoading
-  const browserSetupBusy = state.browserSetupBusy
   const browserUseOpening = state.browserUseOpening
   const browserUseRuntimeLoading = state.browserUseRuntimeLoading
   const browserUseRuntime = state.browserUseRuntime
@@ -489,7 +529,6 @@ export default function SettingsPage({
   const localData = state.localData
   const userArtifacts = state.userArtifacts
   const computerUseStatus = state.computerUseStatus
-  const browserBridgeStatus = state.browserBridgeStatus
   const buildTracking = state.buildTracking
   const buildTrackingCopying = state.buildTrackingCopying
   const notice = state.notice
@@ -555,9 +594,6 @@ export default function SettingsPage({
   const providerEditorFresh = store.providerEditorFresh()
   const computerUsePermissionsReady = store.computerUsePermissionsReady()
   const browserUseDescription = store.browserUseDescription()
-  const browserBridgeConnected = store.browserBridgeConnected()
-  const browserPairingReady = store.browserPairingReady()
-  const browserExtensionReady = store.browserExtensionReady()
   const dashboard = vulnerabilityDashboard
 
   const managementTitles = {
@@ -1242,18 +1278,139 @@ export default function SettingsPage({
                     divider={false}
                     trailing={(
                       <SettingsGhostPicker
-                        value={working?.default_kernel === 'dsh' ? 'dsh' : 'pi'}
+                        value={working.default_kernel === 'dsh' && working.default_acp_agent_id
+                          && acpAgentConfigured((working.acp_agents ?? []).find(agent => agent.id === working.default_acp_agent_id))
+                          ? working.default_acp_agent_id
+                          : 'pi'}
                         ariaLabel={t('默认运行时', 'Default runtime')}
                         options={[
                           { value: 'pi', label: runtimeVersion('pi') ? `Pi ${runtimeVersion('pi')}` : 'Pi' },
-                          { value: 'dsh', label: runtimeVersion('dsh') ? `DSH ${runtimeVersion('dsh')}` : 'DSH' },
+                          ...(working.acp_agents ?? []).filter(agent => acpAgentConfigured(agent)).map(agent => ({
+                            value: agent.id,
+                            label: agent.name,
+                          })),
                         ]}
                         onChange={store.setDefaultKernel}
                       />
                     )}
                   />
                 </SettingsSection>
-                <SettingsSection title="DeepSeek Harness">
+                <SettingsSection
+                  title={acpAgentRuntimeLabel(t)}
+                  actions={(
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon-sm"
+                      aria-label={t('添加 Agent', 'Add Agent')}
+                      title={t('添加 Agent', 'Add Agent')}
+                      onClick={() => setAddAgentOpen(true)}
+                    >
+                      <Plus className="size-4" />
+                    </Button>
+                  )}
+                >
+                  {(working.acp_agents ?? []).map((agent, index, list) => (
+                    <SettingsRow
+                      key={agent.id}
+                      label={agent.name}
+                      description={agent.command || undefined}
+                      divider={index < list.length - 1}
+                      className={selectedAcpAgentId === agent.id ? 'cursor-pointer bg-accent/60' : 'cursor-pointer'}
+                      onClick={() => setSelectedAcpAgentId(agent.id)}
+                      trailing={(
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon-sm"
+                          aria-label={t(`删除 ${agent.name}`, `Delete ${agent.name}`)}
+                          onClick={event => {
+                            event.stopPropagation()
+                            store.removeAcpAgent(agent.id)
+                            if (selectedAcpAgentId === agent.id) setSelectedAcpAgentId('')
+                          }}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      )}
+                    />
+                  ))}
+                </SettingsSection>
+                {(() => {
+                  const selected = (working.acp_agents ?? []).find(agent => agent.id === selectedAcpAgentId)
+                  if (!selected) return null
+                  return (
+                    <SettingsSection title={selected.name}>
+                      <SettingsRow
+                        label={t('名称', 'Name')}
+                        stack="always"
+                        trailing={(
+                          <Input
+                            className="settings-control w-full"
+                            value={selected.name}
+                            autoComplete="off"
+                            aria-label={t('Agent 名称', 'Agent name')}
+                            onChange={event => store.patchAcpAgent(selected.id, { name: event.target.value })}
+                          />
+                        )}
+                      />
+                      <SettingsRow
+                        label={t('命令入口', 'Command')}
+                        stack="always"
+                        trailing={(
+                          <Input
+                            className="settings-control w-full"
+                            value={selected.command ?? ''}
+                            autoComplete="off"
+                            aria-label={t('命令入口', 'Command')}
+                            onChange={event => store.patchAcpAgent(selected.id, { command: event.target.value })}
+                          />
+                        )}
+                      />
+                      <SettingsRow
+                        label={t('启动参数', 'Arguments')}
+                        stack="always"
+                        trailing={(
+                          <Input
+                            className="settings-control w-full"
+                            value={formatAcpAgentArgs(selected.args)}
+                            autoComplete="off"
+                            aria-label={t('启动参数', 'Arguments')}
+                            onChange={event => store.patchAcpAgent(selected.id, { argsText: event.target.value })}
+                          />
+                        )}
+                      />
+                      <SettingsRow
+                        label={t('环境变量', 'Environment')}
+                        stack="always"
+                        divider={false}
+                        trailing={(
+                          <Textarea
+                            className="settings-control min-h-20 w-full"
+                            value={formatAcpAgentEnv(selected.env)}
+                            autoComplete="off"
+                            spellCheck={false}
+                            aria-label={t('环境变量', 'Environment')}
+                            onChange={event => store.patchAcpAgent(selected.id, { envText: event.target.value })}
+                          />
+                        )}
+                      />
+                    </SettingsSection>
+                  )
+                })()}
+                <SettingsSection title={t('协议', 'Protocol')}>
+                  <SettingsRow
+                    label={t('Ask 卡', 'Ask card')}
+                    description={acpAgentUnavailableReason('ask', t)}
+                  />
+                  <SettingsRow
+                    label={t('durable 研究', 'Durable research')}
+                    description={acpAgentUnavailableReason('durable-research', t)}
+                  />
+                  <SettingsRow
+                    label="milksu_workspace"
+                    description={acpAgentUnavailableReason('milksu-workspace', t)}
+                  />
                   <SettingsRow
                     label={t('忙碌时发送', 'Busy send')}
                     divider={false}
@@ -1270,6 +1427,16 @@ export default function SettingsPage({
                     )}
                   />
                 </SettingsSection>
+                <AddAcpAgentDialog
+                  open={addAgentOpen}
+                  existing={working.acp_agents ?? []}
+                  onOpenChange={setAddAgentOpen}
+                  onAdd={agent => {
+                    store.addAcpAgent(agent)
+                    setSelectedAcpAgentId(agent.id)
+                    toast(t('Agent 已添加', 'Agent added'))
+                  }}
+                />
               </>
             ) : working && category === 'apikeys' ? (
               <>
@@ -1849,65 +2016,6 @@ export default function SettingsPage({
                   </DialogContent>
                 </Dialog>
               </>
-            ) : working && category === 'ctf' ? (
-              <>
-                <SettingsSection title="NSSCTF Agent Arena">
-                  <SettingsRow
-                    label="Arena Token"
-                    description={working.nssctf_arena?.session_only ? t('仅本次运行可用', 'Only available in this run') : ''}
-                    trailing={(
-                      <Input
-                        className="settings-control"
-                        value={working.nssctf_arena?.token ?? ''}
-                        type="password"
-                        autoComplete="off"
-                        placeholder="Token"
-                        onChange={event => {
-                          store.patchWorking(value => {
-                            value.nssctf_arena = {
-                              token: event.target.value,
-                              has_token: value.nssctf_arena?.has_token ?? false,
-                              session_only: event.target.value ? false : value.nssctf_arena?.session_only,
-                            }
-                          })
-                        }}
-                        onBlur={() => void store.save()}
-                      />
-                    )}
-                  />
-                </SettingsSection>
-                <SettingsSection title={t('题目浏览器扩展', 'Challenge browser extension')}>
-                  <SettingsRow
-                    label={t('连接', 'Connection')}
-                    trailing={(
-                      <div className="flex items-center gap-2">
-                        <ConnectionLiveStatus live={browserBridgeConnected} />
-                        <Button variant="outline" size="sm" disabled={browserBridgeLoading} onClick={() => void store.refreshBrowserBridgeStatus()}>
-                          {t('检测', 'Check')}
-                        </Button>
-                      </div>
-                    )}
-                  />
-                  <SettingsRow
-                    label={t('本地扩展', 'Local extension')}
-                    trailing={(
-                      <Button variant="outline" size="sm" disabled={browserSetupBusy || !browserExtensionReady} onClick={() => void store.prepareBrowserExtension()}>
-                        {t('安装', 'Install')}
-                      </Button>
-                    )}
-                  />
-                  <SettingsRow
-                    label={t('配对码', 'Pairing code')}
-                    description={browserBridgeStatus?.bridge.pairingCode || ''}
-                    divider={false}
-                    trailing={(
-                      <Button variant="outline" size="sm" disabled={!browserPairingReady} onClick={() => void store.copyBrowserPairingCode()}>
-                        {t('复制', 'Copy')}
-                      </Button>
-                    )}
-                  />
-                </SettingsSection>
-              </>
             ) : working && category === 'lab' ? (
               <LabSettingsPanel settings={working} onPersist={() => void store.save()} />
             ) : working && category === 'memory' ? (
@@ -1922,8 +2030,6 @@ export default function SettingsPage({
               <PluginSettingsPanel theme={resolvedTheme} />
             ) : category === 'cve' && dashboard ? (
               <VulnerabilityIntelSettingsPanel dashboard={dashboard} />
-            ) : category === 'eval' ? (
-              <EvalSettingsPanel settings={working} />
             ) : null}
           </div>
         </div>
@@ -1948,8 +2054,6 @@ function createSettingsStore(
     computerUseLoading: false,
     computerUseRequesting: null,
     computerUseRestarting: false,
-    browserBridgeLoading: false,
-    browserSetupBusy: false,
     browserUseOpening: false,
     browserUseRuntimeLoading: false,
     browserUseRuntime: null,
@@ -1959,7 +2063,6 @@ function createSettingsStore(
     localData: null,
     userArtifacts: null,
     computerUseStatus: null,
-    browserBridgeStatus: null,
     buildTracking: null,
     buildTrackingCopying: false,
     notice: null,
@@ -1996,10 +2099,6 @@ function createSettingsStore(
     set computerUseRequesting(value) { store.setState({ computerUseRequesting: value }); },
     get computerUseRestarting() { return store.getState().computerUseRestarting },
     set computerUseRestarting(value) { store.setState({ computerUseRestarting: value }); },
-    get browserBridgeLoading() { return store.getState().browserBridgeLoading },
-    set browserBridgeLoading(value) { store.setState({ browserBridgeLoading: value }); },
-    get browserSetupBusy() { return store.getState().browserSetupBusy },
-    set browserSetupBusy(value) { store.setState({ browserSetupBusy: value }); },
     get browserUseOpening() { return store.getState().browserUseOpening },
     set browserUseOpening(value) { store.setState({ browserUseOpening: value }); },
     get browserUseRuntimeLoading() { return store.getState().browserUseRuntimeLoading },
@@ -2018,8 +2117,6 @@ function createSettingsStore(
     set userArtifacts(value) { store.setState({ userArtifacts: value }); },
     get computerUseStatus() { return store.getState().computerUseStatus },
     set computerUseStatus(value) { store.setState({ computerUseStatus: value }); },
-    get browserBridgeStatus() { return store.getState().browserBridgeStatus },
-    set browserBridgeStatus(value) { store.setState({ browserBridgeStatus: value }); },
     get buildTracking() { return store.getState().buildTracking },
     set buildTracking(value) { store.setState({ buildTracking: value }); },
     get buildTrackingCopying() { return store.getState().buildTrackingCopying },
@@ -2184,9 +2281,78 @@ function createSettingsStore(
     persist()
   }
 
+  function syncDerivedAcpAgent(working: AppSettings) {
+    const agents = working.acp_agents ?? []
+    const derived = derivedAcpAgent(agents, working.default_acp_agent_id)
+    working.acp_agent = derived
+    if (working.default_kernel === 'dsh' && !derived) working.default_kernel = 'pi'
+    if (working.default_acp_agent_id && !agents.some(agent => agent.id === working.default_acp_agent_id)) {
+      working.default_acp_agent_id = agents.find(agent => acpAgentConfigured(agent))?.id
+    }
+  }
+
   function setDefaultKernel(value: string) {
     patchWorking(working => {
-      working.default_kernel = value === 'dsh' ? 'dsh' : 'pi'
+      if (value === 'pi') {
+        working.default_kernel = 'pi'
+        return
+      }
+      const agent = (working.acp_agents ?? []).find(item => item.id === value)
+      if (!agent || !acpAgentConfigured(agent)) {
+        working.default_kernel = 'pi'
+        return
+      }
+      working.default_kernel = 'dsh'
+      working.default_acp_agent_id = agent.id
+      syncDerivedAcpAgent(working)
+    })
+    persist()
+  }
+
+  function addAcpAgent(agent: NamedAcpAgent) {
+    patchWorking(working => {
+      working.acp_agents = [...(working.acp_agents ?? []), agent]
+      if (!working.default_acp_agent_id) working.default_acp_agent_id = agent.id
+      syncDerivedAcpAgent(working)
+    })
+    persist()
+  }
+
+  function removeAcpAgent(id: string) {
+    patchWorking(working => {
+      working.acp_agents = (working.acp_agents ?? []).filter(agent => agent.id !== id)
+      if (working.default_acp_agent_id === id) {
+        working.default_acp_agent_id = working.acp_agents.find(agent => acpAgentConfigured(agent))?.id
+      }
+      syncDerivedAcpAgent(working)
+    })
+    persist()
+  }
+
+  function patchAcpAgent(id: string, patch: { name?: string; command?: string; argsText?: string; envText?: string }) {
+    patchWorking(working => {
+      working.acp_agents = (working.acp_agents ?? []).map(agent => {
+        if (agent.id !== id) return agent
+        const next: NamedAcpAgent = { ...agent }
+        if (patch.name != null) next.name = patch.name.trim() || agent.name
+        if (patch.command != null) {
+          const command = patch.command.trim()
+          if (command) next.command = command
+          else delete next.command
+        }
+        if (patch.argsText != null) {
+          const args = parseAcpAgentArgs(patch.argsText)
+          if (args.length) next.args = args
+          else delete next.args
+        }
+        if (patch.envText != null) {
+          const env = parseAcpAgentEnv(patch.envText)
+          if (env) next.env = env
+          else delete next.env
+        }
+        return next
+      })
+      syncDerivedAcpAgent(working)
     })
     persist()
   }
@@ -3486,43 +3652,6 @@ function createSettingsStore(
     }
   }
 
-  const browserBridgeConnected = () => Boolean(s.browserBridgeStatus?.bridge.connected)
-  const browserPairingReady = () => Boolean(s.browserBridgeStatus?.bridge.pairingCode)
-  const browserExtensionReady = () => Boolean(s.browserBridgeStatus?.bridge.extensionPath)
-
-  async function refreshBrowserBridgeStatus(options: { silent?: boolean } = {}) {
-    s.browserBridgeLoading = true
-    try {
-      s.browserBridgeStatus = await invokeCommand<NSSCTFWebBridgeStatus>('get_nssctf_web_bridge_status')
-      if (!options.silent) {
-        s.notice = { tone: 'ok', text: t('连接已重新检测。', 'Connection rechecked.') }
-      }
-    } catch (reason) {
-      s.browserBridgeStatus = null
-      if (!options.silent) {
-        s.notice = { tone: 'error', text: t(`无法检测连接：${String(reason)}`, `Could not check the connection: ${String(reason)}`) }
-      }
-    } finally {
-      s.browserBridgeLoading = false
-    }
-  }
-
-  async function prepareBrowserExtension() {
-    s.browserSetupBusy = true
-    try {
-      await invokeCommand('open_chrome_extension_manager')
-      await invokeCommand('reveal_browser_extension')
-      s.notice = {
-        tone: 'ok',
-        text: t('已打开扩展安装入口。', 'Opened the extension installer.'),
-      }
-    } catch (reason) {
-      s.notice = { tone: 'error', text: t(`无法打开浏览器扩展安装入口：${String(reason)}`, `Could not open the browser extension installer: ${String(reason)}`) }
-    } finally {
-      s.browserSetupBusy = false
-    }
-  }
-
   async function openPlaywrightBrowserExtension() {
     s.browserUseOpening = true
     try {
@@ -3535,17 +3664,6 @@ function createSettingsStore(
       s.notice = { tone: 'error', text: t(`无法打开扩展页面：${String(reason)}`, `Could not open the extension page: ${String(reason)}`) }
     } finally {
       s.browserUseOpening = false
-    }
-  }
-
-  async function copyBrowserPairingCode() {
-    const pairingCode = s.browserBridgeStatus?.bridge.pairingCode
-    if (!pairingCode) return
-    try {
-      await navigator.clipboard.writeText(pairingCode)
-      s.notice = { tone: 'ok', text: t('配对码已复制。', 'Pairing code copied.') }
-    } catch (reason) {
-      s.notice = { tone: 'error', text: t(`无法复制浏览器配对码：${String(reason)}`, `Could not copy the browser pairing code: ${String(reason)}`) }
     }
   }
 
@@ -3756,7 +3874,6 @@ function createSettingsStore(
       const sessionOnly = refreshed && (
         Object.values(refreshed.providers).some(item => item.session_only)
         || refreshed.relay?.session_only
-        || refreshed.nssctf_arena?.session_only
       )
       s.notice = { tone: 'error', text: sessionOnly
         ? t(`${desktopErrorMessage(reason)} 当前密钥仅保留在本次运行内，退出应用后需要重新输入。`, `${desktopErrorMessage(reason)} The current key stays in this session only and must be entered again after you quit.`)
@@ -3875,7 +3992,6 @@ function createSettingsStore(
     void loadBuildTracking()
     void refreshComputerUseStatus({ silent: true })
     void refreshBrowserUseRuntime({ silent: true })
-    void refreshBrowserBridgeStatus({ silent: true })
     window.addEventListener('focus', refreshComputerUseAfterSettings)
     void listenEvent<{ toolId: string; state: string }>('coding-tool-setup', () => {
       void loadCodingToolSkills()
@@ -3950,9 +4066,6 @@ function createSettingsStore(
     setUserSkillEnabled,
     refreshBrowserUseRuntime,
     openPlaywrightBrowserExtension,
-    refreshBrowserBridgeStatus,
-    prepareBrowserExtension,
-    copyBrowserPairingCode,
     refreshComputerUseStatus,
     requestComputerUsePermission,
     relaunchDesktopApp,
@@ -3993,6 +4106,9 @@ function createSettingsStore(
     databaseStateLabels,
     defaultModelKey,
     setDefaultKernel,
+    addAcpAgent,
+    removeAcpAgent,
+    patchAcpAgent,
     setBusySend,
     defaultModelAvailable,
     availableModelCount,
@@ -4023,9 +4139,6 @@ function createSettingsStore(
     providerEditorFresh,
     computerUsePermissionsReady,
     browserUseDescription,
-    browserBridgeConnected,
-    browserPairingReady,
-    browserExtensionReady,
   }
 
   return {

@@ -65,10 +65,9 @@ export default function VulnPage({
   compactedAt,
   compactionError,
   turnStatus,
-  ctfSession = false,
   vulnerabilitySession = false,
-  ctfMode,
-  ctfRole,
+  kernel,
+  acpAgentId,
   modelMode,
   modelProvider,
   modelId,
@@ -99,6 +98,9 @@ export default function VulnPage({
   onControlGoal,
   onRespondApproval,
   onChangeModel,
+  onChangeKernel,
+  onMigrateKernel,
+  onCreateAgent,
   onChangeModelSource,
   onChangeCodingPolicy,
   onChangeMcpServers,
@@ -138,6 +140,9 @@ export default function VulnPage({
   onControlGoal?: (action: 'pause' | 'resume' | 'clear') => void
   onRespondApproval?: (requestId: string, approved: boolean, scope?: 'once' | 'conversation', choice?: string) => void
   onChangeModel?: (mode: 'auto' | 'manual', provider?: string, model?: string) => void
+  onChangeKernel?: (kernel: 'pi' | 'dsh', agentId?: string) => void
+  onMigrateKernel?: (kernel: 'pi' | 'dsh', agentId?: string) => void
+  onCreateAgent?: (agent: import('@/lib/acpAgent').NamedAcpAgent) => void
   onChangeModelSource?: (preference: 'auto' | 'account' | 'personal') => void
   onChangeCodingPolicy?: (
     executionMode: NonNullable<CodingAgentSurfaceBind['executionMode']>,
@@ -630,10 +635,9 @@ export default function VulnPage({
       compactedAt={compactedAt}
       compactionError={compactionError}
       turnStatus={turnStatus}
-      ctfSession={ctfSession}
       vulnerabilitySession={vulnerabilitySession}
-      ctfMode={ctfMode}
-      ctfRole={ctfRole}
+      kernel={kernel}
+      acpAgentId={acpAgentId}
       modelMode={modelMode}
       modelProvider={modelProvider}
       modelId={modelId}
@@ -656,6 +660,9 @@ export default function VulnPage({
       onControlGoal={onControlGoal}
       onRespondApproval={onRespondApproval}
       onChangeModel={onChangeModel}
+      onChangeKernel={onChangeKernel}
+      onMigrateKernel={onMigrateKernel}
+      onCreateAgent={onCreateAgent}
       onChangeModelSource={onChangeModelSource}
       onChangeCodingPolicy={onChangeCodingPolicy}
       onChangeMcpServers={onChangeMcpServers}

@@ -11,7 +11,6 @@ import { invokeCommand, listenEvent } from '@/desktop'
 import { accountPasswordMessage } from '@/lib/accountPassword'
 import { toast } from '@/lib/appToast'
 import { companionAccountModelAlignedNotice } from '@/lib/companionUserError'
-import type { CTFAgentWorkspaceHandoff } from '@/ctfTypes'
 import { useVulnerabilityDashboard, type VulnerabilityCodingTask } from '@/composables/useVulnerabilityDashboard'
 import { syncWindowChrome } from '@/lib/hostPlatform'
 import {
@@ -28,7 +27,6 @@ import {
 import {
   isDomainWorkspace,
   settingsReturnSection,
-  type CTFWorkspaceSection,
 } from '@/lib/workspaceNavigation'
 import {
   normalizeSettingsCategory,
@@ -54,7 +52,7 @@ import { useT } from '@/hooks/useUiLocale'
 import { useStore, useStoreRuntime } from '@/lib/reactStore'
 import { cn } from '@/lib/cn'
 import { readWorkspaceViewState, writeWorkspaceViewState } from '@/lib/workspaceViewState'
-import { buildCTFDomainTaskContext, buildCVEDomainTaskContext, type DomainTaskContext } from '@/lib/domainTaskContext'
+import { buildCVEDomainTaskContext, type DomainTaskContext } from '@/lib/domainTaskContext'
 import { labBriefing } from '@/lib/researchBriefing'
 import { isGeneratedScratchWorkspace } from '@/lib/codingConversationGroups'
 import {
@@ -62,7 +60,6 @@ import {
   rememberItemChatAnchor,
   rememberWorkspaceConversation,
   selectAnchoredDomainConversationId,
-  selectCTFResumePoint,
   selectReusableDomainConversationId,
 } from '@/lib/workspaceSessionRouting'
 import { agentRecoveryPrompt } from '@/lib/agentRecovery'
@@ -75,9 +72,15 @@ import {
 import { updateStatusMessage } from '@/lib/updateStatus'
 import { FACTORY_DEFAULT_KERNEL } from '@/lib/agentKernel'
 import { companionPawState, type CompanionPawState } from '@/lib/companionOverlayState'
-import { withAppSettingsDefaults, type AccountStatus, type AppSettings, type CompanionShellStatus, type CTFChatAction, type UpdateStatus } from '@/types'
+import { withAppSettingsDefaults, type AccountStatus, type AppSettings, type CompanionShellStatus, type UpdateStatus } from '@/types'
 import type { ModelCatalogSnapshot } from '@/types'
 import { imageGenSettingsFromKey, installAppModelSettings, installModelCatalog, loadModelCatalog } from '@/modelCatalog'
+import {
+  acpAgentConfigured,
+  focusAcpAgent,
+  installAcpAgents,
+  type NamedAcpAgent,
+} from '@/lib/acpAgent'
 import { installRuntimeVersions } from '@/lib/runtimeVersions'
 import { toolBudgetToolName } from '@/lib/toolBudget'
 import type {
@@ -89,15 +92,14 @@ import type {
 
 const ChatPage = lazy(() => import('@/components/ChatPage'))
 const AccountLoginPage = lazy(() => import('@/components/AccountLoginPage'))
-const CTFPage = lazy(() => import('@/components/CTFPage'))
 const ProfilePage = lazy(() => import('@/components/ProfilePage'))
 const SettingsPage = lazy(() => import('@/components/SettingsPage'))
 const VulnPage = lazy(() => import('@/components/VulnPage'))
 const LabPage = lazy(() => import('@/components/LabPage'))
 const CompanionPetWindow = lazy(() => import('@/components/CompanionPetWindow'))
 
-type Section = 'chat' | 'image' | 'ctf' | 'vuln' | 'lab' | 'reverse' | 'companion' | 'profile' | 'settings'
-type DomainHome = 'ctf' | 'vuln' | 'lab'
+type Section = 'chat' | 'image' | 'vuln' | 'lab' | 'reverse' | 'companion' | 'profile' | 'settings'
+type DomainHome = 'vuln' | 'lab'
 
 function readRendererSurface() {
   if (typeof window === 'undefined') return ''
@@ -225,26 +227,22 @@ export default function App() {
   const labJobs = useLabJobs()
   useStore(labJobs.store)
 
-  const [section, setSection] = useState<Section>(openPluginSettingsOnStartup ? 'settings' : restoredViewState?.section ?? 'ctf')
+  const [section, setSection] = useState<Section>(openPluginSettingsOnStartup ? 'settings' : restoredViewState?.section ?? 'chat')
   const [keptWorkspacePages, setKeptWorkspacePages] = useState<Set<DomainHome>>(() => {
-    const initial = openPluginSettingsOnStartup ? 'settings' : restoredViewState?.section ?? 'ctf'
-    return initial === 'ctf' || initial === 'vuln' || initial === 'lab' ? new Set([initial]) : new Set()
+    const initial = openPluginSettingsOnStartup ? 'settings' : restoredViewState?.section ?? 'chat'
+    return initial === 'vuln' || initial === 'lab' ? new Set([initial]) : new Set()
   })
   const [codingConversationDrawerOpen, setCodingConversationDrawerOpen] = useState(restoredViewState?.codingHistoryOpen ?? true)
-  const [ctfSection, setCtfSection] = useState<CTFWorkspaceSection>(restoredViewState?.ctfSection ?? 'catalog')
-  const [ctfResumeJobId, setCtfResumeJobId] = useState<string | null>(null)
-  const [ctfCatalogEpoch, setCtfCatalogEpoch] = useState(0)
   const [vulnNavigationEpoch, setVulnNavigationEpoch] = useState(0)
   const lastCodingConversationId = useRef<string | null>(null)
-  const lastCTFConversationId = useRef<string | null>(null)
   const lastLabConversationId = useRef<string | null>(null)
   const lastImageConversationId = useRef<string | null>(null)
   const activeVulnerabilityCodingConversationId = useRef<string | null>(null)
   const itemChatAnchors = useRef<Record<string, string>>({})
-  const [domainChatMaximized, setDomainChatMaximizedState] = useState({ ctf: false, vuln: false, lab: false })
-  const [domainChatDockOpen, setDomainChatDockOpenState] = useState({ ctf: false, vuln: false, lab: false })
+  const [domainChatMaximized, setDomainChatMaximizedState] = useState({ vuln: false, lab: false })
+  const [domainChatDockOpen, setDomainChatDockOpenState] = useState({ vuln: false, lab: false })
   const [vulnerabilityCodingWorkspacePath, setVulnerabilityCodingWorkspacePath] = useState('')
-  const [settingsReturnTarget, setSettingsReturnTarget] = useState<Exclude<Section, 'settings'>>(restoredViewState?.settingsReturnTarget ?? 'ctf')
+  const [settingsReturnTarget, setSettingsReturnTarget] = useState<Exclude<Section, 'settings'>>(restoredViewState?.settingsReturnTarget ?? 'chat')
   const [settingsCategory, setSettingsCategory] = useState<NormalizedSettingsCategory>(openPluginSettingsOnStartup ? 'plugins' : 'general')
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [accountStatus, setAccountStatus] = useState<AccountStatus>({ configured: false, authenticated: false, state: 'unconfigured' })
@@ -274,7 +272,6 @@ export default function App() {
   const sectionRef = useRef(section)
   const settingsReturnTargetRef = useRef(settingsReturnTarget)
   const codingConversationDrawerOpenRef = useRef(codingConversationDrawerOpen)
-  const ctfSectionRef = useRef(ctfSection)
   const selectSidebarConversationRef = useRef<(id: string) => void>(() => {})
   accountStatusRef.current = accountStatus
   updateStatusRef.current = updateStatus
@@ -282,7 +279,6 @@ export default function App() {
   sectionRef.current = section
   settingsReturnTargetRef.current = settingsReturnTarget
   codingConversationDrawerOpenRef.current = codingConversationDrawerOpen
-  ctfSectionRef.current = ctfSection
 
   const conv = {
     rows: conversations.conversations,
@@ -304,6 +300,7 @@ export default function App() {
     problemIds: conversations.problemConversationIds,
     actionError: conversations.conversationActionError,
     kernel: conversations.selectedKernel,
+    acpAgentId: conversations.selectedAcpAgentId,
     modelMode: conversations.selectedModelMode,
     modelProvider: conversations.selectedModelProvider,
     modelId: conversations.selectedModelId,
@@ -422,23 +419,6 @@ export default function App() {
     document.documentElement.classList.toggle('plugin-surface-overlay-menu-active', surfaceActive('overlay-menu'))
   }
 
-  const defaultTaskModel = settings
-    ? { provider: settings.active_provider, model: settings.active_model }
-    : null
-  const activeProvider = defaultTaskModel ? settings?.providers[defaultTaskModel.provider] : undefined
-  const accountModelReady = Boolean(
-    accountStatus.state === 'active'
-    && settings?.relay?.enabled
-    && settings.relay.has_key,
-  )
-  const personalModelReady = Boolean(activeProvider?.enabled && activeProvider.has_api_key)
-  const modelReady = accountModelReady || personalModelReady
-  const modelVerified = Boolean(
-    settings?.model_verification
-    && settings.model_verification.provider === defaultTaskModel?.provider
-    && settings.model_verification.model === defaultTaskModel?.model,
-  )
-  const arenaReady = Boolean(settings?.nssctf_arena?.has_token)
   const mustChangePassword = accountStatus.state === 'active' && accountStatus.mustChangePassword === true
   const showAccountGate = (
     accountLoaded
@@ -446,23 +426,18 @@ export default function App() {
     && (accountStatus.state !== 'active' || mustChangePassword)
     && !continueWithoutAccount
   )
-  const activeCTFConversation = Boolean(conv.active?.ctfJobId)
   const activeVulnerabilityCodingConversation = conv.active?.domainTaskContext?.kind === 'cve'
-  const dossierChatMaximized = section === 'ctf'
-    ? domainChatMaximized.ctf
-    : section === 'vuln'
-      ? domainChatMaximized.vuln
-      : section === 'lab'
-        ? domainChatMaximized.lab
-        : false
-  const workspaceSurfaceVisible = section === 'chat' || section === 'image' || section === 'ctf' || section === 'vuln' || section === 'lab' || section === 'reverse'
-  const domainDockOpen = section === 'ctf'
-    ? domainChatDockOpen.ctf
-    : section === 'vuln'
-      ? domainChatDockOpen.vuln
-      : section === 'lab'
-        ? domainChatDockOpen.lab
-        : false
+  const dossierChatMaximized = section === 'vuln'
+    ? domainChatMaximized.vuln
+    : section === 'lab'
+      ? domainChatMaximized.lab
+      : false
+  const workspaceSurfaceVisible = section === 'chat' || section === 'image' || section === 'vuln' || section === 'lab' || section === 'reverse'
+  const domainDockOpen = section === 'vuln'
+    ? domainChatDockOpen.vuln
+    : section === 'lab'
+      ? domainChatDockOpen.lab
+      : false
   const codingAgentBind = useMemo<CodingAgentSurfaceBind>(() => ({
     settings,
     workspacePath: conv.workspacePath,
@@ -476,11 +451,9 @@ export default function App() {
     compactedAt: conv.compactedAt,
     compactionError: conv.compactionError,
     turnStatus: conv.turnStatus,
-    ctfSession: Boolean(conv.active?.ctfJobId),
     vulnerabilitySession: conv.active?.domainTaskContext?.kind === 'cve',
-    ctfMode: conv.active?.ctfMode,
-    ctfRole: conv.active?.ctfRole,
     kernel: conv.kernel,
+    acpAgentId: conv.acpAgentId,
     modelMode: conv.modelMode,
     modelProvider: conv.modelProvider,
     modelId: conv.modelId,
@@ -510,7 +483,6 @@ export default function App() {
       section: sectionRef.current,
       activeConversationId: conversations.activeId,
       codingHistoryOpen: codingConversationDrawerOpenRef.current,
-      ctfSection: ctfSectionRef.current,
       settingsReturnTarget: settingsReturnTargetRef.current,
     })
   }
@@ -521,11 +493,15 @@ export default function App() {
     taskNotifyRef.current = taskNotifySwitchFromSettings(normalized)
     installAppModelSettings(normalized)
     installRuntimeVersions(normalized.runtime_versions)
+    installAcpAgents(normalized.acp_agents ?? [], normalized.default_acp_agent_id)
     applyUiLocale(normalized.locale)
     applyConversationFontSize(normalized.conversation_font_size)
     applyProjectFoldLimit(normalized.sidebar_project_fold_limit)
     applyUiEmphasis({ preset: normalized.ui_emphasis })
-    conversations.setDefaultKernel(normalized.default_kernel ?? FACTORY_DEFAULT_KERNEL)
+    conversations.setDefaultKernel(
+      normalized.default_kernel ?? FACTORY_DEFAULT_KERNEL,
+      normalized.default_acp_agent_id,
+    )
     conversations.setBusySend(normalized.busy_send ?? 'interrupt')
   }
 
@@ -603,7 +579,7 @@ export default function App() {
     setContinueWithoutAccount(false)
     writeLocalAccountMode(false)
     setCodingConversationDrawerOpen(false)
-    setSection('ctf')
+    setSection('chat')
   }
 
   function useLocalAccountMode() {
@@ -692,27 +668,15 @@ export default function App() {
   function rememberActiveConversation() {
     const remembered = rememberWorkspaceConversation(conversations.active, {
       codingConversationId: lastCodingConversationId.current,
-      ctfConversationId: lastCTFConversationId.current,
       vulnConversationId: activeVulnerabilityCodingConversationId.current,
       labConversationId: lastLabConversationId.current,
       imageConversationId: lastImageConversationId.current,
     })
     lastCodingConversationId.current = remembered.codingConversationId
-    lastCTFConversationId.current = remembered.ctfConversationId
     activeVulnerabilityCodingConversationId.current = remembered.vulnConversationId
     lastLabConversationId.current = remembered.labConversationId
     lastImageConversationId.current = remembered.imageConversationId
     itemChatAnchors.current = rememberItemChatAnchor(itemChatAnchors.current, conversations.active)
-  }
-
-  function restoreCTFWorkspaceResumePoint() {
-    const next = selectCTFResumePoint(
-      conversations.conversations,
-      conversations.activeId,
-      lastCTFConversationId.current,
-    )
-    setCtfResumeJobId(next.jobId)
-    if (next.conversationId) lastCTFConversationId.current = next.conversationId
   }
 
   function restoreConversation(id: string | null) {
@@ -725,10 +689,6 @@ export default function App() {
 
   function openDomainCatalog(home: DomainHome) {
     rememberActiveConversation()
-    if (home === 'ctf') {
-      setCtfResumeJobId(null)
-      setCtfCatalogEpoch(value => value + 1)
-    }
     if (home === 'lab') labJobs.selectedId = ''
     if (home === 'vuln') {
       vulnerabilityDashboard.selectedId = ''
@@ -742,7 +702,7 @@ export default function App() {
 
   function navigateSection(value: Section) {
     recordRendererSection(value)
-    if (value === 'ctf' || value === 'vuln' || value === 'lab') {
+    if (value === 'vuln' || value === 'lab') {
       openDomainCatalog(value)
       return
     }
@@ -767,14 +727,6 @@ export default function App() {
     setSection(value)
   }
 
-  function returnToCTFWorkspace() {
-    rememberActiveConversation()
-    restoreCTFWorkspaceResumePoint()
-    restoreConversation(lastCTFConversationId.current)
-    setDomainChatMaximized(false)
-    setSection('ctf')
-  }
-
   function returnToVulnerabilityWorkspace() {
     rememberActiveConversation()
     restoreConversation(activeVulnerabilityCodingConversationId.current)
@@ -791,12 +743,12 @@ export default function App() {
 
   function setDomainChatMaximized(value: boolean) {
     const home = sectionRef.current
-    if (home !== 'ctf' && home !== 'vuln' && home !== 'lab') return
+    if (home !== 'vuln' && home !== 'lab') return
     setDomainChatMaximizedState(current => ({ ...current, [home]: value }))
   }
 
   function setDomainChatDockOpen(value: boolean, home: Section = sectionRef.current) {
-    if (home !== 'ctf' && home !== 'vuln' && home !== 'lab') return
+    if (home !== 'vuln' && home !== 'lab') return
     setDomainChatDockOpenState(current => ({ ...current, [home]: value }))
   }
 
@@ -906,41 +858,6 @@ export default function App() {
     if (conversationId) await conversations.abort(conversationId)
   }
 
-  function domainContextFromCTFHandoff(handoff: CTFAgentWorkspaceHandoff) {
-    const role = handoff.role ?? 'solver'
-    const title = String(handoff.title ?? '').replace(/^CTF\s*·\s*/u, '').trim()
-    return buildCTFDomainTaskContext({
-      jobId: handoff.jobId,
-      challengeId: handoff.challengeId || handoff.jobId,
-      challengeTitle: title || handoff.title,
-      statement: handoff.statement,
-      category: handoff.category,
-      objective: handoff.humanGoal,
-      originLabel: handoff.externalPlatform
-        ? `${handoff.externalPlatform.replace(/-web$/u, '').toUpperCase()}${handoff.externalAttemptId ? ` · P${handoff.externalAttemptId}` : ''}`
-        : t('自定义题目', 'Custom challenge'),
-      role,
-      materials: handoff.materials,
-      networkScopes: [],
-      evidenceCount: 0,
-      artifactCount: 0,
-      judgeReceipts: [],
-    })
-  }
-
-  async function startCTFAgent(handoff: CTFAgentWorkspaceHandoff & {
-    domainTaskContext?: DomainTaskContext
-  }) {
-    rememberActiveConversation()
-    await conversations.startWorkspaceTask({
-      ...handoff,
-      domainTaskContext: handoff.domainTaskContext ?? domainContextFromCTFHandoff(handoff),
-      autoSend: false,
-    })
-    lastCTFConversationId.current = conversations.activeId
-    setDomainChatDockOpen(true)
-  }
-
   function selectDossierConversation(id: string) {
     if (!conversations.conversations.some(item => item.id === id)) return
     conversations.activeId = id
@@ -950,7 +867,7 @@ export default function App() {
 
   function createDossierConversation() {
     const home = sectionRef.current
-    if (home !== 'ctf' && home !== 'vuln' && home !== 'lab') return
+    if (home !== 'vuln' && home !== 'lab') return
     rememberActiveConversation()
     conversations.startNew({ workspaceHome: home })
     setDomainChatMaximized(false)
@@ -1058,11 +975,6 @@ export default function App() {
         setSection('vuln')
         return
       }
-      if (kind === 'ctf' && id) {
-        setCtfResumeJobId(id)
-        setSection('ctf')
-        return
-      }
       if (kind === 'conversation' && id) {
         selectSidebarConversation(id)
       }
@@ -1138,61 +1050,41 @@ export default function App() {
     }
   }
 
-  async function switchCTFAgent(role: 'solver' | 'tool-builder' | 'strategist') {
-    const conversation = conversations.active
-    if (!conversation?.ctfJobId) return
-    if (conversation.ctfRole === role) return
-    const command = role === 'tool-builder'
-      ? 'prepare_ctf_tool_builder_workspace'
-      : role === 'strategist'
-        ? 'prepare_ctf_strategist_workspace'
-        : 'prepare_ctf_agent_workspace'
-    try {
-      const handoff = await invokeCommand<CTFAgentWorkspaceHandoff>(command, {
-        id: conversation.ctfJobId,
-      })
-      await conversations.startWorkspaceTask({
-        ...handoff,
-        domainTaskContext: domainContextFromCTFHandoff(handoff),
-        autoSend: false,
-      })
-      lastCTFConversationId.current = conversations.activeId
-    } catch (reason) {
-      console.error('Failed to switch CTF Agent role', reason)
-    }
-  }
-
-  async function runCTFChatAction(action: CTFChatAction) {
-    const conversation = conversations.active
-    if (!conversation || !conversation.ctfJobId) return
-    if (action.kind === 'hint' && action.level && conversation.ctfJobId) {
-      try {
-        await invokeCommand('record_ctf_learning', {
-          id: conversation.ctfJobId,
-          request: {
-            kind: 'hint',
-            level: action.level,
-            concept: t('PI 分级提示', 'Pi graded hint'),
-            content: t(`用户主动请求 ${action.level} 级提示。`, `The user requested a level ${action.level} hint.`),
-          },
-        })
-      } catch (reason) {
-        console.error('Failed to record CTF hint dependency', reason)
-      }
-    }
-    await conversations.send(action.prompt)
-  }
-
   function changeModel(mode: 'auto' | 'manual', provider?: string, model?: string) {
     conversations.setModelSelection(mode, provider, model)
   }
 
-  function changeKernel(kernel: 'pi' | 'dsh') {
-    conversations.setKernel(kernel)
+  function changeKernel(kernel: 'pi' | 'dsh', agentId?: string) {
+    conversations.setKernel(kernel, agentId)
   }
 
-  function migrateKernel(kernel: 'pi' | 'dsh') {
-    void conversations.handoffContext(kernel)
+  function migrateKernel(kernel: 'pi' | 'dsh', agentId?: string) {
+    void conversations.handoffContext(kernel, agentId)
+  }
+
+  async function createAcpAgent(agent: NamedAcpAgent) {
+    const current = settings
+    if (!current) return
+    const agents = [...(current.acp_agents ?? []), agent]
+    const next = withAppSettingsDefaults({
+      ...current,
+      acp_agents: agents,
+      default_acp_agent_id: current.default_acp_agent_id || agent.id,
+    })
+    applySettings(next)
+    focusAcpAgent(agent.id)
+    try {
+      await invokeCommand('save_settings_cmd', { newSettings: next })
+    } catch {
+      await loadSettings()
+      return
+    }
+    toast(t('Agent 已添加', 'Agent added'))
+    if (acpAgentConfigured(agent)) {
+      changeKernel('dsh', agent.id)
+      return
+    }
+    openSettings('runtime')
   }
 
   function toggleThemeMode() {
@@ -1409,7 +1301,7 @@ export default function App() {
     conversations.activeId = conversationId
     const lastUserMessage = [...conversation.messages].reverse().find(message => message.role === 'user')
     await conversations.send(
-      agentRecoveryPrompt(Boolean(conversation.ctfJobId)),
+      agentRecoveryPrompt(),
       t('继续', 'Continue'),
       lastUserMessage?.attachments,
     )
@@ -1442,7 +1334,7 @@ export default function App() {
 
   useEffect(() => {
     persistWorkspaceViewStateRef.current()
-  }, [section, codingConversationDrawerOpen, ctfSection, settingsReturnTarget, conv.activeId])
+  }, [section, codingConversationDrawerOpen, settingsReturnTarget, conv.activeId])
 
   useEffect(() => {
     function onCommandPanelShortcut(event: KeyboardEvent) {
@@ -1487,7 +1379,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (section !== 'ctf' && section !== 'vuln' && section !== 'lab') return
+    if (section !== 'vuln' && section !== 'lab') return
     setKeptWorkspacePages(prev => {
       if (prev.has(section)) return prev
       const next = new Set(prev)
@@ -1529,6 +1421,7 @@ export default function App() {
     let unlistenRuntime: (() => void) | undefined
     let unlistenPluginTheme: (() => void) | undefined
     let unlistenCompanionModel: (() => void) | undefined
+    let unlistenSettings: (() => void) | undefined
 
     if (rendererSurface === 'companion' || rendererSurface === 'companion-chat') {
       void loadSettings().catch(() => {})
@@ -1584,6 +1477,9 @@ export default function App() {
       unlistenCompanionModel = await listenEvent('companion-model-aligned', () => {
         toast(companionAccountModelAlignedNotice())
       })
+      unlistenSettings = await listenEvent('settings-changed', () => {
+        void loadSettings().catch(() => {})
+      })
       if (cancelled) return
 
       const parallelStarted = performance.now()
@@ -1616,8 +1512,7 @@ export default function App() {
           conversation => conversation.id === restoredViewState.activeConversationId,
         )
         conversations.activeId = restoredConversation?.id ?? null
-        if (restoredConversation?.ctfJobId) lastCTFConversationId.current = restoredConversation.id
-        else if (restoredConversation) lastCodingConversationId.current = restoredConversation.id
+        if (restoredConversation) lastCodingConversationId.current = restoredConversation.id
       }
       workspaceViewStateReady.current = true
       persistWorkspaceViewStateRef.current()
@@ -1648,6 +1543,7 @@ export default function App() {
       unlistenRuntime?.()
       unlistenPluginTheme?.()
       unlistenCompanionModel?.()
+      unlistenSettings?.()
       if (typeof document !== 'undefined') {
         for (const property of pluginSurfaceProperties) document.documentElement.style.removeProperty(property)
         document.documentElement.classList.remove('plugin-surface-overlay-menu-active')
@@ -1671,6 +1567,7 @@ export default function App() {
     onHandoffContext: conversations.handoffContext,
     onChangeKernel: changeKernel,
     onMigrateKernel: migrateKernel,
+    onCreateAgent: createAcpAgent,
     onControlGoal: conversations.controlGoal,
     onRespondApproval: conversations.respondApproval,
     onEditUser: conversations.editAndResend,
@@ -1767,7 +1664,6 @@ export default function App() {
           backgroundTasks={conversations.backgroundTasks}
           conversationActionError={conv.actionError}
           accountStatus={accountStatus}
-          ctfSection={ctfSection}
           codingContextOpen={codingConversationDrawerOpen}
           themeMode={themeMode}
           updateStatus={updateStatus}
@@ -1806,7 +1702,6 @@ export default function App() {
             const nextId = await conversations.forkConversation(id)
             if (nextId) selectSidebarConversation(nextId)
           }}
-          onNavigateCtf={setCtfSection}
         />
 
         <Suspense fallback={null}>
@@ -1849,32 +1744,6 @@ export default function App() {
             className="relative flex min-h-0 min-w-0 flex-1"
             style={{ display: workspaceSurfaceVisible ? undefined : 'none' }}
           >
-            {keptWorkspacePages.has('ctf') ? (
-              <div
-                className="relative flex min-h-0 min-w-0 flex-1"
-                style={{ display: section === 'ctf' && !dossierChatMaximized ? undefined : 'none' }}
-              >
-                <CTFPage
-                  {...codingAgentBind}
-                  {...domainAgentHandlers}
-                  modelReady={modelReady}
-                  modelVerified={modelVerified}
-                  arenaReady={arenaReady}
-                  initialJobId={ctfResumeJobId}
-                  catalogEpoch={ctfCatalogEpoch}
-                  ctfSection={ctfSection}
-                  conversations={conv.rows}
-                  conversation={conv.active}
-                  ensureConversation={conversations.ensureConversation}
-                  chatMaximized={dossierChatMaximized}
-                  chatDockOpen={domainDockOpen}
-                  onOpenSettings={(category?: 'apikeys' | 'ctf') => openSettings(category ?? 'apikeys')}
-                  onStartCodingAgent={startCTFAgent}
-                  onOpenCodingConversation={openHistoryConversation}
-                  onCtfAction={runCTFChatAction}
-                />
-              </div>
-            ) : null}
             {keptWorkspacePages.has('vuln') ? (
               <div
                 className="relative flex min-h-0 min-w-0 flex-1"
@@ -1944,11 +1813,9 @@ export default function App() {
                 compactedAt={conv.compactedAt}
                 compactionError={conv.compactionError}
                 turnStatus={conv.turnStatus}
-                ctfSession={activeCTFConversation}
                 vulnerabilitySession={activeVulnerabilityCodingConversation}
-                ctfMode={conv.active?.ctfMode}
-                ctfRole={conv.active?.ctfRole}
                 kernel={conv.kernel}
+                acpAgentId={conv.acpAgentId}
                 modelMode={conv.modelMode}
                 modelProvider={conv.modelProvider}
                 modelId={conv.modelId}
@@ -1968,7 +1835,6 @@ export default function App() {
                 restorable={dossierChatMaximized}
                 onSend={conversations.send}
                 onConsumePendingDraft={() => conversations.consumeComposerDraft()}
-                onCtfAction={runCTFChatAction}
                 onAbort={abortConversation}
                 onCompactContext={conversations.compactContext}
                 onRewindContext={conversations.rewindContext}
@@ -1988,17 +1854,16 @@ export default function App() {
                 onChangeModel={changeModel}
                 onChangeKernel={changeKernel}
                 onMigrateKernel={migrateKernel}
+                onCreateAgent={createAcpAgent}
                 onChangeThinkingLevel={conversations.setThinkingLevel}
                 onChangeModelSource={conversations.setModelSourcePreference}
                 onChangeCodingPolicy={conversations.setCodingPolicy}
                 onChangeMcpServers={conversations.setMCPSelection}
                 onOpenSettings={() => openSettings('apikeys')}
                 onOpenConversation={openHistoryConversation}
-                onReturnCtf={returnToCTFWorkspace}
                 onReturnVuln={returnToVulnerabilityWorkspace}
                 onReturnLab={returnToLabWorkspace}
                 onRestore={restoreDossierChat}
-                onSwitchCtfAgent={switchCTFAgent}
               />
               </div>
             ) : null}

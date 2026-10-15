@@ -34,6 +34,24 @@ describe('Coding approval conversation recovery', () => {
       messages: [],
     }).thinkingLevel).toBeUndefined()
   })
+  it('keeps a named ACP agent id on the conversation', () => {
+    expect(normalizeConversation({
+      id: 'agent-named',
+      title: 'Named',
+      createdAt: 1,
+      kernel: 'dsh',
+      acpAgentId: 'agt_codex',
+      messages: [],
+    }).acpAgentId).toBe('agt_codex')
+    expect(normalizeConversation({
+      id: 'agent-blank',
+      title: 'Blank',
+      createdAt: 1,
+      kernel: 'dsh',
+      acpAgentId: '  ',
+      messages: [],
+    }).acpAgentId).toBeUndefined()
+  })
   it('shows the no-tools contract and restores the reviewed tool set', () => {
     const reviewed = ['read', 'grep']
     let active = projectAgentTurnPolicy('session.turn_policy', false)
@@ -379,6 +397,11 @@ describe('Coding approval conversation recovery', () => {
 
   it.each([
     [
+      'Error invoking remote method milksu:invoke: Error: MilkSU desktop runtime is unavailable',
+      '本地运行时已停止，请重新打开应用',
+      'desktop runtime is unavailable',
+    ],
+    [
       'Error invoking remote method milksu:invoke: Error: MilkSU Go runtime is unavailable',
       '本地运行时已停止，请重新打开应用',
       'Go runtime is unavailable',
@@ -544,14 +567,12 @@ describe('Coding approval conversation recovery', () => {
     expect(message).not.toContain('synthetic-secret-value')
   })
 
-  it('restores structured CTF domainTaskContext from persisted conversation state', () => {
+  it('drops persisted CTF domainTaskContext so the row reads as Coding', () => {
     const conversation = normalizeConversation({
       id: 'ctf-conversation-1',
       title: 'CTF · Web challenge',
       createdAt: 1,
-      ctfJobId: 'job-42',
-      ctfMode: 'copilot',
-      ctfRole: 'solver',
+      workspaceHome: 'ctf',
       domainTaskContext: {
         kind: 'ctf',
         jobId: 'job-42',
@@ -569,17 +590,8 @@ describe('Coding approval conversation recovery', () => {
       },
       messages: [],
     })
-    expect(conversation.ctfJobId).toBe('job-42')
-    expect(conversation.domainTaskContext).toMatchObject({
-      kind: 'ctf',
-      jobId: 'job-42',
-      challengeId: 'ch-exact',
-      challengeTitle: 'Exact live challenge',
-      authorizedScope: expect.stringContaining('source-1'),
-    })
-    expect(String(conversation.domainTaskContext && 'authorizedScope' in conversation.domainTaskContext
-      ? conversation.domainTaskContext.authorizedScope
-      : '')).toContain('net-1')
+    expect(conversation.workspaceHome).toBeUndefined()
+    expect(conversation.domainTaskContext).toBeUndefined()
   })
 
   it('restores last context occupancy from persisted conversation state', () => {

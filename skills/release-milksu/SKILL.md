@@ -22,7 +22,7 @@ Push the clean release commit to `main`, then dispatch **macOS, Windows and Linu
 
 ### macOS ARM64
 
-Use GitHub-hosted `macOS signed release` (`macos-15` standard runner). Do not restore or upload GitHub's remote Node/Go caches on a self-hosted path; reuse the runner's local tool and package caches instead. It must compile the App once, apply Developer ID signing and hardened runtime, notarize, staple, and verify Gatekeeper. Derive both deliverables from the same verified `.app`:
+Use GitHub-hosted `macOS signed release` (`macos-15` standard runner). Do not restore or upload GitHub's remote Node caches on a self-hosted path; reuse the runner's local tool and package caches instead. It must compile the App once, apply Developer ID signing and hardened runtime, notarize, staple, and verify Gatekeeper. Derive both deliverables from the same verified `.app`:
 
 - DMG: user installer and GitHub Release asset;
 - ZIP plus updater metadata: authenticated OTA payload uploaded directly from the runner to private R2.
@@ -33,7 +33,7 @@ Download only the DMG artifact for local inspection. Do not download the OTA ZIP
 
 ### Windows x64
 
-Use `Windows x64 release` on a native Windows runner. It must test, build the packaged runtimes and assisted NSIS installer, start the packaged App, and confirm that its Go Runtime starts. The installer must expose a conventional installation directory, Start menu and desktop shortcuts, an uninstall entry, and a finish-page launch action. Download only the EXE artifact.
+Use `Windows x64 release` on a native Windows runner. It must test, build the packaged runtimes and assisted NSIS installer, start the packaged App, and confirm that its TypeScript Runtime starts. The installer must expose a conventional installation directory, Start menu and desktop shortcuts, an uninstall entry, and a finish-page launch action. Download only the EXE artifact.
 
 Do not claim Windows signing unless the workflow had a configured Windows code-signing certificate and verified the resulting signature. Until then, label the EXE as an unsigned internal-test build and expect SmartScreen. Record unavailable platform capabilities in the release notes instead of silently implying parity.
 
