@@ -67,7 +67,7 @@ export function groupCodingConversations(
   const pinnedConversations: Conversation[] = []
 
   for (const conversation of projectUniqueDomainConversations(conversations)) {
-    if (conversation.ctfJobId || conversation.parentConversationId) continue
+    if (conversation.parentConversationId) continue
     if (conversation.pinned) {
       pinnedConversations.push(conversation)
       continue
@@ -151,7 +151,6 @@ function domainGroupName(conversation: Conversation) {
   const context = conversation.domainTaskContext
   if (context?.kind === 'cve') return context.cveId
   if (context?.kind === 'lab') return context.title
-  if (context?.kind === 'ctf') return context.challengeTitle
   return conversation.title
 }
 
@@ -166,9 +165,9 @@ export function groupWorkspaceConversations(
       query,
     )
   }
-  if (home === 'image') {
+  if (home === 'image' || home === 'reverse') {
     const normalizedQuery = query.trim().toLocaleLowerCase()
-    const matching = conversationsForWorkspaceHome(conversations, 'image')
+    const matching = conversationsForWorkspaceHome(conversations, home)
       .filter(conversation => (
         !normalizedQuery
         || conversation.title.toLocaleLowerCase().includes(normalizedQuery)
@@ -176,7 +175,7 @@ export function groupWorkspaceConversations(
       .sort(newestFirst)
     if (!matching.length) return []
     return [{
-      key: 'image',
+      key: home,
       name: '',
       path: null,
       paths: [],

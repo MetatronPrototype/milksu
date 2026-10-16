@@ -338,7 +338,7 @@ async function deliverAccountCallback(rawURL) {
 let quitting = false
 let relaunchScheduled = false
 let screenRecordingRelaunchArm = null
-// Avoid re-pushing the same account credential into Go on the renderer status RPC
+// Avoid re-pushing the same account credential into Runtime on the renderer status RPC
 // immediately after the main-process pre-load sync (same startup window).
 let lastAccountModelSync = null
 let accountModelSyncInflight = null
@@ -436,13 +436,10 @@ async function syncAccountModelAuthorization(status) {
   return false
 }
 
-function backendExecutable() {
-  const override = String(process.env.MILKSU_BACKEND_PATH ?? '').trim()
-  if (override && path.isAbsolute(override)) return override
-  const binary = process.platform === 'win32' ? 'milksu-backend.exe' : 'milksu-backend'
+function runtimeScript() {
   return app.isPackaged
-    ? path.join(process.resourcesPath, binary)
-    : path.resolve(__dirname, '..', 'build', 'desktop', binary)
+    ? path.join(process.resourcesPath, 'runtime', 'main.cjs')
+    : path.resolve(__dirname, '..', 'runtime', 'dist', 'main.cjs')
 }
 
 function rendererDirectory() {
@@ -515,7 +512,7 @@ async function installRendererProtocol() {
   })
 }
 
-function createDesktopBackend(executable, hostHandler, eventHandler) {
+function createDesktopBackend(hostHandler, eventHandler) {
   return new BackendRuntime({
     hostHandler,
     eventHandler,
@@ -525,6 +522,7 @@ function createDesktopBackend(executable, hostHandler, eventHandler) {
         appId: desktopIdentity.appId,
         hostPid: process.pid,
       })
+      env.ELECTRON_RUN_AS_NODE = '1'
       const runtimeAppDataDir = resolveRuntimeAppDataDir({
         channel: desktopIdentity.channel,
         isolatedInstance: channelIsolation.isolatedInstance,
@@ -535,7 +533,21 @@ function createDesktopBackend(executable, hostHandler, eventHandler) {
       if (!app.isPackaged && !env.MILKSU_FACTORY_SKILLS_DIR) {
         env.MILKSU_FACTORY_SKILLS_DIR = path.resolve(__dirname, '..', 'skills')
       }
-      const child = spawn(executable, [], {
+      if (!app.isPackaged && !env.MILKSU_ROOT) {
+        env.MILKSU_ROOT = path.resolve(__dirname, '..')
+      }
+      if (app.isPackaged && process.resourcesPath && !env.MILKSU_RESOURCES) {
+        env.MILKSU_RESOURCES = process.resourcesPath
+      }
+      if (!env.NODE_PATH) {
+        env.NODE_PATH = app.isPackaged
+          ? process.resourcesPath
+          : [
+            path.resolve(__dirname, '..', 'build', 'desktop', 'node_modules'),
+            path.resolve(__dirname, '..', 'node_modules'),
+          ].join(path.delimiter)
+      }
+      const child = spawn(process.execPath, [runtimeScript()], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env,
       })
@@ -1447,7 +1459,7 @@ ipcMain.handle('milksu:invoke', async (event, request) => {
     const payload = Array.isArray(request?.args) ? request.args[0] : request?.args
     return linuxDevelopmentProtocolAction(payload?.enabled === true)
   }
-  // Packaging provenance is owned by the desktop shell, not Go domain logic.
+  // Packaging provenance is owned by the desktop shell, not Runtime domain logic.
   if (method === 'GetBuildTracking') return loadBuildTracking()
   // Task notifications are shell-owned too: the renderer only asks.
   // Dependency injection mirrors desktop/task-notify.cjs so the decision stays pure/testable.
@@ -1758,10 +1770,10 @@ app.whenReady().then(async () => {
   companionSkinHost = createCompanionSkinHost({
     userDataPath: app.getPath('userData'),
     openDirectory: payload => handleHostRequest('dialog.openDirectory', payload),
-    listPetPlugins: async () => {
+    listCompanionPlugins: async () => {
       if (!backend) return []
       try {
-        const rows = await backend.invokeFromElectronHost('ListPetPluginPackages', [])
+        const rows = await backend.invokeFromElectronHost('ListCompanionPluginPackages', [])
         return Array.isArray(rows) ? rows : []
       } catch {
         return []
@@ -1790,7 +1802,7 @@ app.whenReady().then(async () => {
   startupLog('createWindow')
   browserShell = new BrowserShell(mainWindow, upstreamEndpoint)
   const backendSpawnStarted = Date.now()
-  backend = createDesktopBackend(backendExecutable(), handleHostRequest, emitRendererEvent)
+  backend = createDesktopBackend(handleHostRequest, emitRendererEvent)
   startupLog('backend.spawn', `${Date.now() - backendSpawnStarted}ms`)
   await startupTime('backend.ready', () => backend.ready())
   // Local session probe only — never block first paint on account API / credentials.

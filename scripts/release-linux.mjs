@@ -23,6 +23,7 @@ import { desktopAccountConfigFromEnvironment } from './lib/desktop-account-confi
 import { desktopChannelConfig } from './lib/desktop-channel.mjs'
 import { readLinuxPkgbuildTemplate, renderLinuxPkgbuild } from './lib/linux-packages.mjs'
 import { writeLinuxIconSet } from './lib/linux-icons.mjs'
+import { compileNativeAddons, nativeAddonResources } from './lib/desktop-native.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const channelConfig = desktopChannelConfig('stable')
@@ -35,7 +36,6 @@ const artifactArch = electronArch
 const unpackedDirectoryName = electronArch === 'arm64' ? 'linux-arm64-unpacked' : 'linux-unpacked'
 const outputDirectory = join(repositoryRoot, 'build', 'electron', 'linux', 'stable')
 const releaseDirectory = join(repositoryRoot, 'build', 'release')
-const backendPath = join(repositoryRoot, 'build', 'desktop', 'milksu-backend')
 const sidecarPath = join(repositoryRoot, 'build', 'sidecar', platform.replace('/', '-'))
 
 function run(command, args, options = {}) {
@@ -103,20 +103,15 @@ await writeFile(
 )
 
 await run('npm', ['--prefix', 'app', 'run', 'build'])
-await run('go', [
-  'build',
-  '-trimpath',
-  '-ldflags=-s -w',
-  '-o',
-  backendPath,
-  './cmd/milksu-backend',
+await run(process.execPath, [
+  join(repositoryRoot, 'scripts', 'build-runtime.mjs'),
 ])
-await chmod(backendPath, 0o755)
 await run(process.execPath, [
   join(repositoryRoot, 'scripts', 'package-sidecar.mjs'),
   'build',
   `--platform=${platform}`,
 ])
+await compileNativeAddons(repositoryRoot)
 
 const files = Array.isArray(desktopPackage.build?.files)
   ? [...desktopPackage.build.files]
@@ -160,7 +155,11 @@ const builderConfig = {
   },
   extraResources: [
     { from: join(repositoryRoot, 'app', 'dist'), to: 'renderer' },
-    { from: backendPath, to: 'milksu-backend' },
+    { from: join(repositoryRoot, 'runtime', 'src', 'envbroker', 'packages'), to: 'envbroker/packages' },
+    { from: join(repositoryRoot, 'runtime', 'dist', 'main.cjs'), to: 'runtime/main.cjs' },
+    { from: join(repositoryRoot, 'runtime', 'dist', 'plugin-mcp.cjs'), to: 'runtime/plugin-mcp.cjs' },
+    ...nativeAddonResources(repositoryRoot),
+    { from: join(repositoryRoot, 'plugins', 'official'), to: 'plugins/official' },
     { from: sidecarPath, to: 'milksu-sidecar' },
     // electron-builder createFilter skips a source-root node_modules directory.
     { from: join(sidecarPath, 'node_modules'), to: 'milksu-sidecar/node_modules' },
@@ -183,7 +182,7 @@ const builderConfig = {
     executableName: 'milksu',
     maintainer: 'MilkSU',
     synopsis: 'Personal security learning and research workspace',
-    description: 'MilkSU desktop workspace for Coding, CTF and CVE learning workflows.',
+    description: 'MilkSU desktop workspace for Coding, CVE and Lab workflows.',
   },
   deb: {
     // electron-builder default Recommends libappindicator3-1, which is Ubuntu-only.
@@ -223,14 +222,14 @@ const unpackedResources = join(outputDirectory, unpackedDirectoryName, 'resource
 for (const required of [
   join(outputDirectory, unpackedDirectoryName, 'milksu'),
   join(unpackedResources, 'renderer', 'index.html'),
-  join(unpackedResources, 'milksu-backend'),
+  join(unpackedResources, 'runtime', 'main.cjs'),
   join(unpackedResources, BUILD_TRACKING_RESOURCE),
   join(unpackedResources, 'milksu-sidecar', 'node'),
   join(unpackedResources, 'milksu-sidecar', 'chat-bridge.cjs'),
   join(unpackedResources, 'milksu-sidecar', 'photon_rs_bg.wasm'),
   join(unpackedResources, 'milksu-sidecar', 'manifest.json'),
   join(unpackedResources, 'milksu-sidecar', 'node_modules', '@playwright', 'mcp', 'cli.js'),
-  join(unpackedResources, 'milksu-sidecar', 'node_modules', '@deepseek-ai', 'cordis-plugin-group'),
+  join(unpackedResources, 'node-pty', 'package.json'),
 ]) {
   if (!await exists(required)) {
     throw new Error(`Linux package is missing required runtime artifact: ${required}`)

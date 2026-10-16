@@ -74,11 +74,8 @@ sidecar 新增事件 `turn.stall_warning`，载荷：
 - `budgetMs`：触发告警的软阈值。
 - `payloadBytes`：请求体积估算值，便于读者判断是不是请求太大。
 
-引擎改名表必须认领它（`internal/engine/supervisor.go`），否则会落到 `engine.raw.` 前缀，
-渲染层收不到。注意覆盖测试 `TestEverySidecarEventNameIsClaimedByTheEngine` 把「渲染层
-认识原名」也算作认领，而引擎会给未认领的带点号事件名加前缀——**这条测试挡不住这类
-丢认领**（`turn.heartbeat` 在 #208 里就是这么静默丢的），新增带点号的 sidecar 事件名仍要
-人工核对改名表里有 `case`。
+引擎改名表必须认领它（`runtime/src/events.ts`），否则会落到 `engine.raw.` 前缀，
+渲染层收不到。新增带点号的 sidecar 事件名仍要人工核对改名表里有对应分支。
 
 ## 3. 修二：sidecar 不响应 abort 时，读者亲手重启引擎
 
@@ -99,7 +96,7 @@ sidecar 新增事件 `turn.stall_warning`，载荷：
 
 读者点「重启引擎」时：
 
-1. 渲染层调 `restart_engine`，后端 `Supervisor.RestartEngine` 立刻杀掉服务该会话的
+1. 渲染层调 `restart_engine`，Runtime `Engine.restartEngine` 立刻杀掉服务该会话的
    sidecar 进程（不响应 abort 的进程只能杀掉），把它从轮换位和 parked 集合里摘掉，
    并忘掉它服务的会话，这样下一次派发会拉起一个全新的 sidecar。
 2. 本地结算当前回合：清 running、清停滞标记、清队列停滞；给这个会话写一条说明
@@ -124,7 +121,7 @@ sidecar 退出后，引擎给每个受影响会话发 `engine.restarted`（`done
   `engineRestart.test.js`（abort 判据真值表）、
   `useConversationsTurnStallNotify.test.js`（告警事件链路）。
 - 桌面：`node --test`（Electron 侧不涉及本次改动，仍跑一遍回归）。
-- Go：`supervisor_restart_engine_test.go`（重启杀进程 + 发 `engine.restarted`）。
+- Runtime：`runtime/src/session-actions.test.ts` 与引擎重启相关用例。
 - 类型：`app` 的 `tsc -b`。
 
 ## 5. 不做与遗留

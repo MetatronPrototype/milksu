@@ -12,7 +12,7 @@
 
 ## 稳定边界
 
-公共 API 固定为 `milksu.plugin/v1`，使用严格 SemVer。Go 是 Manifest、签名、信任、安装状态、能力代理、存储事务和 MCP 的可信控制面；公共 Runtime 只有受限 Lua 和预编译单文件 TypeScript。Rust 原生 ABI、WASM、在线市场、远程自动更新和第三方写工具不属于 v1。
+公共 API 固定为 `milksu.plugin/v1`，使用严格 SemVer。TypeScript Runtime 是 Manifest、签名、信任、安装状态、能力代理、存储事务和 MCP 的可信控制面；公共插件 Runtime 只有受限 Lua（fengari）和预编译单文件 TypeScript。Rust 原生 ABI、WASM、在线市场、远程自动更新和第三方写工具不属于 v1。
 
 官方锁定插件可在一个发行周期内通过 `milksu.plugin/v1alpha1` 适配层运行；本地签名安装和开发模板只接受 v1。官方 ID 永远不能由第三方包覆盖；显式开发模式也不能覆盖官方 ID。
 
@@ -74,10 +74,10 @@ Lua 与 TypeScript 每次隔离调用都依次执行 `initialize`、业务方法
 
 | 槽位 | 宿主范围 |
 | --- | --- |
-| `content-wallpaper` | AI 聊天画布与 CTF 题面 |
-| `workspace-list` | 题目、会话、设置等标准列表 |
+| `content-wallpaper` | AI 聊天画布 |
+| `workspace-list` | 会话、设置等标准列表 |
 | `control-button` | 宿主标准按钮；危险、禁用、焦点状态仍由核心覆盖 |
-| `workspace-topbar` | Coding/CTF/CVE 标题、筛选和操作区；不含原生标题栏或弹窗头 |
+| `workspace-topbar` | Coding / CVE / 实验室标题、筛选和操作区；不含原生标题栏或弹窗头 |
 | `overlay-menu` | Select、Dropdown、ContextMenu、Popover、HoverCard |
 | `chat-composer` | Composer 外壳、输入区和工具栏 |
 
@@ -85,7 +85,7 @@ Lua 与 TypeScript 每次隔离调用都依次执行 `initialize`、业务方法
 
 每个表面初始为 `inherit`，完全保持核心原色。`solid` 提供系统原始、纸白、石墨、纯黑、青蓝、信号金、冷灰和自定义色；宿主自动选择黑/白前景并要求至少 4.5:1 对比度。`image` 为每个槽位选择独立 PNG/JPEG/WebP，限制 16 MiB 与 8192×8192，固定 `cover center`，可调 0..0.6 可见度与 0..24 模糊。
 
-图片经 magic、解码头和尺寸检查后复制到插件 app-data。插件只得到资产句柄；渲染器通过受限 `milksu://app/__plugin-assets/...` 协议读取，不在活动主题里反复传 data URL。图片背景不参与命中测试，不改变按钮、输入、审批或 Judge 行为。
+图片经 magic、解码头和尺寸检查后复制到插件 app-data。插件只得到资产句柄；渲染器通过受限 `milksu://app/__plugin-assets/...` 协议读取，不在活动主题里反复传 data URL。图片背景不参与命中测试，不改变按钮、输入或审批行为。
 
 同一槽位的日间和夜间共用图片，但分别保存遮罩颜色与透明度。根 `data-theme`、组件库 `.dark`、全部遮罩和设置 iframe 在运行中同步；切换主题不重建 iframe、不丢失配置。每项可单独重置，也可恢复全部系统默认。
 
@@ -99,7 +99,7 @@ Lua 仅开放 base/string/table/math，禁用文件、网络、模块加载和 s
 
 外部 MCP 对所有插件默认关闭，用户逐插件开启。工具目录只包含当前已启用且允许外部暴露的只读工具，并同时发布审核过的输入、输出 Schema。安装、升级、卸载、权限、发布者信任或开关变化会使 MCP 重新载入注册表、增删工具并发送 `notifications/tools/list_changed`。每次调用仍重新验证签名、摘要、信任与开关。不协商动态通知的客户端需要按设置页提示重新连接。
 
-官方 `milksu.tools-text` 贯通 Tool → TypeScript Runtime → Go Broker → Agent → 外部 MCP，提供本地文本统计和严格 Base64 编解码，不读取文件或网络。
+官方 `milksu.tools-text` 贯通 Tool → TypeScript Runtime → Agent → 外部 MCP，提供本地文本统计和严格 Base64 编解码，不读取文件或网络。
 
 ## 发行检查表
 
@@ -107,8 +107,8 @@ Lua 仅开放 base/string/table/math，禁用文件、网络、模块加载和 s
 npm run plugins:build
 npm run plugins:check
 npm run plugins:test -- --source <template-or-plugin>
-go test ./internal/plugin ./plugins
-go test ./cmd/milksu-backend -run 'TestDesktop|TestInvoke|TestPluginMCP'
+npm run runtime:test
+npm run test:plugin-author
 npm --prefix app run build
 npm run test:sidecar
 ```

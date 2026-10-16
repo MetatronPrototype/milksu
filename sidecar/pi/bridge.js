@@ -1,3 +1,20 @@
+// stdout is the JSON-RPC channel to the Go supervisor; any console output
+// from bundled SDKs (for example the MCP client's capability warnings) would
+// be parsed as an event line and fail the whole stream. Send every console
+// method to stderr instead.
+for (const method of ["log", "info", "warn", "error", "debug"]) {
+  const original = console[method].bind(console);
+  console[method] = (...args) => {
+    try {
+      process.stderr.write(args.map(value => (
+        typeof value === "string" ? value : JSON.stringify(value)
+      )).join(" ") + "\n");
+    } catch {
+      original(...args);
+    }
+  };
+}
+
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -32,6 +49,8 @@ import { dropSendAfterAbort } from "./bridge-abort.js";
 import { withTurnHeartbeat } from "./bridge-turn-heartbeat.js";
 import { installRequestHttpDispatcher } from "./bridge-http-dispatcher.js";
 import { applyRequestBudgetToRuntime } from "./bridge-request-budget-stream.js";
+import { normalizeTraceId, resolveTraceId, traceConsoleError } from "../trace-id.js";
+import { withSpawnTraceId } from "./pi-subagents-spawn.cjs";
 import {
   applyUserMemorySnapshot,
   isCompanionRelay,
@@ -108,7 +127,6 @@ import {
   navigateFromUserMessage,
   rewindLastExploration,
 } from "./bridge-session-tree.js";
-import { createCTFTruncationContinuationExtension } from "./bridge-ctf-continuation.js";
 import { createReasoningOnlyRecoveryExtension } from "./bridge-reasoning-recovery.js";
 import {
   armAutoCompactionDeadline,
@@ -147,6 +165,7 @@ import {
   resolveWorkflowSessionRole,
   codingWorkspaceToolName,
   createCodingWorkspaceExtension,
+  updateReverseArtifactStore,
   createWorkspaceActionBroker,
   formatCodingWorkspaceInput,
   queueWorkspaceCompaction,
@@ -221,8 +240,8 @@ import {
 import { projectSessionContextComposition } from "./bridge-context-composition.js";
 import { withTokenFluxModelCompat } from "./tokenflux-model-compat.js";
 import { isPiHarnessEnabled, resolveHarnessAgentDir } from "./harness-adapter.js";
-// PR-2 批次 D2（扳机翻转）：门判定 + CTF/CVE/实验室工作区排除的唯一收口点
-//（MILKSU_PI_HARNESS=0 显式关＝回退旧引擎；CTF/CVE 工作区无论门开关一律旧引擎）。
+// 门判定 + 排除面的唯一收口点（MILKSU_PI_HARNESS=0 显式关＝回退旧引擎；
+// CVE / 实验室研究角色与遗留 ctf_ 会话 id 无论门开关一律旧引擎）。
 import { harnessSessionEligible } from "./harness-bridge-flip.js";
 import {
   createHarnessBridgeSessionLayer,
@@ -274,6 +293,7 @@ const sessionModelSources = new Map();
 const sessionConfiguredProviders = new Map();
 const abortedSessions = new Set();
 const sessionSubagentTasks = new Map();
+const reverseArtifactsByConversation = new Map();
 const sessionCreateCommands = new Map();
 function ignorePipeError(stream, label) {
   stream?.on("error", error => {
@@ -465,6 +485,7 @@ function createReviewedBackgroundTasksExtension(conversationId) {
 
 const subagentPollers = new Map();
 const researchRunContexts = new Map();
+const sessionTraceIds = new Map();
 
 function setResearchRunContext(conversationId, context, preserveExistingWorkers = false) {
   let contexts = researchRunContexts.get(conversationId);
@@ -550,6 +571,9 @@ function observeResearchWorkspaceAction({ conversationId, action, result }) {
       workerTaskIDs: new Map(),
       workerPrompts: new Map(),
       stopUnconfirmed: false,
+      traceId: normalizeTraceId(value?.run?.traceId)
+        || sessionTraceIds.get(conversationId)
+        || resolveTraceId({}, process.env),
     }, action === "resume_research_run");
     return;
   }
@@ -793,6 +817,7 @@ function harnessLayer() {
         reasoningOnlyRecovered,
         sessionSubagentTasks,
         researchRunContexts,
+        sessionTraceIds,
       },
     });
   }
@@ -801,10 +826,10 @@ function harnessLayer() {
 
 /**
  * 门开路由：已是 harness 会话，或门开（D2 扳机翻转后缺省开；MILKSU_PI_HARNESS=0 显式
- * 关＝回退旧引擎）且尚无（旧引擎）会话。CTF/CVE/实验室工作区排除与门判定收口在
+ * 关＝回退旧引擎）且尚无（旧引擎）会话。排除与门判定收口在
  * harness-bridge-flip 的 harnessSessionEligible（唯一判定点，别处不散）：command 带
- * sessionRole 时（send_message）含研究/CTF 角色排除；传字符串 id 的控制命令按
- * 工作区类型与 ctf_ 前缀判定。
+ * sessionRole 时（send_message）含研究角色与遗留 solver 角色排除；传字符串 id 的
+ * 控制命令按遗留 ctf_ 前缀判定。isCtfWorkspace 恒 false。
  */
 function harnessTurnRouted(commandOrId) {
   const command = commandOrId != null && typeof commandOrId === "object"
@@ -845,7 +870,7 @@ function backgroundToolRequiresApproval(toolName, input) {
 function describeError(error) {
   if (!(error instanceof Error)) return String(error);
   const resource = error.resource ? `\nresource: ${error.resource}` : "";
-  return `${error.stack || error.message}${resource}`;
+  return `${error.message || error.stack}${resource}`;
 }
 
 function extractToolResultContent(result) {
@@ -1400,37 +1425,6 @@ function formatMcpApprovalInput(input, serverName) {
 
 function formatToolInput(toolName, args, secrets = []) {
   if (!args || typeof args !== "object") return "";
-  if (toolName === "ctf_request_endpoint") {
-    const protocol = String(args.protocol ?? "").trim().toLowerCase();
-    let endpoint = "";
-    if (["http", "https"].includes(protocol)) {
-      try {
-        endpoint = new URL(String(args.endpoint ?? "")).origin;
-      } catch {
-        endpoint = "[invalid endpoint omitted]";
-      }
-    } else {
-      const candidate = String(args.endpoint ?? "").trim();
-      try {
-        const parsed = new URL(`tcp://${candidate}`);
-        const port = Number(parsed.port);
-        endpoint = parsed.hostname
-          && Number.isInteger(port)
-          && port >= 1
-          && port <= 65535
-          && parsed.username === ""
-          && parsed.password === ""
-          && parsed.pathname === ""
-          && parsed.search === ""
-          && parsed.hash === ""
-          ? `${parsed.hostname}:${port}`
-          : "[invalid endpoint omitted]";
-      } catch {
-        endpoint = "[invalid endpoint omitted]";
-      }
-    }
-    return [protocol, endpoint].filter(Boolean).join(" · ");
-  }
   if (toolName === "bash" && typeof args.command === "string") {
     return `$ ${commandActivityLabel(args.command)}`;
   }
@@ -1802,6 +1796,11 @@ function subscribeSession(
   const toolStartedAt = new Map();
 
   session.subscribe((event) => {
+    if (event.type === "message_end") {
+      const store = reverseArtifactsByConversation.get(conversationId) ?? [];
+      updateReverseArtifactStore(store, event.message);
+      reverseArtifactsByConversation.set(conversationId, store);
+    }
     if (
       event.type === "compaction_start"
       || event.type === "compaction_end"
@@ -2118,9 +2117,6 @@ function createMilkSUResourceLoader(
       getUiLocale: () => sessionPolicies.get(conversationId)?.uiLocale,
     }),
   ];
-  if (sessionRole) {
-    extensionFactories.push(createCTFTruncationContinuationExtension(sessionRole));
-  }
   extensionFactories.push(
       piGoalExtension,
       createReviewedBackgroundTasksExtension(conversationId),
@@ -2155,6 +2151,8 @@ function createMilkSUResourceLoader(
         observeResearchWorkspaceAction,
         () => sessionProviderSecrets(conversationId),
         () => hasActiveResearchRun(conversationId),
+        () => reverseArtifactsByConversation.get(conversationId) ?? [],
+        () => sessionTraceIds.get(conversationId) || resolveTraceId({}, process.env),
       ),
       createEnvExtension(
         conversationId,
@@ -2280,10 +2278,7 @@ async function loadRuntimeSessionPolicy(cwd, command) {
     imageGenConfigured: imageGenIsConfigured(),
     imageDraw: command.imageDraw === true,
   });
-  const effectiveSessionRole = resolveWorkflowSessionRole(
-    command.sessionRole,
-    policy.ctf,
-  );
+  const effectiveSessionRole = resolveWorkflowSessionRole(command.sessionRole);
   const disabledSkills = Array.isArray(command.disabledSkills)
     ? command.disabledSkills
     : [];
@@ -2373,7 +2368,7 @@ function configureSubagentRuntime() {
 async function createSession(command) {
   const conversationId = command.conversationId;
   if (!conversationId) throw new Error("conversationId is required");
-  // PR-2 批次 D2（扳机翻转）：门默认开 + CTF/CVE/实验室排除，判定收口在
+  // 门默认开；CVE / 实验室研究角色与遗留 ctf_ id 排除。判定收口在
   // harness-bridge-flip（MILKSU_PI_HARNESS=0 显式关＝回退下面的旧引擎全功能路径）。
   if (harnessSessionEligible(command)) {
     return harnessLayer().createSession(command);
@@ -2383,7 +2378,7 @@ async function createSession(command) {
   const existing = sessions.get(conversationId);
   if (existing) {
     // Re-enable on every reuse. A persisted Pi settings file can leave
-    // compaction off; Coding / CTF / CVE / lab sessions must never run without it.
+    // compaction off; Coding / CVE / lab sessions must never run without it.
     if (typeof existing.setAutoCompactionEnabled === "function") {
       existing.setAutoCompactionEnabled(true);
     }
@@ -2467,7 +2462,7 @@ async function createSession(command) {
     // such as background tasks then cannot reconcile processes after a
     // Sidecar restart.
     await session.bindExtensions({ mode: "print" });
-    // Pi owns auto-compaction. Never leave it off for Coding, CTF, CVE, or lab.
+    // Pi owns auto-compaction. Never leave it off for Coding, CVE, or lab.
     if (typeof session.setAutoCompactionEnabled === "function") {
       session.setAutoCompactionEnabled(true);
     }
@@ -2480,7 +2475,7 @@ async function createSession(command) {
       conversationId,
       session,
       sessionPolicy.maxToolEventOutputBytes,
-      sessionPolicy.ctf ? "ctf" : "coding",
+      "coding",
     );
 
     const effectiveModel = configureRuntimeModel(
@@ -2526,6 +2521,7 @@ async function createSession(command) {
     sessionPolicyControllers.delete(conversationId);
     sessionModelSources.delete(conversationId);
     sessionConfiguredProviders.delete(conversationId);
+    reverseArtifactsByConversation.delete(conversationId);
     throw error;
   }
 }
@@ -2533,8 +2529,21 @@ async function createSession(command) {
 async function sendMessage(command) {
   const conversationId = command.conversationId;
   if (!conversationId) throw new Error("conversationId is required");
-  // D2：送完整 command 进路由判定（send_message 自带 sessionRole——CTF/CVE/实验室
-  // 角色在这里排除；不带的命令走 harnessTurnRouted 的字符串分支，按工作区判定）。
+  const traceId = resolveTraceId(command);
+  if (traceId) {
+    sessionTraceIds.set(conversationId, traceId);
+    process.env.MILKSU_TRACE_ID = traceId;
+  }
+  return withSpawnTraceId(
+    traceId || sessionTraceIds.get(conversationId) || "",
+    () => dispatchSendMessage(command),
+  );
+}
+
+async function dispatchSendMessage(command) {
+  const conversationId = command.conversationId;
+  // 送完整 command 进路由判定（send_message 自带 sessionRole——研究角色与遗留
+  // solver 角色在这里排除；不带的命令走 harnessTurnRouted 的字符串分支，按 ctf_ 前缀判定）。
   if (harnessTurnRouted(command)) {
     return harnessLayer().sendMessage(command);
   }
@@ -2621,6 +2630,7 @@ async function sendMessage(command) {
     sessionPolicyControllers.delete(conversationId);
     sessionModelSources.delete(conversationId);
     sessionConfiguredProviders.delete(conversationId);
+    reverseArtifactsByConversation.delete(conversationId);
     forgetSessionProviders(conversationId);
     existing = undefined;
   }
@@ -2829,8 +2839,8 @@ async function destroySession(command) {
   let sessionFile = session?.sessionFile;
   // PR-2 批次 D2（PREP §3.6 停用面收口）：deletePersisted 的文件定位先读归档 manifest
   //（一次 JSON 读，替代全目录扫描——翻转后旧会话的文件真相在 manifest）；未归档
-  //（未导出的新 JSONL）仍走下面的 SessionManager.list 兜底——门关回退与 CTF 工作
-  // 区路径行为不变。
+  //（未导出的新 JSONL）仍走下面的 SessionManager.list 兜底——门关回退与遗留 ctf_
+  // 会话 id 路径行为不变。
   if (!sessionFile && command.deletePersisted) {
     sessionFile = await archivedLegacySourcePath(resolveHarnessAgentDir(), conversationId);
   }
@@ -2890,6 +2900,7 @@ async function destroySession(command) {
   forgetSessionProviders(conversationId);
   sessionSubagentTasks.delete(conversationId);
   researchRunContexts.delete(conversationId);
+  sessionTraceIds.delete(conversationId);
   backgroundTaskControllers.delete(conversationId);
   promptQueues.delete(conversationId);
   abortedSessions.delete(conversationId);
@@ -3574,7 +3585,7 @@ input.on("line", (line) => {
   commandQueue = commandQueue
     .then(() => handleCommand(command))
     .catch((error) => {
-      console.error("MilkSU Pi Sidecar command failed", error);
+      traceConsoleError(resolveTraceId(command) || sessionTraceIds.get(command.conversationId), "MilkSU Pi Sidecar command failed", describeError(error));
       emit(command.conversationId ?? null, "error", { error: describeError(error) });
     });
 });
@@ -3599,6 +3610,7 @@ async function disposeAllSessions() {
   await harnessBridgeLayer?.disposeAll();
   for (const conversationId of subagentPollers.keys()) stopSubagentPoll(conversationId);
   researchRunContexts.clear();
+  sessionTraceIds.clear();
   sessions.clear();
   sessionCreateCommands.clear();
   backgroundTaskControllers.clear();

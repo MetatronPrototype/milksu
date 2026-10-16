@@ -109,7 +109,6 @@ const CONTROL_STYLES = `
 
 export default function CodingComposerControls({
   running,
-  ctfSession,
   approvalPolicy,
   approvalLabel,
   modelKey,
@@ -118,6 +117,7 @@ export default function CodingComposerControls({
   thinkingLevels: thinkingLevelsProp,
   thinkingLevel,
   kernel,
+  acpAgentId,
   contextUsage,
   leading,
   footerEnd,
@@ -128,6 +128,7 @@ export default function CodingComposerControls({
   onChangeModel,
   onChangeThinkingLevel,
   onChangeKernel,
+  onCreateAgent,
   onShowPermissions,
   imageHome = false,
   imageModelKey = '',
@@ -136,7 +137,6 @@ export default function CodingComposerControls({
   onChangeImageModel,
 }: {
   running: boolean
-  ctfSession: boolean
   approvalPolicy: CodingApprovalPolicy
   approvalLabel: string
   modelKey: string
@@ -145,6 +145,7 @@ export default function CodingComposerControls({
   thinkingLevels?: ModelThinkingLevel[]
   thinkingLevel?: ModelThinkingLevel
   kernel?: 'pi' | 'dsh'
+  acpAgentId?: string
   contextUsage?: ContextUsagePresentation | null
   leading?: ReactNode
   footerEnd?: ReactNode
@@ -154,7 +155,8 @@ export default function CodingComposerControls({
   onChangeApprovalPolicy?: (value: string) => void
   onChangeModel?: (value: string) => void
   onChangeThinkingLevel?: (level: ModelThinkingLevel) => void
-  onChangeKernel?: (value: 'pi' | 'dsh') => void
+  onChangeKernel?: (value: 'pi' | 'dsh', agentId?: string) => void
+  onCreateAgent?: (agent: import('@/lib/acpAgent').NamedAcpAgent) => void
   onShowPermissions?: () => void
   imageHome?: boolean
   imageModelKey?: string
@@ -174,7 +176,7 @@ export default function CodingComposerControls({
       model,
       disabled: modelUnavailableOnDsh(model, group.providerId),
       title: modelUnavailableOnDsh(model, group.providerId)
-        ? t('DeepSeek Harness 不支持这个模型', 'DeepSeek Harness does not support this model')
+        ? t('这个 Agent 不支持这个模型', 'This agent does not support this model')
         : undefined,
     })),
   }))
@@ -208,8 +210,6 @@ export default function CodingComposerControls({
     const parsed = parseComposerModelKey(modelKey)
     return `${parsed.model ?? ''} ${compactModelLabel}`
   }
-
-  void ctfSession
 
   return (
     <div className="chat-composer__slots">
@@ -313,12 +313,14 @@ export default function CodingComposerControls({
                 }]}
             groups={imageHome ? imageGroups : modelGroups}
             kernel={kernel}
+            acpAgentId={acpAgentId}
             thinkingLevels={imageHome ? [] : thinkingLevels}
             thinkingLevel={thinkingLevel}
             contextLabel={imageHome ? undefined : contextLabel}
             showRuntime={!imageHome}
             onChangeModel={imageHome ? onChangeImageModel : changeModel}
             onChangeKernel={onChangeKernel}
+            onCreateAgent={onCreateAgent}
             onChangeThinkingLevel={onChangeThinkingLevel}
           />
           {accessory}

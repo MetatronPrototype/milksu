@@ -21,13 +21,13 @@ import {
 } from './lib/desktop-build-provenance.mjs'
 import { desktopAccountConfigFromEnvironment } from './lib/desktop-account-config.mjs'
 import { desktopChannelConfig } from './lib/desktop-channel.mjs'
+import { compileNativeAddons, nativeAddonResources } from './lib/desktop-native.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const channelConfig = desktopChannelConfig('stable')
 const platform = 'windows/amd64'
 const outputDirectory = join(repositoryRoot, 'build', 'electron', 'windows', 'stable')
 const releaseDirectory = join(repositoryRoot, 'build', 'release')
-const backendPath = join(repositoryRoot, 'build', 'desktop', 'milksu-backend.exe')
 const sidecarPath = join(repositoryRoot, 'build', 'sidecar', 'windows-amd64')
 
 function run(command, args, options = {}) {
@@ -107,20 +107,15 @@ await writeFile(
 )
 
 await run('npm', ['--prefix', 'app', 'run', 'build'])
-await run('go', [
-  'build',
-  '-trimpath',
-  '-ldflags=-s -w',
-  '-o',
-  backendPath,
-  './cmd/milksu-backend',
+await run(process.execPath, [
+  join(repositoryRoot, 'scripts', 'build-runtime.mjs'),
 ])
-await chmod(backendPath, 0o755)
 await run(process.execPath, [
   join(repositoryRoot, 'scripts', 'package-sidecar.mjs'),
   'build',
   `--platform=${platform}`,
 ])
+await compileNativeAddons(repositoryRoot)
 
 const files = Array.isArray(desktopPackage.build?.files)
   ? [...desktopPackage.build.files]
@@ -152,7 +147,11 @@ const builderConfig = {
   },
   extraResources: [
     { from: join(repositoryRoot, 'app', 'dist'), to: 'renderer' },
-    { from: backendPath, to: 'milksu-backend.exe' },
+    { from: join(repositoryRoot, 'runtime', 'src', 'envbroker', 'packages'), to: 'envbroker/packages' },
+    { from: join(repositoryRoot, 'runtime', 'dist', 'main.cjs'), to: 'runtime/main.cjs' },
+    { from: join(repositoryRoot, 'runtime', 'dist', 'plugin-mcp.cjs'), to: 'runtime/plugin-mcp.cjs' },
+    ...nativeAddonResources(repositoryRoot),
+    { from: join(repositoryRoot, 'plugins', 'official'), to: 'plugins/official' },
     { from: sidecarPath, to: 'milksu-sidecar' },
     // electron-builder createFilter skips a source-root node_modules directory.
     { from: join(sidecarPath, 'node_modules'), to: 'milksu-sidecar/node_modules' },
@@ -207,7 +206,7 @@ const unpackedResources = join(outputDirectory, 'win-unpacked', 'resources')
 for (const required of [
   join(outputDirectory, 'win-unpacked', 'MilkSU.exe'),
   join(unpackedResources, 'renderer', 'index.html'),
-  join(unpackedResources, 'milksu-backend.exe'),
+  join(unpackedResources, 'runtime', 'main.cjs'),
   join(unpackedResources, BUILD_TRACKING_RESOURCE),
   join(unpackedResources, 'milksu-sidecar', 'node.exe'),
   join(unpackedResources, 'milksu-sidecar', 'chat-bridge.cjs'),
@@ -219,7 +218,8 @@ for (const required of [
   join(unpackedResources, 'milksu-sidecar', 'THIRD_PARTY-LICENSES', 'cua-MIT.txt'),
   join(unpackedResources, 'milksu-sidecar', 'manifest.json'),
   join(unpackedResources, 'milksu-sidecar', 'node_modules', '@playwright', 'mcp', 'cli.js'),
-  join(unpackedResources, 'milksu-sidecar', 'node_modules', '@deepseek-ai', 'cordis-plugin-group'),
+  join(unpackedResources, 'node-pty', 'package.json'),
+  join(unpackedResources, 'windows-windows.node'),
 ]) {
   if (!await exists(required)) {
     throw new Error(`Windows package is missing required runtime artifact: ${required}`)

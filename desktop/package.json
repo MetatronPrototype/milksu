@@ -14,6 +14,7 @@
     "ws": "8.21.1"
   },
   "devDependencies": {
+    "@electron/rebuild": "4.0.1",
     "electron": "43.2.0",
     "electron-builder": "26.15.7"
   },
@@ -84,8 +85,24 @@
         "to": "renderer"
       },
       {
-        "from": "../build/desktop/milksu-backend",
-        "to": "milksu-backend"
+        "from": "../runtime/dist/main.cjs",
+        "to": "runtime/main.cjs"
+      },
+      {
+        "from": "../runtime/dist/plugin-mcp.cjs",
+        "to": "runtime/plugin-mcp.cjs"
+      },
+      {
+        "from": "../runtime/src/envbroker/packages",
+        "to": "envbroker/packages"
+      },
+      {
+        "from": "../plugins/official",
+        "to": "plugins/official"
+      },
+      {
+        "from": "../browserextension",
+        "to": "browserextension"
       }
     ],
     "mac": {

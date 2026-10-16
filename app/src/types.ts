@@ -1,4 +1,9 @@
-import { defaultAgentKernel, defaultBusySend, type BusySendPolicy } from '@/lib/agentKernel'
+import { defaultBusySend, type BusySendPolicy } from '@/lib/agentKernel'
+import {
+  derivedAcpAgent,
+  migrateAcpAgents,
+  selectableAgentKernel,
+} from '@/lib/acpAgent'
 import { normalizePreferredExternalEditor } from '@/lib/externalEditor'
 import { normalizeUiEmphasisPreset, type UiEmphasisPreset } from '@/lib/uiEmphasis'
 import { normalizeUiFontSize, type UiFontSize } from '@/lib/uiFonts'
@@ -112,6 +117,7 @@ export interface ResearchRun {
   phase: ResearchPhase
   report?: string
   workerStopUnconfirmed?: boolean
+  traceId?: string
   createdAt: string
   updatedAt: string
 }
@@ -269,6 +275,8 @@ export interface Conversation {
   workspacePath?: string
   /** Agent runtime pinned for this conversation. Missing records are Pi. */
   kernel?: import('@/lib/agentKernel').AgentKernel
+  /** Named ACP agent for kernel `dsh`. Missing records use the settings default. */
+  acpAgentId?: string
   /** DSH child session spawned from Multitask; hidden from the sidebar. */
   parentConversationId?: string
   /** New sends while the parent is running stay on this conversation. */
@@ -302,12 +310,9 @@ export interface Conversation {
   /** Live slash catalog from host commands.list. */
   dshCommands?: DshCommandDescriptor[]
   dshCommandsError?: string
-  ctfJobId?: string
-  ctfMode?: 'coach' | 'copilot' | 'delegate'
-  ctfRole?: 'solver' | 'tool-builder' | 'strategist'
-  /** When set, the chat lives in this sidebar home even without a bound challenge/CVE/lab job. */
-  workspaceHome?: 'chat' | 'image' | 'ctf' | 'vuln' | 'lab'
-  /** Structured CTF/CVE domain snapshot for the shared Coding/Pi panel. */
+  /** When set, the chat lives in this sidebar home even without a bound CVE/lab job. */
+  workspaceHome?: 'chat' | 'image' | 'vuln' | 'lab' | 'reverse'
+  /** Structured CVE/Lab domain snapshot for the shared Coding/Pi panel. */
   domainTaskContext?: import('@/lib/domainTaskContext').DomainTaskContext
   /** Last occupancy shown on the composer ring; restored when the conversation is opened. */
   lastContextUsage?: ConversationContextUsage
@@ -338,12 +343,6 @@ export interface ConversationContextUsage {
   categories?: ContextComposition['categories']
 }
 
-export interface CTFChatAction {
-  kind: 'orient' | 'hint' | 'replan' | 'handoff'
-  prompt: string
-  level?: 1 | 2
-}
-
 export interface ProviderConfig {
   api_key: string
   has_api_key: boolean
@@ -365,13 +364,6 @@ export interface RelayConfig {
   has_key: boolean
   session_only?: boolean
   remove_key?: boolean
-}
-
-export interface NSSCTFArenaConfig {
-  token: string
-  has_token: boolean
-  session_only?: boolean
-  remove_token?: boolean
 }
 
 export interface ModelVerification {
@@ -431,6 +423,11 @@ export interface AppSettings {
   active_provider: string
   active_model: string
   default_kernel?: import('@/lib/agentKernel').AgentKernel
+  /** Named ACP agents. Each has a custom name and a command. */
+  acp_agents?: import('@/lib/acpAgent').NamedAcpAgent[]
+  default_acp_agent_id?: string
+  /** Derived from the default named agent. Kept so older readers still see a command. */
+  acp_agent?: import('@/lib/acpAgent').AcpAgentConfig
   /** Installed agent kernel package versions; injected by the backend, never persisted. */
   runtime_versions?: Record<string, string>
   busy_send?: BusySendPolicy
@@ -443,7 +440,6 @@ export interface AppSettings {
   model_failures?: Array<{ provider: string; model: string; reason?: string; at?: string }>
   model_routing: ModelRoutingConfig
   relay?: RelayConfig
-  nssctf_arena?: NSSCTFArenaConfig
   locale?: 'en' | 'zh'
   disabled_skills?: string[]
   /** Account catalog ids the user turned off. Missing ids stay enabled. */
@@ -657,14 +653,6 @@ export interface SessionIndexRefreshResult {
   toolCallCount?: number
 }
 
-/** Per-challenge CTF memory store overview for the Memory settings page. */
-export interface CTFMemoryOverview {
-  path?: string
-  bytes?: number
-  activeCount?: number
-  archivedCount?: number
-}
-
 export interface CompanionDispatchResult {
   accepted: boolean
   delivered: boolean
@@ -804,11 +792,21 @@ export function withAppSettingsDefaults(value: AppSettings): AppSettings {
       : activeInfo?.models.includes(requestedModel)
         ? requestedModel
         : activeInfo?.models[0] ?? fallbackSelection.model
+  const acpMigrated = migrateAcpAgents({
+    acp_agents: value.acp_agents,
+    acp_agent: value.acp_agent,
+    acp_guest: (value as AppSettings & { acp_guest?: AppSettings['acp_agent'] }).acp_guest,
+    default_acp_agent_id: value.default_acp_agent_id,
+  })
+  const acpDefault = derivedAcpAgent(acpMigrated.agents, acpMigrated.defaultId)
   return {
     ...value,
     active_provider: activeProvider,
     active_model: activeModel,
-    default_kernel: defaultAgentKernel(value.default_kernel),
+    acp_agents: acpMigrated.agents,
+    default_acp_agent_id: acpMigrated.defaultId || undefined,
+    acp_agent: acpDefault,
+    default_kernel: selectableAgentKernel(value.default_kernel, acpDefault, acpMigrated.agents),
     busy_send: defaultBusySend(value.busy_send),
     model_routing: normalizeModelRouting(value.model_routing),
     preferred_external_editor: normalizePreferredExternalEditor(value.preferred_external_editor),

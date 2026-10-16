@@ -75,6 +75,7 @@ describe('conversation context handoff', () => {
     expect(desktop.invokeCommand).toHaveBeenCalledWith('handoff_coding_session', {
       conversationId: 'source-1',
       kernel: 'dsh',
+      acpAgentId: '',
     })
     expect(conversations.activeId).toBe('handed-session')
     const handed = conversations.conversations.find(item => item.id === 'handed-session')
@@ -121,7 +122,7 @@ describe('conversation context handoff', () => {
     desktop.invokeCommand.mockImplementation(async (command: string) => {
       if (command === 'save_conversation') return null
       if (command === 'handoff_coding_session') {
-        throw new Error('DeepSeek Harness host IPC is not configured')
+        throw new Error('Agent host IPC is not configured')
       }
       return null
     })

@@ -149,6 +149,7 @@ import {
 import { createToolRepeatGuard } from "./bridge-tool-repeat.js";
 import { normalizeThinkingProfile } from "./bridge-thinking.js";
 import { assistantFailureText } from "./bridge-model-failure.js";
+import { updateReverseArtifactStore } from "./bridge-workspace.js";
 import { projectSessionContextComposition } from "./bridge-context-composition.js";
 import { contextUsageWindowPayload, resolveMaxOutput } from "./context-window-payload.js";
 import { knownMaxTokens } from "./known-context-window.cjs";
@@ -247,7 +248,9 @@ export function createHarnessBridgeSessionLayer(context) {
       reasoningOnlyRecovered,
       sessionSubagentTasks,
       researchRunContexts,
+      sessionTraceIds = new Map(),
     },
+    reverseArtifactsByConversation = new Map(),
     environment = process.env,
     resolveAgentDirectory = () => resolveHarnessAgentDir(environment),
     harnessRuntimeOptions = () => ({}),
@@ -485,6 +488,8 @@ export function createHarnessBridgeSessionLayer(context) {
           observeResearchAction: observeResearchWorkspaceAction,
           researchSecrets: sessionProviderSecrets,
           isResearchActive: hasActiveResearchRun,
+          getReverseArtifacts: id => reverseArtifactsByConversation.get(id) ?? [],
+          getTraceId: id => sessionTraceIds.get(id) || activeResearchRunContext?.(id)?.traceId,
           workspace: process.cwd(),
         });
         // PR-2 批次 C1：子代理·协作工具面（milksu-subagents：builtin 角色 = 任务
@@ -501,6 +506,9 @@ export function createHarnessBridgeSessionLayer(context) {
           childRegistry: subagentChildRegistry,
           updateSubagentTasks: updateSubagentTasksForSession,
           environment,
+          researchTraceId: alias => (
+            activeResearchRunContext?.(alias)?.traceId || sessionTraceIds.get(alias)
+          ),
         });
         const subagentHalt = createHarnessSubagentHalt(
           subagentChildRegistry,
@@ -1659,6 +1667,11 @@ export function createHarnessBridgeSessionLayer(context) {
     }
     if (event.type === "message_end") {
       const message = event?.entry?.model?.[0];
+      const store = reverseArtifactsByConversation.get(alias) ?? [];
+      for (const item of event?.entry?.model ?? []) {
+        updateReverseArtifactStore(store, item);
+      }
+      reverseArtifactsByConversation.set(alias, store);
       const failure = message?.role === "assistant" ? assistantFailureText(message) : "";
       // PR-2 批次 B2e：run 内 assistant 消息收集（终态分类与无进展指纹的输入）。
       goalMachine.noteRunMessage(record.durableId, message);
@@ -2341,6 +2354,8 @@ export function createHarnessBridgeSessionLayer(context) {
     forgetSessionProviders(alias);
     sessionSubagentTasks.delete(alias);
     researchRunContexts.delete(alias);
+    sessionTraceIds.delete(alias);
+    reverseArtifactsByConversation.delete(alias);
     promptQueues.delete(alias);
     abortedSessions.delete(alias);
     sessionCreateCommands.delete(alias);
