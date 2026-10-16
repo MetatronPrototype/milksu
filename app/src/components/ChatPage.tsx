@@ -1230,11 +1230,13 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
   const waitingLabel = (() => {
     // 排在同一个 sidecar 的另一个对话后面是「排队」，不是「停滞」：
     // 在这里说“连接丢了”就是横幅以前撒的那个谎。
+    // β.195 实测收敛：排队/重试的完整状态（哪个会话在跑、第几次、倒计时）由顶部
+    // 钉顶横幅唯一承载，底部等待行只留极简状态词——同一信息两处复读是噪音。
     if (queuedBehindLabel) {
-      return t('排队中（同工作区另一个会话在跑）', 'Queued (another conversation in this workspace is running)')
+      return t('排队中…', 'Queued…')
     }
-    // R4：引擎 durable 重试进行中——退避期没有产出是计划内的，直说在重试第几次。
-    if (modelRetryNotice) return modelRetryLabelText
+    // R4：引擎 durable 重试进行中——退避期没有产出是计划内的。细节在顶部横幅。
+    if (modelRetryNotice) return t('重试中…', 'Retrying…')
     // 工具正在跑就直说：引擎这时候正在干活，说成“等待引擎响应”是假话。
     if (runningToolActive) return t('工具执行中…', 'Tool running…')
     if (stalled) {
