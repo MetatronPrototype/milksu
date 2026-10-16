@@ -7,7 +7,7 @@ import {
 import { SettingsStore } from './config/settings-store.ts'
 import { ConversationStore } from './conversations.ts'
 import { closeBrowserCap } from './domains/browser.ts'
-import { closeComputerUse } from './domains/computeruse.ts'
+import { closeComputerUse, handleComputerUseWorkspaceAction } from './domains/computeruse.ts'
 import { bindCodingEnv } from './domains/codingenv.ts'
 import { bindTerminals } from './domains/terminals.ts'
 import { applyStartupRestore, bindPlatformServices, beginRuntimeLifespan, markRuntimeCleanExit } from './domains/platform.ts'
@@ -167,6 +167,12 @@ async function main(): Promise<void> {
     vuln,
     companion,
   }
+
+  // Typed milksu_workspace Computer Use actions (list / lock / unlock /
+  // driver) route through the same manager the renderer RPC handlers use,
+  // so the agent can rebind or release a visible session itself.
+  engine.attachComputerUseActions((conversationId, action, input) =>
+    handleComputerUseWorkspaceAction(ctx, conversationId, action, input))
 
   const serve = desktop.onLine((message) => {
     void handleDesktopMessage(message)

@@ -69,6 +69,7 @@ export type ManagerOptions = {
   grantDirectory?: string
   startTimeoutMs?: number
   permissionProbe?: (prompt: boolean) => Promise<Permissions>
+  permissionPrompt?: (kind: PermissionKind) => Promise<Permissions>
   permissionOpen?: (kind: PermissionKind) => Promise<void>
   signingProbe?: () => Promise<SigningStatus>
   targetProvider?: () => Promise<Target[]>
@@ -125,6 +126,7 @@ export class Manager {
   private readonly startTimeoutMs: number
   private readonly grants: GrantStore
   private readonly permissionProbe: (prompt: boolean) => Promise<Permissions>
+  private readonly permissionPrompt: (kind: PermissionKind) => Promise<Permissions>
   private readonly permissionOpen: (kind: PermissionKind) => Promise<void>
   private readonly signingProbe: () => Promise<SigningStatus>
   private readonly targetProvider: () => Promise<Target[]>
@@ -148,6 +150,9 @@ export class Manager {
       : this.os === 'linux' ? 90_000 : 16_000
     this.grants = new GrantStore(String(options.grantDirectory ?? '').trim())
     this.permissionProbe = options.permissionProbe ?? (async () => ({ accessibility: false, screenRecording: false }))
+    // Native prompting lives in the Electron host (host-attributed TCC); the
+    // manager default fails closed and never invents grants.
+    this.permissionPrompt = options.permissionPrompt ?? (async () => ({ accessibility: false, screenRecording: false }))
     this.permissionOpen = options.permissionOpen ?? (async () => {})
     this.signingProbe = options.signingProbe ?? (async () => ({
       bundleId: DEFAULT_HOST_BUNDLE_ID,
@@ -247,11 +252,26 @@ export class Manager {
   async requestPermission(kind: PermissionKind): Promise<Status> {
     parsePermissionKind(kind)
     await this.mu.lock()
-    const permissions = await this.permissionProbe(false)
-    const status = publicStatus(await this.statusLocked(permissions))
+    let permissions = await this.permissionProbe(false)
     const os = this.os
+    const prompt = this.permissionPrompt
     this.mu.unlock()
-    if (os === 'darwin') await this.permissionOpen(kind)
+    if (os === 'darwin' && !permissionGranted(permissions, kind)) {
+      // The native request can block until the user answers, so it runs off
+      // the manager lock; Status and Start stay responsive meanwhile.
+      await prompt(kind)
+      // Re-read through the configured probe so the reported state comes from
+      // the same source every other path uses, not from the dialog's own view.
+      await this.mu.lock()
+      permissions = await this.permissionProbe(false)
+      this.mu.unlock()
+    }
+    await this.mu.lock()
+    const status = publicStatus(await this.statusLocked(permissions))
+    this.mu.unlock()
+    if (os === 'darwin' && !permissionGranted(status.permissions, kind)) {
+      status.problem = permissionProblemText(kind)
+    }
     return status
   }
 
@@ -277,12 +297,62 @@ export class Manager {
     await this.mu.lock()
     this.implicitRestoreFailed.delete(id)
     if (this.active) {
-      const permissions = await this.permissionProbe(false)
-      const status = publicStatus(await this.statusLocked(permissions))
       const same = this.active.conversationId === id
       const phase = this.active.phase
+      if (same && phase === 'ready') {
+        // Dynamic target lock (CU v2 §3.1): a same-conversation Start with a
+        // different pid/windowId rebinds instead of returning the stale
+        // target. Resolve the requested selection first so an invalid target
+        // (process gone, window closed) keeps the current lock.
+        let candidate: Target
+        try {
+          candidate = await this.resolveTargetLocked(selection)
+        } catch (error) {
+          const message = `Computer Use 改绑的新目标无效，原锁定保持不变：${error instanceof Error ? error.message : error}`
+          this.mu.unlock()
+          const status = await this.statusForConversation(id)
+          throw Object.assign(new Error(message), { status })
+        }
+        if (
+          candidate.pid === this.active.target.pid
+          && candidate.windowId === this.active.target.windowId
+        ) {
+          // Same target: idempotent relock. Report the conversation's real
+          // authorization state; the bare locked status loses the authorized
+          // bit (audit D3).
+          this.mu.unlock()
+          return this.statusForConversation(id)
+        }
+        // Different target: release the old session but keep the grant
+        // anchor (revoke=false), then start a fresh driver session. If the
+        // new start fails the machine is left unlocked on purpose — no
+        // rollback — and retrying lock on the same conversation restores it.
+        this.mu.unlock()
+        try {
+          await this.stop(id, false)
+        } catch (error) {
+          const message = `释放原 Computer Use 锁定失败，改绑未执行：${error instanceof Error ? error.message : error}`
+          const status = await this.statusForConversation(id)
+          throw Object.assign(new Error(message), { status })
+        }
+        await this.mu.lock()
+        if (this.active) {
+          const permissions = await this.permissionProbe(false)
+          const status = publicStatus(await this.statusLocked(permissions))
+          this.mu.unlock()
+          throw Object.assign(new Error('Computer Use is already attached to another visible Coding task'), { status })
+        }
+        try {
+          return await this.startDriverSession(id, selection)
+        } catch (error) {
+          const message = `Computer Use 改绑新目标失败，当前没有锁定会话；重新选择目标 lock 即可恢复：${error instanceof Error ? error.message : error}`
+          const status = (error as { status?: Status }).status ?? await this.statusForConversation(id)
+          throw Object.assign(new Error(message), { status })
+        }
+      }
+      const permissions = await this.permissionProbe(false)
+      const status = publicStatus(await this.statusLocked(permissions))
       this.mu.unlock()
-      if (same && phase === 'ready') return status
       if (same && phase === 'starting') {
         const transition = await this.waitForRestoreTransition(id)
         if (transition.ready) return transition.status
@@ -290,6 +360,13 @@ export class Manager {
       }
       throw Object.assign(new Error('Computer Use is already attached to another visible Coding task'), { status })
     }
+    return this.startDriverSession(id, selection)
+  }
+
+  // startDriverSession starts a fresh driver session for one conversation on
+  // the selected target. Callers must hold mu with active == null on entry;
+  // the lock is released before every return.
+  private async startDriverSession(id: string, selection: TargetSelection): Promise<Status> {
     if (this.os === 'linux') {
       this.mu.unlock()
       return this.startLinuxPortal(id, selection)
@@ -822,6 +899,18 @@ function normalizeOs(value?: string): string {
   if (os === 'win32') return 'windows'
   if (os === 'darwin' || os === 'linux' || os === 'windows') return os
   return process.platform === 'win32' ? 'windows' : process.platform
+}
+
+function permissionGranted(permissions: Permissions, kind: PermissionKind): boolean {
+  if (kind === 'screen-recording') return permissions.screenRecording
+  return permissions.accessibility
+}
+
+function permissionProblemText(kind: PermissionKind): string {
+  if (kind === 'screen-recording') {
+    return '屏幕录制授权仍未生效：请在系统弹框点「允许」（新版可能要求退出并重新打开 MilkSU）；若弹框未出现或旧条目失效，到 系统设置 → 隐私与安全性 → 屏幕录制 重新允许当前 MilkSU。'
+  }
+  return '辅助功能授权仍未生效：请在系统弹框确认，或到 系统设置 → 隐私与安全性 → 辅助功能 开启当前 MilkSU 后重新检查。'
 }
 
 function resolveHostBundleId(env: NodeJS.ProcessEnv): string {

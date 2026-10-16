@@ -50,6 +50,7 @@ import {
   handleEnvWorkspaceAction,
   isEnvWorkspaceAction,
 } from './envbroker/index.ts'
+import { isComputerUseWorkspaceAction } from './domains/computeruse.ts'
 import type { LabJobStore } from './lab.ts'
 import { TASK_INTERRUPTED, TASK_RUNNING, type Run, type WorkerUpdate } from './research/types.ts'
 import { ModelUsageStore, usageFromEngineEvent } from './modelusage/index.ts'
@@ -289,6 +290,7 @@ export class Engine {
   private usageStore: ModelUsageStore | null = null
   private labJobs: LabJobStore | null = null
   private companion: CompanionMemoryHost | null = null
+  private computerUseActions?: (conversationId: string, action: string, input: string) => Promise<string>
   private readonly backgroundTasks = new Map<string, BackgroundTask[]>()
   private readonly recoveryFailures = new Map<string, string>()
   private readonly recoveryWaiters = new Map<string, ControlQueue[]>()
@@ -330,6 +332,12 @@ export class Engine {
 
   attachLabJobs(store: LabJobStore): void {
     this.labJobs = store
+  }
+
+  attachComputerUseActions(
+    dispatch: (conversationId: string, action: string, input: string) => Promise<string>,
+  ): void {
+    this.computerUseActions = dispatch
   }
 
   attachCompanion(companion: CompanionMemoryHost): void {
@@ -1596,6 +1604,7 @@ export class Engine {
       action !== 'prepare_coding_worktree'
       && !isResearchWorkspaceAction(action)
       && !isEnvWorkspaceAction(action)
+      && !isComputerUseWorkspaceAction(action)
     ) return
     let result = ''
     let error = ''
@@ -1604,6 +1613,11 @@ export class Engine {
         result = await this.prepareCodingWorktree(conversationId, asString(raw.input), kernel)
       } else if (isEnvWorkspaceAction(action)) {
         result = await this.dispatchEnvWorkspaceAction(conversationId, action)
+      } else if (isComputerUseWorkspaceAction(action)) {
+        if (!this.computerUseActions) {
+          throw new Error('Computer Use workspace actions are unavailable')
+        }
+        result = await this.computerUseActions(conversationId, action, asString(raw.input))
       } else {
         if (!this.research) throw new Error('research runtime is unavailable')
         await this.requirePiResearchConversation(conversationId)
