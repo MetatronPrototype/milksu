@@ -1742,6 +1742,12 @@ export function createConversationsRuntime(options?: {
   const modelRetryByConversation = new Map<string, EngineRetryNotice>()
   const engineRecoveryByConversation = new Map<string, EngineRecoveryNotice>()
   const queuedNoticeByConversation = new Map<string, EngineQueuedNotice>()
+  // β.196 parent 记账证据：本回合（runStartedAt 锚定）是否观测到过在跑工作项
+  // （DSH subagent / jobs、multitask 子会话）。键 = 会话 id，值 = 观测时的 runStartedAt。
+  // 新回合的 runStartedAt 必不相同 ⇒ 旧证据自然失效，跨回合不泄漏；finishRun 时顺手清理。
+  // 它是本地清扫计时器路径的前置条件：没有工作项证据的运行标记（慢 TTFB 首字节静默、
+  // 长工具执行、恢复中的会话）归引擎终局事件与读者动作管，本地计时器不得凭年龄收割。
+  const runWorkingItemsAnchor = new Map<string, number>()
   // 只记**真实引擎事件**的时刻（心跳不算，本地乐观标记也不算）：abort 无响应的判据要用它。
   const engineProgressAtByConversation = new Map<string, number>()
   // 最近一次 abort_session 发出的时刻：用来判定 sidecar 是否不响应 abort。
@@ -2270,6 +2276,7 @@ export function createConversationsRuntime(options?: {
     clearTurnRunClock(id)
     clearAbortStalled(id)
     clearEngineStallWarning(id)
+    runWorkingItemsAnchor.delete(id)
     // 回合不再运行（收尾/失败/中断/本地结算都走这里）⇒ 重试横幅条目一并清掉：
     // getter 的 running 门只挡显示，不清状态——不清的话下一回合 running 一回来，
     // 上一轮的重试横幅会诈尸。真正的语义锚点见上方 model.retry 注释。
@@ -2300,6 +2307,21 @@ export function createConversationsRuntime(options?: {
   function reconcileParentRun(id: string, extras?: { workingJustEmptied?: boolean }) {
     const conversation = s.conversations.find(item => item.id === id)
     if (!conversation) return
+    const kernel = normalizeAgentKernel(conversation.kernel)
+    const started = s.turnStatusById.get(id)?.runStartedAt
+    const liveWorkingCount = liveWorkingCountFor(id)
+    // parent 记账证据（β.196 第三案收口）：观测到在跑工作项就记下锚点（runStartedAt）。
+    // 这是关于本回合的**事实**，先于下面的清扫政策门（重试窗口）记录：落在重试窗口里的
+    // roster 清空边沿会被门挡住（窗口内一律不扫，β.194 语义），窗口关闭后计时器路径还能
+    // 凭这份证据补收（roster 已清、ACP 不结算的 d6e3fe42 缺口）。
+    // 无证据的静默期（kunbot 3.5-4s+ 首字节、长工具执行、恢复中的会话）是引擎说了算的
+    // 安静，杂事件落在事件尾部也清不动它；真卡死的回合由停滞看门狗（engine-gone /
+    // model-stalled，带可见告警与停止 / 重启出口）和读者动作收，本地计时器不再单独收割。
+    if (liveWorkingCount > 0 && started !== undefined) {
+      runWorkingItemsAnchor.set(id, started)
+    }
+    const runHadWorkingItems = started !== undefined
+      && runWorkingItemsAnchor.get(id) === started
     // 引擎管理中的重试窗口（modelRetryByConversation 有条目 = 横幅在场）：退避静默里没有
     // 运行中的消息残留是**引擎说了算的安静**，不是卡死的运行标记。running 的终局只归
     // 引擎事件（assistant.settled / engine.error / engine.stopped，各自会删重试条目）与
@@ -2308,9 +2330,6 @@ export function createConversationsRuntime(options?: {
     // 落到事件处理尾部的本函数，STALE_PARENT_RUN_MS=2s 判「停滞」清 running+删横幅条目 ⇒
     // 横幅 2/5 后消失且整轮不回（running 门永假）。
     if (modelRetryByConversation.has(id)) return
-    const kernel = normalizeAgentKernel(conversation.kernel)
-    const started = s.turnStatusById.get(id)?.runStartedAt
-    const liveWorkingCount = liveWorkingCountFor(id)
     const workingJustEmptied = extras?.workingJustEmptied === true
     if (!shouldClearParentRun({
       parentMarkedRunning: s.runningIds.has(id),
@@ -2322,6 +2341,7 @@ export function createConversationsRuntime(options?: {
         workingJustEmptied,
       }),
       workingJustEmptied,
+      runHadWorkingItems,
       msSinceRunStart: started === undefined ? Number.POSITIVE_INFINITY : Date.now() - started,
     })) return
     finishRun(id)
@@ -4208,6 +4228,8 @@ export function createConversationsRuntime(options?: {
           clearAbortStalled(id)
           // 引擎实例没了 = 回合被中断 ⇒ 重试横幅条目同样清掉（这条路不走 finishRun）。
           modelRetryByConversation.delete(id)
+          // parent 记账证据一并清理（这条终局路径同样不走 finishRun）。
+          runWorkingItemsAnchor.delete(id)
           nextRunning.delete(id)
           nextAborting.delete(id)
         }

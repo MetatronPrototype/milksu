@@ -24,8 +24,15 @@ vi.mock('@/desktop', () => ({
   }),
 }))
 
-function storedConversation(id: string, title = id) {
-  return { id, title, createdAt: 1, workspacePath: '', messages: [] }
+function storedConversation(id: string, title = id, kernel?: string) {
+  return {
+    id,
+    title,
+    createdAt: 1,
+    workspacePath: '',
+    ...(kernel ? { kernel } : {}),
+    messages: [],
+  }
 }
 
 function emit(sessionId: string, payload: Record<string, unknown>) {
@@ -45,10 +52,10 @@ describe('useConversations 引擎韧性事件', () => {
     vi.useRealTimers()
   })
 
-  async function runtime(running = true) {
+  async function runtime(kernel: 'pi' | 'dsh' = 'pi', running = true) {
     const { useConversations } = await import('@/composables/useConversations')
     const conversations = useConversations()
-    stored = [storedConversation('conversation-1', '韧性会话')]
+    stored = [storedConversation('conversation-1', '韧性会话', kernel)]
     await conversations.load()
     await conversations.listen()
     conversations.activeId = 'conversation-1'
@@ -211,14 +218,199 @@ describe('useConversations 引擎韧性事件', () => {
     expect(conversations.activeModelRetry).toBeNull()
   })
 
-  // 同一条清扫路径的正当职责不能被误伤：没有重试窗口时，卡死的运行标记照样被回收
-  // （回合开始 ≥2s、无消息残留、无在跑工作项 ⇒ 本地清扫清 running）。
-  it('无重试窗口时本地清扫照常：2 秒无残留的运行标记仍被回收', async () => {
+  // β.196 真机事故回归（kunbot 中继 3.5-4s+ 首字节静默、连接没断所以无重试无横幅）：
+  // 静默期消息列表无运行中气泡（liveWorkingCount=0 天然成立）、runStartedAt 超 2 秒，
+  // 任何一条落到事件处理尾部的杂事件（runtime.background_task_controlled 回执，后台任务
+  // 轮询周期性产生）都满足旧清扫判据 ⇒ running 被提前掐死，等待指示消失、界面像「没回复」，
+  // 首字节到达后消息诈尸冒出。修复口径：无工作项证据的静默归引擎说了算，杂事件清不动它。
+  it('慢 TTFB 静默（无重试窗口）：回执杂事件不清 running，首字节上屏后终局照常收', async () => {
     const conversations = await runtime()
     expect(conversations.activeRunning).toBe(true)
-    await vi.advanceTimersByTimeAsync(2_300)
+    // kunbot 形状：回合开始 3.8 秒仍无首字节（不流式：无消息、无工作项、无重试横幅）。
+    await vi.advanceTimersByTimeAsync(3_800)
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r1', tasks: [] })
+    expect(conversations.activeRunning).toBe(true)
+    // 静默拉长（12s 空闲对账同族窗口）再来一条回执：还是清不动。
+    await vi.advanceTimersByTimeAsync(12_000)
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r2', tasks: [] })
+    expect(conversations.activeRunning).toBe(true)
+    // 首字节到达：消息正常上屏（running 的 assistant 行），等待指示没被提前掐掉。
+    emit('conversation-1', { type: 'assistant.delta', text: '终于开始回复' })
+    expect(conversations.activeRunning).toBe(true)
+    const last = conversations.active?.messages.at(-1)
+    expect(last?.role).toBe('assistant')
+    expect(last?.status).toBe('running')
+    expect(String(last?.content)).toContain('终于开始回复')
+    // 引擎终局照常收尾：running 只在这里死。
+    emit('conversation-1', { type: 'assistant.completed', text: '终于开始回复' })
+    emit('conversation-1', { type: 'assistant.settled' })
+    expect(conversations.activeRunning).toBe(false)
+    expect(conversations.active?.messages.at(-1)?.status).toBe('done')
+  })
+
+  // 旧口径「2 秒无残留即回收」就是 β.196 误杀本身，这条测试改钉新口径：无证据的运行
+  // 标记不再被本地计时器收割，真卡死的回合由停滞看门狗承接（running 活着它才举得动牌：
+  // decideTurnStall 首行以 running 为门），引擎终局与读者动作照常收。
+  it('无工作项证据的运行标记不再被计时器收割：真卡死由停滞看门狗承接', async () => {
+    const conversations = await runtime()
+    await vi.advanceTimersByTimeAsync(20_000)
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r1', tasks: [] })
+    expect(conversations.activeRunning).toBe(true)
+    // 回执把进展时钟也刷新了（它算一条事件）：静默从它之后重新算。超 quietMs=18s ⇒
+    // 界面说「等待中」，但 running 还在（没被清扫拆掉）。
+    await vi.advanceTimersByTimeAsync(19_000)
+    expect(conversations.streamStale).toBe(true)
+    expect(conversations.activeRunning).toBe(true)
+    // 静默到 engineGoneMs=45s 且心跳从未到 ⇒ 看门狗举起 engine-gone（停止/重启出口由它
+    // 提供）。running 若在 2 秒时被清扫掐掉，这块告警面就永远亮不出来了。
+    await vi.advanceTimersByTimeAsync(27_000)
+    expect(conversations.activeStallKind).toBe('engine-gone')
+    expect(conversations.activeRunning).toBe(true)
+    // 引擎终局照常收。
+    emit('conversation-1', { type: 'engine.error', error: 'engine died' })
+    expect(conversations.activeRunning).toBe(false)
+  })
+
+  // 真机的另一半触发面：12 秒空闲对账定时器（live 运行时才有）自己也会走到同一条清扫。
+  it('12 秒空闲对账（live 对账定时器）不清无证据的运行标记', async () => {
+    const { createConversationsRuntime } = await import('@/composables/useConversations')
+    const conversations = createConversationsRuntime({ live: true })
+    stored = [storedConversation('conversation-1', '韧性会话')]
+    await conversations.load()
+    await conversations.listen()
+    conversations.activeId = 'conversation-1'
+    emit('conversation-1', { type: 'assistant.started' })
+    await vi.advanceTimersByTimeAsync(12_500)
+    expect(conversations.activeRunning).toBe(true)
+    await vi.advanceTimersByTimeAsync(12_000)
+    expect(conversations.activeRunning).toBe(true)
+    emit('conversation-1', { type: 'assistant.settled' })
+    expect(conversations.activeRunning).toBe(false)
+    conversations.dispose()
+  })
+
+  // 清扫的正当职责照常（d6e3fe42 章程）：parent 记账。工作项在场时杂事件不清；
+  // roster 在跑集合从非空变空的边沿（引擎 roster 事件即证据）立即收 parent 运行位与
+  // 工具行，不等 ACP whenIdle / assistant.settled。
+  it('parent 记账照常：工作项在场时杂事件不清，roster 清空边沿即收', async () => {
+    const conversations = await runtime('dsh')
+    expect(conversations.activeRunning).toBe(true)
+    emit('conversation-1', { type: 'tool.started', toolName: 'subagent', toolCallId: 'cf-1', text: '环境巡检' })
+    emit('conversation-1', {
+      type: 'runtime.subagent_tasks',
+      subagentTasks: [{ id: 'cf-1', role: '环境巡检', status: 'running', toolCallId: 'cf-1' }],
+    })
+    // 在跑窗口里的杂事件：不清（liveWorkingCount=1）。
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r1', tasks: [] })
+    expect(conversations.activeRunning).toBe(true)
+    // roster 全部完成：边沿即收，subagent 工具行一并收尾。
+    emit('conversation-1', {
+      type: 'runtime.subagent_tasks',
+      subagentTasks: [{ id: 'cf-1', role: '环境巡检', status: 'succeeded', toolCallId: 'cf-1' }],
+    })
+    expect(conversations.activeRunning).toBe(false)
+    const messages = conversations.active?.messages ?? []
+    expect(messages.some(message => message.status === 'running' && !message.approvalRequestId)).toBe(false)
+  })
+
+  // 风险外推的实测面：DSH 把 subagent 工具行豁免出阻塞残留（它算 Working），roster 事件
+  // 没到之前，旧清扫对这种静默只剩计时器判据（runStartedAt 超 2 秒即烧，工具行被一并
+  // settleRunningToolMessages 收尾）。新口径：无工作项证据就烧不动。
+  it('DSH subagent 工具静默（roster 未到）：无证据时计时器不烧，工具行不提前收尾', async () => {
+    const conversations = await runtime('dsh')
+    emit('conversation-1', { type: 'tool.started', toolName: 'subagent', toolCallId: 'cf-1', text: '环境巡检' })
+    await vi.advanceTimersByTimeAsync(3_000)
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r1', tasks: [] })
+    expect(conversations.activeRunning).toBe(true)
+    expect(conversations.active?.messages.find(message => message.toolCallId === 'cf-1')?.status).toBe('running')
+    // roster 到场（在跑）：证据记上，照常不清。
+    emit('conversation-1', {
+      type: 'runtime.subagent_tasks',
+      subagentTasks: [{ id: 'cf-1', role: '环境巡检', status: 'running', toolCallId: 'cf-1' }],
+    })
+    expect(conversations.activeRunning).toBe(true)
+    emit('conversation-1', {
+      type: 'runtime.subagent_tasks',
+      subagentTasks: [{ id: 'cf-1', role: '环境巡检', status: 'succeeded', toolCallId: 'cf-1' }],
+    })
+    expect(conversations.activeRunning).toBe(false)
+  })
+
+  // 普通长工具静默（pi）：工具执行不发进度超过 2 秒。工具行本身就是运行中消息残留
+  // （parentHasBlockingToolResidue），清扫本来就进不来；钉住这条保护不回退。
+  it('长工具静默（pi）：工具执行期间杂事件不清 running，工具行不提前收尾', async () => {
+    const conversations = await runtime()
+    emit('conversation-1', { type: 'tool.started', toolName: 'bash', toolCallId: 'call-1', text: '跑一个长命令' })
+    await vi.advanceTimersByTimeAsync(5_000)
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r1', tasks: [] })
+    expect(conversations.activeRunning).toBe(true)
+    expect(conversations.active?.messages.find(message => message.toolCallId === 'call-1')?.status).toBe('running')
+    emit('conversation-1', { type: 'tool.completed', toolName: 'bash', toolCallId: 'call-1', text: 'done', done: true })
+    emit('conversation-1', { type: 'assistant.settled' })
+    expect(conversations.activeRunning).toBe(false)
+    expect(conversations.active?.messages.find(message => message.toolCallId === 'call-1')?.status).toBe('done')
+  })
+
+  // 工作项证据按回合锚定（runStartedAt）：上一回合的 subagent 证据不渗进下一回合的纯聊天静默期。
+  it('工作项证据按回合锚定：上一回合的证据不渗进下一回合的静默期', async () => {
+    const conversations = await runtime('dsh')
+    // 第一回合：subagent 跑完，roster 边沿收尾（证据用完即清）。
+    emit('conversation-1', { type: 'tool.started', toolName: 'subagent', toolCallId: 'cf-1', text: '环境巡检' })
+    emit('conversation-1', {
+      type: 'runtime.subagent_tasks',
+      subagentTasks: [{ id: 'cf-1', role: '环境巡检', status: 'running', toolCallId: 'cf-1' }],
+    })
+    emit('conversation-1', {
+      type: 'runtime.subagent_tasks',
+      subagentTasks: [{ id: 'cf-1', role: '环境巡检', status: 'succeeded', toolCallId: 'cf-1' }],
+    })
+    expect(conversations.activeRunning).toBe(false)
+    // 第二回合：纯聊天（无 roster、无消息残留），静默超 2 秒 + 杂事件 ⇒ 不清。
+    emit('conversation-1', { type: 'assistant.started' })
+    await vi.advanceTimersByTimeAsync(3_000)
+    emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r2', tasks: [] })
+    expect(conversations.activeRunning).toBe(true)
+    // 首字节与终局照常。
+    emit('conversation-1', { type: 'assistant.delta', text: '第二回合的回复' })
+    emit('conversation-1', { type: 'assistant.settled' })
+    expect(conversations.activeRunning).toBe(false)
+  })
+
+  // 重试窗口与证据记账的衔接：roster 清空边沿落在重试窗口里会被 β.194 门挡住（窗口内
+  // 一律不扫）；证据照记（事实先于政策），窗口关闭（消息落定收横幅）后计时器凭证据补收。
+  it('重试窗口里消耗的 roster 边沿：窗口内不扫，窗口关闭后计时器凭证据补收', async () => {
+    const conversations = await runtime('dsh')
+    // 重试窗口开（横幅在场）。
+    emit('conversation-1', {
+      type: 'model.retry',
+      phase: 'start',
+      attempt: 1,
+      maxRetries: 5,
+      retryAt: Date.now() + 2_000,
+    })
+    expect(conversations.activeModelRetry).not.toBeNull()
+    // 窗口里 subagent 在跑：证据记上，但清扫被门挡住。
+    emit('conversation-1', { type: 'tool.started', toolName: 'subagent', toolCallId: 'cf-1', text: '环境巡检' })
+    emit('conversation-1', {
+      type: 'runtime.subagent_tasks',
+      subagentTasks: [{ id: 'cf-1', role: '环境巡检', status: 'running', toolCallId: 'cf-1' }],
+    })
+    expect(conversations.activeRunning).toBe(true)
+    // roster 清空边沿落在窗口里：门挡住（不清 running，β.194 语义保持）。
+    emit('conversation-1', {
+      type: 'runtime.subagent_tasks',
+      subagentTasks: [{ id: 'cf-1', role: '环境巡检', status: 'succeeded', toolCallId: 'cf-1' }],
+    })
+    expect(conversations.activeRunning).toBe(true)
+    // 窗口关闭（重试成功、消息落定收横幅）：此刻还在宽限内（runStartedAt 未超 2 秒），
+    // 尾部对账清不动；过了宽限再来一条杂事件 ⇒ 计时器凭证据补收，工具行一并收尾。
+    emit('conversation-1', { type: 'assistant.completed', text: '重试成功' })
+    expect(conversations.activeModelRetry).toBeNull()
+    expect(conversations.activeRunning).toBe(true)
+    await vi.advanceTimersByTimeAsync(2_100)
     emit('conversation-1', { type: 'runtime.background_task_controlled', requestId: 'r1', tasks: [] })
     expect(conversations.activeRunning).toBe(false)
+    expect(conversations.active?.messages.find(message => message.toolCallId === 'cf-1')?.status).toBe('done')
   })
 
   it('畸形 phase（既非 start 也非 end）⇒ 按旧口径收横幅，不猜语义', async () => {
