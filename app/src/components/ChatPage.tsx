@@ -1245,7 +1245,10 @@ const ChatPage = forwardRef<ChatPageHandle, ChatPageProps>(function ChatPage({
         : t('引擎没有响应…', 'The engine is not responding…')
     }
     if (streamStale) return t('等待中…', 'Waiting…')
-    return t('等待引擎响应…', 'Waiting for the engine…')
+    // 默认态=回合刚发出去、还没收到任何流：本地引擎已经把请求交给模型了，
+    // 这段静默在等的是云端首字节（kunbot 类中继可长达数秒）——说"等引擎"是把
+    // 锅甩给自家引擎，读者会误判本地出问题。照实说在等模型。
+    return t('已发送，等待模型回复…', 'Sent, waiting for the model…')
   })()
   const contextPanelTitle = ({
     domain: vulnerabilitySession ? t('CVE 领域上下文', 'CVE domain context') : t('领域上下文', 'Domain context'),
