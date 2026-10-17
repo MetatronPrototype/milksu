@@ -84,6 +84,7 @@ const {
   probeComputerUsePermissions,
   computerUsePermissionsSettingsURL,
   primeComputerUsePermission,
+  requestComputerUsePermission,
   shouldRelaunchAfterScreenRecordingGrant,
 } = require('./computer-use-permissions.cjs')
 const { requestMacOSScreenPermission } = require('./macos-screen-permission.cjs')
@@ -1217,6 +1218,37 @@ async function handleHostRequest(method, payload = {}) {
       // Host-attributed TCC: Electron app identity, never invent grants.
       // Status/Start always probe with prompt=false; explicit UI opens Settings.
       const probe = probeComputerUsePermissions(systemPreferences, { prompt: false })
+      return {
+        accessibility: probe.accessibility,
+        screenRecording: probe.screenRecording,
+        screenStatus: probe.screenStatus,
+      }
+    }
+    case 'computerUse.requestPermission': {
+      if (process.platform === 'win32') {
+        return { accessibility: true, screenRecording: true, screenStatus: 'granted' }
+      }
+      // Host-attributed TCC recovery: raise the native macOS dialog for the
+      // requested permission only, under the Electron app identity — the
+      // adhoc re-sign recovery path (a stale TCC entry keeps binding the old
+      // signature; one native "允许" click re-registers the current app).
+      const permission = String(payload?.permission ?? '')
+      if (permission === 'screen-recording') {
+        // Arm the quit-time relaunch with the pre-request status, mirroring
+        // openPermissions: a screen grant only takes effect after reopen.
+        const before = probeComputerUsePermissions(systemPreferences, { prompt: false })
+        screenRecordingRelaunchArm = {
+          openedAt: Date.now(),
+          previousStatus: before.screenStatus,
+        }
+      }
+      const probe = await requestComputerUsePermission(
+        systemPreferences,
+        permission === 'screen-recording'
+          ? () => requestMacOSScreenPermission(macOSScreenPermission)
+          : undefined,
+        permission,
+      )
       return {
         accessibility: probe.accessibility,
         screenRecording: probe.screenRecording,

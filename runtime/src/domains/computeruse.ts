@@ -15,6 +15,8 @@ import {
   type Target,
 } from '../computercap/index.ts'
 
+const COMPUTER_USE_PERMISSION_PROMPT_TIMEOUT_MS = 5 * 60_000
+
 function arg<T>(args: unknown[] | undefined, index: number, fallback: T): T {
   if (!args || index >= args.length || args[index] === undefined || args[index] === null) {
     return fallback
@@ -103,6 +105,22 @@ async function portalFor(home: string) {
   return server
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Computer Use permission prompt timed out')), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      },
+    )
+  })
+}
+
 function productionOptions(ctx: HandlerContext): ManagerOptions {
   return {
     home: ctx.home,
@@ -114,6 +132,20 @@ function productionOptions(ctx: HandlerContext): ManagerOptions {
       try {
         if (!ctx.hostCall) return { accessibility: false, screenRecording: false }
         return asPermissions(await ctx.hostCall('computerUse.permissions', { prompt: false }))
+      } catch {
+        return { accessibility: false, screenRecording: false }
+      }
+    },
+    permissionPrompt: async (kind) => {
+      // Raise the native macOS dialog for exactly one kind under the Electron
+      // host identity — the TCC principal for embedded Computer Use. Fail
+      // closed: never invent grants when the host prompt is unavailable. The
+      // dialog can block until the user answers, so the call stays bounded.
+      if (!ctx.hostCall) return { accessibility: false, screenRecording: false }
+      try {
+        return asPermissions(
+          await withTimeout(ctx.hostCall('computerUse.requestPermission', { permission: kind }), COMPUTER_USE_PERMISSION_PROMPT_TIMEOUT_MS),
+        )
       } catch {
         return { accessibility: false, screenRecording: false }
       }
@@ -176,6 +208,99 @@ function statusError(error: unknown, fallback: Status): Status {
   return publicStatus(status)
 }
 
+const COMPUTER_USE_WORKSPACE_ACTIONS = new Set([
+  'list_computer_use_windows',
+  'lock_computer_use_window',
+  'unlock_computer_use_window',
+  'computer_use_driver_status',
+  'prepare_computer_use_driver',
+])
+
+export function isComputerUseWorkspaceAction(action: string): boolean {
+  return COMPUTER_USE_WORKSPACE_ACTIONS.has(String(action ?? '').trim())
+}
+
+function parseWorkspaceInput(input: string): Record<string, unknown> {
+  const raw = String(input ?? '').trim()
+  if (!raw) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error('invalid workspace action input')
+  }
+  return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+}
+
+async function stopComputerUseForConversation(ctx: HandlerContext, conversationId: string): Promise<Status> {
+  const manager = managerFor(ctx)
+  if (!manager.ownsConversation(conversationId)) {
+    const status = await manager.statusForConversation(conversationId)
+    if (!status.authorized) {
+      throw Object.assign(new Error('Computer Use session does not belong to this Coding task'), { status })
+    }
+    return manager.stop(conversationId)
+  }
+  // Dispose the MCP client before ending the host-owned daemon. Pending
+  // approvals expire with the Sidecar session and unknown actions are never
+  // replayed after a stop.
+  await ctx.engine.detachSession(conversationId)
+  return manager.stop(conversationId)
+}
+
+// handleComputerUseWorkspaceAction routes the typed milksu_workspace Computer
+// Use actions to the same manager surface the renderer RPC handlers use, so
+// the agent can list windows, lock, rebind, and unlock a visible session
+// itself (CU v2 §3.1-2).
+export async function handleComputerUseWorkspaceAction(
+  ctx: HandlerContext,
+  conversationId: string,
+  action: string,
+  input: string,
+): Promise<string> {
+  const id = String(conversationId ?? '').trim()
+  const manager = managerFor(ctx)
+  switch (String(action ?? '').trim()) {
+    case 'list_computer_use_windows': {
+      const targets = await manager.targets()
+      return JSON.stringify({
+        windows: targets.map((target) => ({
+          name: target.name,
+          bundleId: target.bundleId,
+          pid: target.pid,
+          windowId: target.windowId,
+          windowTitle: target.windowTitle,
+        })),
+      })
+    }
+    case 'lock_computer_use_window': {
+      const request = parseWorkspaceInput(input)
+      const status = await manager.start(id, {
+        pid: Number(request.targetPid ?? 0),
+        windowId: Number(request.targetWindowId ?? 0),
+      })
+      const result: Record<string, unknown> = { locked: status.phase === 'ready', status }
+      const descriptor = manager.descriptor(id)
+      if (descriptor) result.descriptor = descriptor
+      return JSON.stringify(result)
+    }
+    case 'unlock_computer_use_window': {
+      // CU v2 §3.1-2: expose StopCodingComputerUse so the agent can release a
+      // wrong or stuck lock itself. Unlock returns the conversation to an
+      // unlocked status; any target can be locked again.
+      const status = await stopComputerUseForConversation(ctx, id)
+      return JSON.stringify({ unlocked: !status.enabled, status })
+    }
+    case 'computer_use_driver_status':
+    case 'prepare_computer_use_driver': {
+      const result = await manager.prepare({ allowBuild: action === 'prepare_computer_use_driver' })
+      return JSON.stringify(result)
+    }
+    default:
+      throw new Error(`unsupported Computer Use workspace action ${JSON.stringify(action)}`)
+  }
+}
+
 registerOwnedHandlers({
   async GetCodingComputerUseStatus(ctx) {
     return managerFor(ctx).status()
@@ -222,16 +347,7 @@ registerOwnedHandlers({
   },
   async StopCodingComputerUse(ctx, args) {
     const conversationId = String(arg(args, 0, '')).trim()
-    const manager = managerFor(ctx)
-    if (!manager.ownsConversation(conversationId)) {
-      const status = await manager.statusForConversation(conversationId)
-      if (!status.authorized) {
-        throw Object.assign(new Error('Computer Use session does not belong to this Coding task'), { status })
-      }
-      return manager.stop(conversationId)
-    }
-    await ctx.engine.detachSession(conversationId)
-    return manager.stop(conversationId)
+    return stopComputerUseForConversation(ctx, conversationId)
   },
   async RevokeComputerUseTarget(ctx, args) {
     const conversationId = String(arg(args, 0, '')).trim()

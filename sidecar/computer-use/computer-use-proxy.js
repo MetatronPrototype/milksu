@@ -12,8 +12,37 @@ const maxDriverOutputBytes = 32 << 20;
 const maxTextBytes = 4 << 10;
 const allowedActions = new Set(["observe", "click", "type", "key", "scroll"]);
 const allowedDeliveryModes = new Set(["background", "foreground"]);
-const allowedModifiers = new Set(["cmd", "shift", "option", "alt", "ctrl", "fn"]);
 const allowedDirections = new Set(["up", "down", "left", "right"]);
+
+// The driver's press_key key-name table is lowercase (`return`, `tab`,
+// `escape`, `f1-f12`, letters, digits — verified from the pinned 0.29.1
+// binary). Audit D4 burned minutes on case and alias guesses (`Return`
+// rejected, `Enter`/`ENTER` retried), so the proxy normalizes the aliases the
+// model actually sends onto the driver-accepted canonical names before
+// dispatching. `enter` is not a driver key name; both spellings mean `return`.
+export const computerUseKeyAliases = Object.freeze({
+  enter: "return",
+  "↵": "return",
+  return: "return",
+  // Modifier aliases for the modifiers array (the driver accepts
+  // cmd, shift, option/alt, ctrl, fn).
+  command: "cmd",
+  meta: "cmd",
+  cmd: "cmd",
+  control: "ctrl",
+  ctrl: "ctrl",
+  option: "option",
+  alt: "alt",
+  shift: "shift",
+  fn: "fn",
+});
+
+export function normalizeComputerUseKeyName(value) {
+  const key = String(value ?? "").trim().toLowerCase();
+  return computerUseKeyAliases[key] ?? key;
+}
+
+const allowedModifiers = new Set(["cmd", "shift", "option", "alt", "ctrl", "fn"]);
 const allowedInputFields = new Set([
   "action",
   "amount",
@@ -40,11 +69,15 @@ export const computerUseTool = {
     "Observe or interact with the one visible App window locked for this task, background-first so the "
     + "user's cursor and foreground app stay untouched. List windows with milksu_workspace "
     + "list_computer_use_windows; if several match, call milksu_ask; then lock_computer_use_window. "
-    + "Observe before each action; one action consumes that snapshot. Act on the freshest observe "
+    + "If the locked window is the wrong target, milksu_workspace unlock_computer_use_window releases "
+    + "it before locking a new one. "
+    + "Observe before each action; one action consumes that snapshot, and the proxy silently "
+    + "re-observes once and retries when an action arrives without one. Act on the freshest observe "
     + "snapshot: prefer element_token or element_index — the driver performs the AX action in the "
     + "background with no cursor move and no focus steal. Use x, y window-local pixels only when the "
     + "target has no AX node (canvas, video, custom-drawn surface). After each action, observe again to "
-    + "confirm the effect. Keep delivery_mode \"background\" unless the tool result reports the "
+    + "confirm the effect. Key names are case-insensitive aliases (return/Enter/ENTER all mean return). "
+    + "Keep delivery_mode \"background\" unless the tool result reports the "
     + "background route unavailable or unverifiable for that one action; then retry only that action "
     + "with \"foreground\".",
   inputSchema: {
@@ -357,13 +390,17 @@ export function normalizeComputerUseInput(value) {
         "y",
       ],
     );
-    const key = String(value.key ?? "").trim();
+    // Alias normalization first (return/Enter/ENTER/enter/↵ → return; command/
+    // meta → cmd; control → ctrl; case-insensitive), then the single-key
+    // shape check on the canonical name the driver will receive.
+    const key = normalizeComputerUseKeyName(value.key ?? "");
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(key)) {
       throw new Error("computer_use key must be a single named key");
     }
-    const modifiers = Array.isArray(value.modifiers)
-      ? [...new Set(value.modifiers.map(item => String(item).trim()))]
+    const rawModifiers = Array.isArray(value.modifiers)
+      ? value.modifiers.map(item => normalizeComputerUseKeyName(item))
       : [];
+    const modifiers = [...new Set(rawModifiers)];
     if (
       modifiers.length > 4
       || modifiers.some(modifier => !allowedModifiers.has(modifier))
@@ -493,6 +530,28 @@ export function createComputerUseExecutor(options, runTool) {
     return snapshotId;
   }
 
+  function isFreshObserveError(error) {
+    return error instanceof Error
+      && error.message.includes("requires a fresh observe");
+  }
+
+  // One silent observe refresh (CU v2 §3.7-3 / audit D7: four wasted
+  // "requires a fresh observe" round trips): no screenshot — the model
+  // already has the window picture, only the snapshot token is needed — and
+  // the fresh snapshot is remembered so the retried act can consume it.
+  async function refreshObservation(target, targetWindow) {
+    const result = await runTool("get_window_state", {
+      ...target,
+      include_screenshot: false,
+      max_elements: 300,
+      max_depth: 18,
+    });
+    observedWindowId = Number(targetWindow.window_id);
+    observedSnapshotId = result && typeof result.snapshot_id === "string"
+      ? result.snapshot_id
+      : undefined;
+  }
+
   function addressForAction(address, snapshotId) {
     if (address.element_token !== undefined || address.x !== undefined) {
       return address;
@@ -509,6 +568,58 @@ export function createComputerUseExecutor(options, runTool) {
     return { ...address, snapshot_id: snapshotId };
   }
 
+  function buildDriverCall(input, target, targetWindow) {
+    let tool;
+    let args;
+    switch (input.action) {
+      case "observe":
+        tool = "get_window_state";
+        args = {
+          ...target,
+          include_screenshot: input.include_screenshot,
+          max_elements: input.max_elements,
+          max_depth: input.max_depth,
+          ...(input.query ? { query: input.query } : {}),
+        };
+        break;
+      case "click":
+      case "type":
+      case "key":
+      case "scroll": {
+        const snapshotId = consumeObservation(input.action, targetWindow.window_id);
+        const address = addressForAction(optionalElementAddress(input), snapshotId);
+        const common = {
+          ...target,
+          scope: "window",
+          delivery_mode: input.delivery_mode,
+          ...address,
+        };
+        if (input.action === "click") {
+          tool = "click";
+          args = common;
+        } else if (input.action === "type") {
+          tool = "type_text";
+          args = { ...common, text: input.text, delay_ms: input.delay_ms };
+        } else if (input.action === "key") {
+          tool = "press_key";
+          args = { ...common, key: input.key, modifiers: input.modifiers };
+        } else {
+          tool = "scroll";
+          args = {
+            ...common,
+            direction: input.direction,
+            amount: input.amount,
+            by: input.by,
+          };
+        }
+        break;
+      }
+      default:
+        throw new Error("MilkSU Computer Use rejected an unknown action");
+    }
+    return { tool, args };
+  }
+
   return {
     async execute(rawInput) {
       if (ended) throw new Error("MilkSU Computer Use session has ended");
@@ -522,51 +633,21 @@ export function createComputerUseExecutor(options, runTool) {
       };
       let tool;
       let args;
-      switch (input.action) {
-        case "observe":
-          tool = "get_window_state";
-          args = {
-            ...target,
-            include_screenshot: input.include_screenshot,
-            max_elements: input.max_elements,
-            max_depth: input.max_depth,
-            ...(input.query ? { query: input.query } : {}),
-          };
-          break;
-        case "click":
-        case "type":
-        case "key":
-        case "scroll": {
-          const snapshotId = consumeObservation(input.action, targetWindow.window_id);
-          const address = addressForAction(optionalElementAddress(input), snapshotId);
-          const common = {
-            ...target,
-            scope: "window",
-            delivery_mode: input.delivery_mode,
-            ...address,
-          };
-          if (input.action === "click") {
-            tool = "click";
-            args = common;
-          } else if (input.action === "type") {
-            tool = "type_text";
-            args = { ...common, text: input.text, delay_ms: input.delay_ms };
-          } else if (input.action === "key") {
-            tool = "press_key";
-            args = { ...common, key: input.key, modifiers: input.modifiers };
-          } else {
-            tool = "scroll";
-            args = {
-              ...common,
-              direction: input.direction,
-              amount: input.amount,
-              by: input.by,
-            };
+      if (input.action === "observe") {
+        ({ tool, args } = buildDriverCall(input, target, targetWindow));
+      } else {
+        // An act without a fresh observe snapshot auto-refreshes the snapshot
+        // exactly once and retries the same action; a refresh that still cannot
+        // produce a usable snapshot surfaces the original error, never a loop.
+        for (let refreshes = 0; ; refreshes++) {
+          try {
+            ({ tool, args } = buildDriverCall(input, target, targetWindow));
+            break;
+          } catch (error) {
+            if (!isFreshObserveError(error) || refreshes >= 1) throw error;
+            await refreshObservation(target, targetWindow);
           }
-          break;
         }
-        default:
-          throw new Error("MilkSU Computer Use rejected an unknown action");
       }
       const result = await runTool(tool, args);
       if (input.action === "observe") {

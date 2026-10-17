@@ -42,6 +42,7 @@ export const codingWorkspaceMutatingActions = Object.freeze([
   "restore_records",
   "prepare_coding_worktree",
   "lock_computer_use_window",
+  "unlock_computer_use_window",
   "start_research_run",
   "register_research_task",
   "open_research_browser_tab",
@@ -140,6 +141,7 @@ export function codingWorkspaceGuidance() {
     "Reverse sessions: list_reverse_artifacts / preview_reverse_artifact expose this conversation's milksu-rea results.",
     "Open or focus a tab, then operate the page with Playwright.",
     "List Computer Use windows, call milksu_ask if several match, then lock_computer_use_window.",
+    "Wrong or stuck lock: unlock_computer_use_window releases it; lock a new target.",
     "Pick a typed action from the tool schema.",
   ].join(" ");
 }
@@ -338,6 +340,25 @@ export async function runQueuedWorkspaceCompaction(pending, conversationId, comp
 
 export const defaultWorkspaceActionTimeoutMs = 25_000;
 
+// CU v2 §3.1-2：bridge.js / harness-bridge-session.js 的 destroySession 都以这个
+// 固定 reason 取消在途动作；解锁自己触发的销毁（桌面 StopCodingComputerUse →
+// DetachSession）不能报成工具错误。
+export const codingWorkspaceSessionDestroyedReason = "session destroyed";
+
+// 解锁会销毁发起它的 Coding 会话——销毁取消在途动作时，发起销毁的那次
+// unlock_computer_use_window 以成功载荷落定；真失败仍由 respond() 的 error
+// 分支照常抛错。
+export function codingWorkspaceUnlockDestroyedResult() {
+  return JSON.stringify({
+    unlocked: true,
+    status: {
+      enabled: false,
+      authorized: false,
+      phase: "disabled",
+    },
+  });
+}
+
 export function createWorkspaceActionBroker(emit, createID = () => crypto.randomUUID()) {
   const pending = new Map();
 
@@ -354,6 +375,8 @@ export function createWorkspaceActionBroker(emit, createID = () => crypto.random
           reject(new Error("Coding workspace action timed out"));
         }, deadline);
         pending.set(requestID, {
+          conversationId,
+          action,
           resolve: value => {
             clearTimeout(timer);
             resolve(value);
@@ -384,9 +407,21 @@ export function createWorkspaceActionBroker(emit, createID = () => crypto.random
       request.resolve(String(result ?? ""));
     },
 
-    cancelConversation(_conversationId, reason = "workspace action cancelled") {
+    cancelConversation(conversationId, reason = "workspace action cancelled") {
+      // 会话销毁是被销毁会话自己那次在途解锁的预期副作用：以成功载荷落定，
+      // 模型不再看到 [error] session destroyed。其他取消原因（回合中止等）
+      // 与其他会话的在途动作照常报错。
+      const settleUnlock = reason === codingWorkspaceSessionDestroyedReason;
       for (const [requestID, request] of pending) {
         pending.delete(requestID);
+        if (
+          settleUnlock
+          && request.action === "unlock_computer_use_window"
+          && request.conversationId === conversationId
+        ) {
+          request.resolve(codingWorkspaceUnlockDestroyedResult());
+          continue;
+        }
         request.reject(new Error(reason));
       }
     },
@@ -440,6 +475,7 @@ export function createCodingWorkspaceExtension(
           Type.Literal("search_records"),
           Type.Literal("list_computer_use_windows"),
           Type.Literal("lock_computer_use_window"),
+          Type.Literal("unlock_computer_use_window"),
           Type.Literal("prepare_coding_worktree"),
           Type.Literal("start_research_run"),
           Type.Literal("register_research_task"),
@@ -555,7 +591,7 @@ export function createCodingWorkspaceExtension(
         }
         const timeoutMs = action === "prepare_coding_worktree"
           ? writerWorktreePrepareTimeoutMs
-          : action === "lock_computer_use_window"
+          : action === "lock_computer_use_window" || action === "unlock_computer_use_window"
             ? computerUseLockTimeoutMs
             : undefined;
         let actionInput = action.includes("research_")
@@ -609,6 +645,12 @@ export function createCodingWorkspaceExtension(
           } catch {
             // The tool result still reaches the model.
           }
+        }
+        // CU v2 §3.1-2: unlock is the symmetric counterpart of the lock write
+        // above — clear the session descriptor so the next lock rebuilds the
+        // executor instead of reusing the stale one.
+        if (policy && action === "unlock_computer_use_window") {
+          delete policy.computerUse;
         }
         return {
           content: [{ type: "text", text: result || `${action} completed` }],

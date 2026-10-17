@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
+  computerUseKeyAliases,
   computerUseTool,
   createComputerUseExecutor,
   expectedComputerUseSocket,
@@ -183,13 +184,14 @@ test("injects the selected app PID, exact visible window, session, and window sc
     return { verified: true };
   });
 
-  await assert.rejects(
-    executor.execute({
-      action: "click",
-      element_index: 7,
-    }),
-    /fresh observe/,
-  );
+  // Without a prior observe the proxy silently refreshes the snapshot once
+  // and runs the act (CU v2 §3.7-3) instead of bouncing a fresh-observe error
+  // back to the model (audit D7: four wasted round trips).
+  const autoFresh = await executor.execute({
+    action: "click",
+    element_index: 7,
+  });
+  assert.equal(autoFresh.action, "click");
   await executor.execute({
     action: "observe",
     include_screenshot: false,
@@ -211,6 +213,29 @@ test("injects the selected app PID, exact visible window, session, and window sc
       args: {
         pid: options.targetPid,
         on_screen_only: true,
+      },
+    },
+    {
+      name: "get_window_state",
+      args: {
+        pid: options.targetPid,
+        window_id: options.targetWindowId,
+        session: options.sessionId,
+        include_screenshot: false,
+        max_elements: 300,
+        max_depth: 18,
+      },
+    },
+    {
+      name: "click",
+      args: {
+        pid: options.targetPid,
+        window_id: options.targetWindowId,
+        session: options.sessionId,
+        scope: "window",
+        delivery_mode: "background",
+        element_index: 7,
+        snapshot_id: "s00000001",
       },
     },
     {
@@ -268,6 +293,127 @@ test("injects the selected app PID, exact visible window, session, and window sc
     executor.execute({ action: "observe" }),
     /session has ended/,
   );
+});
+
+test("normalizes key aliases onto the driver's lowercase key names", () => {
+  // The pinned driver 0.29.1 accepts lowercase `return` (not `Enter`); audit
+  // D4 burned minutes on `Return` rejected and Enter/ENTER retried. Every
+  // spelling the model sends must reach press_key as the same canonical name.
+  assert.equal(computerUseKeyAliases.enter, "return");
+  assert.equal(computerUseKeyAliases["\u21b5"], "return");
+  for (const spelling of ["return", "Return", "enter", "Enter", "ENTER", "\u21b5"]) {
+    assert.deepEqual(
+      normalizeComputerUseInput({ action: "key", key: spelling }),
+      {
+        action: "key",
+        key: "return",
+        modifiers: [],
+        delivery_mode: "background",
+      },
+    );
+  }
+  // Unknown names still pass through for the driver to judge (f1-f12,
+  // letters, digits, arrows), lowercased.
+  assert.deepEqual(
+    normalizeComputerUseInput({ action: "key", key: "F5" }),
+    { action: "key", key: "f5", modifiers: [], delivery_mode: "background" },
+  );
+  assert.deepEqual(
+    normalizeComputerUseInput({ action: "key", key: "Escape" }),
+    { action: "key", key: "escape", modifiers: [], delivery_mode: "background" },
+  );
+  // Modifier aliases collapse onto the driver's modifier table.
+  assert.deepEqual(
+    normalizeComputerUseInput({
+      action: "key",
+      key: "Return",
+      modifiers: ["Cmd", "command", "Meta"],
+    }),
+    { action: "key", key: "return", modifiers: ["cmd"], delivery_mode: "background" },
+  );
+  assert.deepEqual(
+    normalizeComputerUseInput({ action: "key", key: "a", modifiers: ["Control"] }),
+    { action: "key", key: "a", modifiers: ["ctrl"], delivery_mode: "background" },
+  );
+  // Unsupported modifiers stay rejected after normalization.
+  assert.throws(
+    () => normalizeComputerUseInput({
+      action: "key",
+      key: "return",
+      modifiers: ["hyper"],
+    }),
+    /unsupported modifiers/,
+  );
+});
+
+test("consecutive acts without a manual observe never report a stale snapshot", async () => {
+  const calls = [];
+  let snapshots = 0;
+  const executor = createComputerUseExecutor(options, async (name, args) => {
+    calls.push({ name, args });
+    if (name === "list_windows") {
+      return {
+        windows: [{
+          pid: options.targetPid,
+          window_id: options.targetWindowId,
+          title: "Codex",
+          is_on_screen: true,
+        }],
+      };
+    }
+    if (name === "get_window_state") {
+      snapshots += 1;
+      return { snapshot_id: `s-auto-${snapshots}`, elements: [] };
+    }
+    return { ok: true };
+  });
+
+  // The P1 bar: five acts in a row, no manual observe between them, no
+  // "requires a fresh observe" error. Each act refreshes its own snapshot.
+  for (let index = 1; index <= 5; index += 1) {
+    const acted = await executor.execute({ action: "click", element_index: index });
+    assert.equal(acted.action, "click");
+  }
+  const refreshes = calls.filter(call => call.name === "get_window_state");
+  assert.equal(refreshes.length, 5);
+  assert.ok(refreshes.every(call => call.args.include_screenshot === false));
+  const clicks = calls.filter(call => call.name === "click");
+  assert.deepEqual(
+    clicks.map(call => call.args.snapshot_id),
+    ["s-auto-1", "s-auto-2", "s-auto-3", "s-auto-4", "s-auto-5"],
+  );
+  await executor.end();
+});
+
+test("a snapshot refresh that cannot produce a token surfaces the act error", async () => {
+  const refreshes = [];
+  const executor = createComputerUseExecutor(options, async (name) => {
+    if (name === "list_windows") {
+      return {
+        windows: [{
+          pid: options.targetPid,
+          window_id: options.targetWindowId,
+          title: "Codex",
+          is_on_screen: true,
+        }],
+      };
+    }
+    if (name === "get_window_state") {
+      refreshes.push(name);
+      // Degraded observe: no snapshot id at all.
+      return { degraded_reason: "ax_window_unresolved", elements: [] };
+    }
+    return {};
+  });
+  // The one refresh happens, the retry still cannot address the element, and
+  // the original addressing error (not a loop, not a fresh-observe bounce)
+  // reaches the model.
+  await assert.rejects(
+    executor.execute({ action: "click", element_index: 4 }),
+    /AX addressing is unavailable/,
+  );
+  assert.equal(refreshes.length, 1);
+  await executor.end();
 });
 
 test("element_token addresses the driver without a proxy snapshot id", async () => {

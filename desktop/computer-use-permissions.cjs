@@ -101,6 +101,43 @@ async function primeComputerUsePermission(prefs, requestScreenRecording, permiss
 }
 
 /**
+ * Raise the native macOS dialog for exactly one permission under the Electron
+ * host identity — the TCC principal for embedded Computer Use. This is the
+ * adhoc re-sign recovery path: after a re-packaged build replaces the binary,
+ * a stale TCC entry keeps pointing at the old signature and the System
+ * Settings toggle alone cannot recover; one native "允许" click re-registers
+ * the currently running app. The other permission is never prompted here.
+ * @param {{
+ *   isTrustedAccessibilityClient?: (prompt: boolean) => boolean,
+ *   getMediaAccessStatus?: (mediaType: string) => string,
+ * }} prefs
+ * @param {(() => Promise<boolean>) | undefined} requestScreenRecording
+ *   preflight-then-request screen capture (CGRequestScreenCaptureAccess)
+ * @param {'accessibility' | 'screen-recording' | string} permission
+ */
+async function requestComputerUsePermission(prefs, requestScreenRecording, permission) {
+  if (permission === 'accessibility') {
+    try {
+      // The AX alert does not block; the user confirms in the dialog or the
+      // Settings pane afterwards, and the caller's re-probe reports the truth.
+      prefs?.isTrustedAccessibilityClient?.(true)
+    } catch {
+      // Keep the quiet re-probe below as the single source of truth.
+    }
+  } else if (permission === 'screen-recording') {
+    try {
+      await requestScreenRecording?.()
+    } catch {
+      // Dialog unavailable (native bridge missing) or denied: the re-probe
+      // reports the ungranted truth and the wizard guidance takes over.
+    }
+  } else {
+    throw new Error(`unsupported Computer Use permission ${JSON.stringify(permission)}`)
+  }
+  return probeComputerUsePermissions(prefs, { prompt: false })
+}
+
+/**
  * A Screen Recording grant may ask macOS to quit the app. MilkSU performs an
  * asynchronous backend shutdown, so the system's immediate reopen can race the
  * existing single-instance lock. Arm an Electron-owned relaunch only for the
@@ -122,5 +159,6 @@ module.exports = {
   probeComputerUsePermissions,
   computerUsePermissionsSettingsURL,
   primeComputerUsePermission,
+  requestComputerUsePermission,
   shouldRelaunchAfterScreenRecordingGrant,
 }
