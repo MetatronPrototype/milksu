@@ -14,18 +14,30 @@
 //   run_start → turn_started（语义差：run = 一次提交批的整轮；bridge 的 turn 对应 Pi 的
 //     agent_start/settled，桌面只看开始/收尾，投影为最接近的一对）
 //   run_end → turn_settled
+//   turn_start → turn_active { phase: "start" }（R1b 回合生命周期：pi-durable 的 turn
+//     = 一个 generation 任务的生死（模型回合，run 内可多轮工具往返）；run_*/turn_*
+//     两层并存：run 是桌面回合边界，turn 是引擎内部的「它还活着」心跳源）
+//   turn_end → turn_active { phase: "end" }
 //   message_start → 无输出（重置本条消息的累计状态）
 //   message_update.changes → thinking_start/thinking_delta/text_delta（pi-durable 无
 //     thinking_end：thinking_done 在 message_end 由累计内容合成，见下）
 //   message_end → thinking_done（若已流式）+ projectAssistantMessageEnd 的
-//     message_segment_done/message_done/error + usage_recorded（复用 bridge-message-view /
-//     bridge-usage-view，保证与现有桌面投影逐字段同形）
+//     message_segment_done/message_done + usage_recorded（复用 bridge-message-view /
+//     bridge-usage-view，保证与现有桌面投影逐字段同形）。失败 assistant 消息的
+//     error 投影在 harness 路径摘除（R1c：会话层是唯一失败上报点，见 projectMessageEnd）
 //   tool_execution_start → tool_call_start {toolCallId, toolName, content, module}
 //   tool_execution_update → tool_call_progress（进度心跳；工具输出仍按现状只在结束时给）
 //   tool_execution_end → tool_call_end {toolCallId, toolName, content, durationMs, isError, module}
 //   task_failed → error（唯一失败可见面；auto_retry 的重试期间也可能触发，见 docs）
+//   auto_retry_start → model_retry（R1a：引擎 durable 重试排程，「网络波动，重试中
+//     x/5」；x = 刚失败的 attempt 号 = 即将进行的第 x 次重试，max 来自接线层传的
+//     retryMax = harnessRetryPolicy().maxRetries）
+//   auto_retry_end → model_retry { phase: "end" }（退避结束/下一尝试开始，渲染层据此
+//     收横幅；与 start 同一事件类型，最小新增面）
 //   snapshot/inbox_update/submission/entry_appended/agent_changed/usage_changed/
-//     compaction_*/auto_retry_*/deferred_poll/turn_* → 本版不投影（见模块尾部 NOTES）
+//     compaction_*/deferred_poll → 本版不投影；submission/inbox 的排队可见不在投影器
+//     做（QueuedItem 只有 {id, mode} 没文本），由会话层按 submission 落库 + inbox
+//     快照发 message_queued（harness-bridge-session，R1b）
 //
 // 已知取舍（批次 B/D 补齐）：
 //   - inbox_update 不映射：pi-durable 的 QueuedItem 只有 {id, mode}，bridge queue_update 需要
@@ -40,6 +52,7 @@
 
 import { projectAssistantMessageEnd } from "./bridge-message-view.js";
 import { projectAssistantUsage } from "./bridge-usage-view.js";
+import { HARNESS_RETRY_POLICY } from "./harness-network-resilience.js";
 
 /**
  * 工具耗时融合（pi-durable/pi-coding-agent 1.1.0）：内核在执行现场用单调时钟记录
@@ -66,6 +79,8 @@ function toolResultContent(message) {
  *   module: "coding" | "ctf"（usage/tool 事件的 module 字段，对齐 bridge usageModule）
  *   conversationId: usage_recorded 里 projectAssistantUsage 需要的会话 id
  *   provider / source: usage 归因（对齐 bridge sessionConfiguredProviders/sessionModelSources）
+ *   retryMax: auto_retry_start 文案「重试中 x/N」里的 N（缺省 HARNESS_RETRY_POLICY
+ *     的预算上限；接线层传 harnessRetryPolicy(environment).maxRetries 保持活配置）
  */
 export function createHarnessEventProjector(options = {}) {
   const module = options.module === "ctf" ? "ctf" : "coding";
@@ -74,6 +89,7 @@ export function createHarnessEventProjector(options = {}) {
   const source = options.source === "account" || options.source === "personal"
     ? options.source
     : "";
+  const retryMax = Math.max(1, Math.floor(Number(options.retryMax) || HARNESS_RETRY_POLICY.maxRetries));
   let textStreamed = false;
   let thinkingStreamed = false;
   let thinkingText = "";
@@ -96,6 +112,13 @@ export function createHarnessEventProjector(options = {}) {
       textStreamed: false,
       thinkingStreamed,
     })) {
+      // R1c（β.191 真机复盘）：失败 assistant 消息的 error 投影在 harness 路径摘掉，
+      // 会话层 handleHarnessEvent 的 message_end 分支是唯一的失败上报点（它持有重试
+      // 排程窗口的真相，能区分中间失败与最终失败）。旧双发面：非 deferrable 文案
+      // 这里发一条、会话层再发一条——真机 fatal 类错误桌上两条相同错误；可重试文案
+      // 这里 defer 掉、只靠会话层那条——判定分裂在同一份失败上。门关路径
+      //（bridge.js 自己调 projectAssistantMessageEnd）零改动。
+      if (projected.type === "error") continue;
       events.push(projected);
     }
     const usage = projectAssistantUsage(message, {
@@ -170,6 +193,13 @@ export function createHarnessEventProjector(options = {}) {
         return [{ type: "turn_started", data: {} }];
       case "run_end":
         return [{ type: "turn_settled", data: {} }];
+      case "turn_start":
+        // R1b 回合生命周期：pi-durable 的 turn = 一个 generation 任务（模型回合）。
+        // run_start/run_end 是桌面回合边界（已有专案处理），turn_active 是引擎内部
+        // 的逐回合心跳，渲染器据此区分「模型回合进行中」与「工具轮/空闲」。
+        return [{ type: "turn_active", data: { phase: "start" } }];
+      case "turn_end":
+        return [{ type: "turn_active", data: { phase: "end" } }];
       case "message_start":
         textStreamed = false;
         thinkingStreamed = false;
@@ -188,6 +218,30 @@ export function createHarnessEventProjector(options = {}) {
         }];
       case "tool_execution_end":
         return projectToolEnd(event);
+      case "auto_retry_start": {
+        // R1a：live.generation.retry 落库时引擎发的排程事件。attempt = 刚失败的尝试号
+        //（也是即将进行的第 attempt 次重试），与 maxRetries 组成「重试中 x/N」。
+        const attempt = Math.max(1, Math.floor(Number(event.attempt) || 1));
+        return [{
+          type: "model_retry",
+          data: {
+            phase: "start",
+            attempt,
+            maxRetries: retryMax,
+            message: `网络波动，重试中 ${attempt}/${retryMax}`,
+            messageEnglish: `Network trouble, retrying ${attempt}/${retryMax}`,
+            errorMessage: String(event.errorMessage ?? ""),
+            retryAt: Number(event.at ?? 0) || 0,
+          },
+        }];
+      }
+      case "auto_retry_end": {
+        const attempt = Math.max(1, Math.floor(Number(event.attempt) || 1));
+        return [{
+          type: "model_retry",
+          data: { phase: "end", attempt },
+        }];
+      }
       case "task_failed":
         return [{
           type: "error",
