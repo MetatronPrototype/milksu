@@ -38,7 +38,7 @@ import { buildWindowsCuaDriver } from './build-windows-cua-driver.mjs'
 const execFileAsync = promisify(execFile)
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repositoryPackageRoot = join(repositoryRoot, 'node_modules')
-const nodeVersion = '24.18.0'
+const nodeVersion = '24.22.1'
 const archifyCommit = '7b49d0b715fd4ba48116bcdecd1ba3789a279613'
 const piVersion = '1.1.0'
 // pi-durable Harness 地基（PR-2 批次 A）：精确钉版，不用 ^（PREP §5.1 缓解措施）。
@@ -134,23 +134,23 @@ const systemOcrNativePackages = {
 const nodeArchives = {
   'darwin/arm64': {
     file: `node-v${nodeVersion}-darwin-arm64.tar.xz`,
-    sha256: '4477b9f78efb77744cf5eb57a0e9594dba66466b38b4e93fa9f35cb907a095a6',
+    sha256: '654ba79de6155647e22321932b45f2a1ccb705976cc337c9b8e278beb085a628',
   },
   'darwin/amd64': {
     file: `node-v${nodeVersion}-darwin-x64.tar.xz`,
-    sha256: '4a3b6bc81542154430825128d9a279e8b364e8d90581544e506ef7579fd1ab6f',
+    sha256: '65e450f90a6eaacd5000f611861c4ce65fadc87f813795dc4ed0c0e5f2fca2d4',
   },
   'windows/amd64': {
     file: `node-v${nodeVersion}-win-x64.zip`,
-    sha256: '0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821',
+    sha256: 'd2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5',
   },
   'linux/amd64': {
     file: `node-v${nodeVersion}-linux-x64.tar.xz`,
-    sha256: '55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742',
+    sha256: '6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6',
   },
   'linux/arm64': {
     file: `node-v${nodeVersion}-linux-arm64.tar.xz`,
-    sha256: '58c9520501f6ae2b52d5b210444e24b9d0c029a58c5011b797bc1fe7105886f6',
+    sha256: 'dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e',
   },
 }
 

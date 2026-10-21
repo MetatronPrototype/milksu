@@ -15,7 +15,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "4.0.1",
-    "electron": "43.2.0",
+    "electron": "43.8.1",
     "electron-builder": "26.15.7"
   },
   "build": {
@@ -109,7 +109,7 @@
       "category": "public.app-category.developer-tools",
       "icon": "../app/src/assets/milksu-logo.png",
       "extendInfo": {
-        "NSScreenCaptureUsageDescription": "MilkSU 使用屏幕录制读取你明确选择的外部 App 窗口，供 Coding Agent 的 Computer Use 完成可见操作。"
+        "NSScreenCaptureUsageDescription": "MilkSU \u4f7f\u7528\u5c4f\u5e55\u5f55\u5236\u8bfb\u53d6\u4f60\u660e\u786e\u9009\u62e9\u7684\u5916\u90e8 App \u7a97\u53e3\uff0c\u4f9b Coding Agent \u7684 Computer Use \u5b8c\u6210\u53ef\u89c1\u64cd\u4f5c\u3002"
       },
       "minimumSystemVersion": "12.0.0",
       "hardenedRuntime": false,
