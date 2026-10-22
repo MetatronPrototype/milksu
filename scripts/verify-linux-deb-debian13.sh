@@ -45,17 +45,39 @@ test -f /opt/MilkSU/resources/node-pty/package.json
 
 runtime_home="$(mktemp -d)"
 mkdir -p "$runtime_home/.git"
+sidecar_stdout=/tmp/milksu-sidecar.stdout
+sidecar_stdin=/tmp/milksu-sidecar.stdin
 printf '%s\n' \
   '{"action":"create_session","conversationId":"debian13-package-smoke","executionMode":"go","approvalPolicy":"workspace-auto","provider":"tokenflux","model":"deepseek/deepseek-flash","modelSourceOrder":["personal"]}' \
   '{"action":"destroy_session","conversationId":"debian13-package-smoke"}' \
-  | HOME="$runtime_home" \
-    OPENAI_API_KEY='package-smoke-imagegen-credential-never-log' \
-    TOKENFLUX_API_KEY='package-smoke-imagegen-credential-never-log' \
-    "$node_runtime" \
-    /opt/MilkSU/resources/milksu-sidecar/chat-bridge.cjs \
-  | tee /tmp/milksu-sidecar.stdout
-grep -q '"type":"ready"' /tmp/milksu-sidecar.stdout
-if grep -q 'package-smoke-imagegen-credential-never-log' /tmp/milksu-sidecar.stdout; then
+  >"$sidecar_stdin"
+HOME="$runtime_home" \
+  OPENAI_API_KEY='package-smoke-imagegen-credential-never-log' \
+  TOKENFLUX_API_KEY='package-smoke-imagegen-credential-never-log' \
+  "$node_runtime" \
+  /opt/MilkSU/resources/milksu-sidecar/chat-bridge.cjs \
+  <"$sidecar_stdin" \
+  >"$sidecar_stdout" 2>&1 &
+sidecar_pid=$!
+for _ in $(seq 1 120); do
+  if grep -q '"type":"ready"' "$sidecar_stdout"; then
+    break
+  fi
+  if ! kill -0 "$sidecar_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+if ! grep -q '"type":"ready"' "$sidecar_stdout"; then
+  kill "$sidecar_pid" 2>/dev/null || true
+  wait "$sidecar_pid" 2>/dev/null || true
+  cat "$sidecar_stdout" >&2 || true
+  echo 'packaged sidecar did not become ready within 60s' >&2
+  exit 1
+fi
+kill "$sidecar_pid" 2>/dev/null || true
+wait "$sidecar_pid" 2>/dev/null || true
+if grep -q 'package-smoke-imagegen-credential-never-log' "$sidecar_stdout"; then
   echo 'packaged sidecar smoke leaked the dummy credential' >&2
   exit 1
 fi
