@@ -189,6 +189,18 @@ const builderConfig = {
     // Debian 13 ships libayatana-appindicator3-1 instead. Keep the shared DEB
     // installable on both without a missing recommend.
     recommends: [],
+    depends: [
+      'libgtk-3-0',
+      'libnotify4',
+      'libnss3',
+      'libxss1',
+      'libxtst6',
+      'xdg-utils',
+      'libatspi2.0-0',
+      'libuuid1',
+      'libsecret-1-0',
+      'libgbm1',
+    ],
   },
 }
 delete builderConfig.mac
