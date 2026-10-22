@@ -27,7 +27,7 @@ test -f /usr/share/icons/hicolor/48x48/apps/milksu.png
 test -f /usr/share/icons/hicolor/256x256/apps/milksu.png
 node_runtime=/opt/MilkSU/resources/milksu-sidecar/node
 test -x "$node_runtime"
-test "$("$node_runtime" --version)" = "v24.18.0"
+test "$("$node_runtime" --version)" = "v24.22.1"
 "$node_runtime" -e '
 const fs = require("fs");
 function pngSize(path) {

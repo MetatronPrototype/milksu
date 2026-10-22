@@ -107,7 +107,7 @@ jobs:
           sha256sum "$package"
 
           node_runtime='build/sidecar/linux-amd64/node'
-          test "$("$node_runtime" --version)" = 'v24.18.0'
+          test "$("$node_runtime" --version)" = 'v24.22.1'
           manifest='build/sidecar/linux-amd64/manifest.json'
           test "$(node -p "require('./${manifest}').platform")" = 'linux/amd64'
           test "$(node -p "String(require('./${manifest}').extensions.localOcr.available)")" = 'false'

@@ -32,7 +32,7 @@ test -f /usr/share/icons/hicolor/256x256/apps/milksu.png
 test -f /usr/share/pixmaps/milksu.png
 node_runtime=/opt/MilkSU/resources/milksu-sidecar/node
 test -x "$node_runtime"
-test "$("$node_runtime" --version)" = "v24.18.0"
+test "$("$node_runtime" --version)" = "v24.22.1"
 runtime_home="$(mktemp -d)"
 mkdir -p "$runtime_home/.git"
 printf '%s\n' \

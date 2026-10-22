@@ -94,7 +94,7 @@ jobs:
           test -f "$package"
           test "$(dpkg-deb -f "$package" Architecture)" = 'arm64'
           node_runtime='build/sidecar/linux-arm64/node'
-          test "$("$node_runtime" --version)" = 'v24.18.0'
+          test "$("$node_runtime" --version)" = 'v24.22.1'
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends xvfb
           sudo apt-get install -y --no-install-recommends "./$package"
