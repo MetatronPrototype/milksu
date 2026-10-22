@@ -539,6 +539,10 @@ async function officialCuaDriverRuntime(platform) {
   if (version.trim() !== `cua-driver ${cuaDriverVersion}`) {
     throw new Error(`unexpected Cua Driver version: ${version.trim()}`)
   }
+  const runtimeBinaryText = (await readFile(runtimeBinary)).toString('latin1')
+  if (runtimeBinaryText.includes('emSign ECC Root CA - G3')) {
+    throw new Error('official Cua Driver still trusts the compromised eMudhra root')
+  }
   return {
     binary: runtimeBinary,
     archive: cuaDriverArchive,
