@@ -98,6 +98,7 @@ const vueLanguageServerVersion = '2.2.12'
 const typescriptVersion = '6.0.3'
 const diffVersion = '8.0.4'
 const goplsVersion = '0.23.0'
+const goplsGoToolchain = 'go1.26.10'
 const goplsSource = {
   module: 'golang.org/x/tools/gopls',
   moduleSum: 'h1:Dn6mf9WXu9iLnTftDDMb9wV0c6Se7PjzEMqP0LEe08Y=',
@@ -573,10 +574,12 @@ async function officialGoplsRuntime(platform) {
   const runtimeBinary = join(runtimeRoot, platformBinaryName(platform, 'gopls'))
   const runtimeLicense = join(runtimeRoot, 'LICENSE')
   const metadataPath = join(runtimeRoot, 'build.json')
-  const { stdout: goVersionOutput } = await execFileAsync('go', ['version'])
+  const { stdout: goVersionOutput } = await execFileAsync('go', ['version'], {
+    env: { ...process.env, GOTOOLCHAIN: goplsGoToolchain },
+  })
   const goVersion = goVersionOutput.trim()
   const expectedMetadata = {
-    buildRecipe: 'go-build-trimpath-version-override-v1',
+    buildRecipe: 'go-build-trimpath-version-override-v2-gopls-go1.26.10',
     platform,
     version: goplsVersion,
     module: goplsSource.module,
@@ -620,7 +623,7 @@ async function officialGoplsRuntime(platform) {
       cwd: repositoryRoot,
       maxBuffer: 4 * 1024 * 1024,
       timeout: 120_000,
-      env: { ...process.env, ...envOverrides },
+      env: { ...process.env, GOTOOLCHAIN: goplsGoToolchain, ...envOverrides },
     },
   ).then(result => JSON.parse(result.stdout))
   const moduleDownload = await downloadModule({})
@@ -666,6 +669,7 @@ async function officialGoplsRuntime(platform) {
         GOOS: goos,
         GOARCH: goarch,
         CGO_ENABLED: '0',
+        GOTOOLCHAIN: goplsGoToolchain,
       },
       maxBuffer: 8 * 1024 * 1024,
       timeout: 300_000,
@@ -673,6 +677,21 @@ async function officialGoplsRuntime(platform) {
   )
   await copyFile(sourceLicense, runtimeLicense)
   await chmod(runtimeBinary, 0o755)
+  const { stdout: builtGoVersion } = await execFileAsync('go', ['version', '-m', runtimeBinary], {
+    env: { ...process.env, GOTOOLCHAIN: goplsGoToolchain },
+    timeout: 15_000,
+  })
+  if (!builtGoVersion.includes(goplsGoToolchain)) {
+    throw new Error(`packaged gopls was not built with ${goplsGoToolchain}`)
+  }
+  const builtGoVersionMatch = builtGoVersion.match(/\bgo\d+\.\d+\.\d+\b/)
+  if (!builtGoVersionMatch || builtGoVersionMatch[0] !== goplsGoToolchain) {
+    throw new Error(`packaged gopls reported unexpected Go toolchain: ${builtGoVersion.trim()}`)
+  }
+  const configuredToolchainMatch = goVersion.match(/^go version \S+ (.+)$/)
+  expectedMetadata.goVersion = configuredToolchainMatch
+    ? `go version ${builtGoVersionMatch[0]} ${configuredToolchainMatch[1]}`
+    : `go version ${builtGoVersionMatch[0]}`
   const metadata = {
     ...expectedMetadata,
     binarySha256: await sha256(runtimeBinary),
