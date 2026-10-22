@@ -77,11 +77,22 @@ ELECTRON_RUN_AS_NODE=1 /opt/MilkSU/milksu "$runtime" >/tmp/milksu-runtime.stdout
 runtime_pid=$!
 trap 'kill "$runtime_pid" 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do
-  grep -q '"type"[[:space:]]*:[[:space:]]*"ready"' /tmp/milksu-runtime.stdout && break
-  kill -0 "$runtime_pid"
+  if grep -q '"type"[[:space:]]*:[[:space:]]*"ready"' /tmp/milksu-runtime.stdout; then
+    break
+  fi
+  if ! kill -0 "$runtime_pid" 2>/dev/null; then
+    break
+  fi
   sleep 0.5
 done
-grep -q '"type"[[:space:]]*:[[:space:]]*"ready"' /tmp/milksu-runtime.stdout
-kill "$runtime_pid"
-wait "$runtime_pid" || true
+if ! grep -q '"type"[[:space:]]*:[[:space:]]*"ready"' /tmp/milksu-runtime.stdout; then
+  kill "$runtime_pid" 2>/dev/null || true
+  wait "$runtime_pid" 2>/dev/null || true
+  cat /tmp/milksu-runtime.stdout >&2 || true
+  cat /tmp/milksu-runtime.stderr >&2 || true
+  echo 'packaged runtime did not become ready within 15s' >&2
+  exit 1
+fi
+kill "$runtime_pid" 2>/dev/null || true
+wait "$runtime_pid" 2>/dev/null || true
 EOS
